@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "default_model": "gemma-4-31b",
+  "models": [
+    {
+      "id": "qwen3-32b-abliterated",
+      "label": "Qwen3 32B Abliterated",
+      "provider": "qwen3",
+      "alias": "qwen3-32b",
+      "path": "/root/autodl-tmp/models/llm/qwen3-32b-abliterated-q4_k_m.gguf",
+      "chat": true,
+      "image_prompt": true,
+      "multimodal": false,
+      "reasoning": "off",
+      "enable_thinking": false
+    },
+    {
+      "id": "gemma-4-31b",
+      "label": "Gemma 4 31B",
+      "provider": "gemma",
+      "alias": "gemma",
+      "path": "/root/autodl-tmp/models/llm/gemma-4-31b-jang-crack-Q4_K_M.gguf",
+      "chat": true,
+      "image_prompt": true,
+      "multimodal": false,
+      "reasoning": "off",
+      "enable_thinking": false
+    }
+  ]
+}

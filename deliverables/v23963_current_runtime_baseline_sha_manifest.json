@@ -1,0 +1,18 @@
+{
+  "baseline_source": "v23963-current-runtime.tar.gz",
+  "baseline_archive_sha256": "b333b86467682dd766f57c5ea5fb04f271e1710f9314192e4a4cb3cb00483786",
+  "baseline_version": "2.39.6.3-stage04-full-pipeline-preflight",
+  "baseline_sha256": {
+    "app/main.py": "35591e0373c37efa62f2b3606c81bff68a34f28bf665dbb7968e80697d085ff1",
+    "app/services/gemma.py": "f84fe348213f88d82da87207cb473c05ce6133bdc5e30bbb21d2a98a2d9088d4",
+    "app/stage04_v238_runtime.py": "e668321b8eccf9f8adaf02452ffd5c9a0c1f0b890db4ca53ff28bd718fbdf332"
+  },
+  "write_files": [
+    "app/main.py"
+  ],
+  "target_version": "2.39.6.3-stage04-full-pipeline-preflight",
+  "target_sha256": {
+    "app/main.py": "0e4fa0e14fdd3015e83fae1f55c54b12caee60d4240f1f71f4d2279ebc1742f9"
+  },
+  "installer_sha256": "b89cdc306604079d1d28e7938dddddf24e87a9b5ed3cfd21f73187d69b9907a2"
+}

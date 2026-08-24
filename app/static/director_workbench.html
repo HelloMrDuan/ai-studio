@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Studio · Director Workbench V2.27</title>
+<style>
+:root{color-scheme:dark;--bg:#070b14;--panel:#0d1422;--panel2:#111b2d;--line:#26334d;--text:#edf3ff;--muted:#91a0ba;--accent:#ff6b2c;--ok:#22c55e;--warn:#f59e0b;--bad:#ef4444;--blue:#60a5fa}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif}button,input,select,textarea{font:inherit}
+.wrap{max-width:1920px;margin:0 auto;padding:18px}.top{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:14px}.top h1{margin:0;font-size:28px}.sub{color:var(--muted);margin-top:7px;line-height:1.55}.links{display:flex;gap:8px;flex-wrap:wrap}
+.btn{border:1px solid var(--line);background:#151f33;color:var(--text);border-radius:9px;padding:8px 12px;cursor:pointer;text-decoration:none}.btn:hover{border-color:#536783}.btn.primary{background:var(--accent);border-color:var(--accent)}.btn.good{background:#123923;border-color:#236a3c}.btn.warn{background:#463615;border-color:#7b6225}.btn.danger{background:#38151a;border-color:#74303a}.btn:disabled{opacity:.45;cursor:not-allowed}
+.toolbar,.panel{background:var(--panel);border:1px solid var(--line);border-radius:13px}.toolbar{padding:12px;margin-bottom:14px;display:grid;grid-template-columns:1.5fr 1.2fr auto auto;gap:10px;align-items:end}.field{display:flex;flex-direction:column;gap:6px}.field label{font-size:12px;color:#b8c5da}.field input,.field select,.field textarea{width:100%;border:1px solid var(--line);background:#09111e;color:var(--text);border-radius:8px;padding:9px}.field textarea{min-height:88px;resize:vertical}
+.layout{display:grid;grid-template-columns:320px minmax(700px,1fr) 430px;gap:14px;align-items:start}.panel{padding:14px;margin-bottom:14px}.panel h2,.panel h3{margin:0 0 10px}.small{font-size:12px;color:var(--muted);line-height:1.55}.pill{display:inline-block;padding:3px 8px;border-radius:999px;background:#26344d;font-size:12px;margin:2px}.pill.ok{background:#173b28;color:#8ce6ad}.pill.bad{background:#431f25;color:#ff9da9}.pill.warn{background:#463615;color:#ffd27b}.pill.blue{background:#18395e;color:#9dccff}
+.stagebar{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:10px 0}.stage{border:1px solid var(--line);border-radius:9px;padding:8px 4px;text-align:center;color:var(--muted);font-size:12px}.stage.current{border-color:#f47a45;background:#332015;color:#fff}.stage.done{border-color:#2e7d4b;background:#10291b;color:#a4edbd}
+.entity{border:1px solid #22304a;background:#0a1220;border-radius:8px;padding:7px 8px;margin:5px 0}.entity .meta,.asset .meta,.candidate .meta{font-size:11px;color:var(--muted);word-break:break-all}.indent1{margin-left:14px}.indent2{margin-left:28px}.indent3{margin-left:42px}
+.runtime-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.box{border:1px solid var(--line);background:#09111e;border-radius:10px;padding:10px}.box pre{white-space:pre-wrap;word-break:break-word;margin:0;font-size:12px;color:#cbd6e8;max-height:320px;overflow:auto}
+.chat{max-height:520px;overflow:auto;border:1px solid var(--line);border-radius:10px;background:#080f1b;padding:10px}.turn{padding:9px 10px;border-radius:9px;margin:7px 0;white-space:pre-wrap;line-height:1.55}.turn.user{background:#15233a}.turn.assistant{background:#111a2a;border-left:3px solid #526c98}.turn .head{font-size:11px;color:var(--muted);margin-bottom:5px}
+.artifact,.asset,.candidate{border:1px solid var(--line);border-radius:9px;padding:9px;margin:7px 0;background:#0a1220}.artifact strong,.asset .name,.candidate .name{display:block;font-weight:700}.asset.stale{border-color:#8a5a22}.asset.ready{border-color:#235f3a}.candidate.completed{border-color:#235f3a}.candidate.failed{border-color:#80333f}.row{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}
+.asset img,.asset video,.candidate img,.candidate video{max-width:100%;max-height:190px;border-radius:8px;margin-top:7px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:9px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}.span2{grid-column:1/-1}
+.notice{padding:9px 10px;border:1px solid #2c3b58;background:#101b2d;border-radius:9px;color:#b9c8df;font-size:12px;line-height:1.6}.error{color:#ff9da9}.success{color:#84e4a9}
+details{margin-top:8px}summary{cursor:pointer;color:#b9c8df}.toast{position:fixed;right:20px;bottom:20px;z-index:99;max-width:650px;border:1px solid #405170;background:#18243a;padding:12px 14px;border-radius:10px;display:none}.toast.bad{background:#38171c;border-color:#8f3e4b}
+@media(max-width:1350px){.layout{grid-template-columns:290px 1fr}.right{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:14px}.right .panel{margin:0}}
+@media(max-width:900px){.layout,.toolbar,.runtime-grid,.grid2,.grid3,.right{display:block}.panel,.toolbar,.right .panel{margin-bottom:12px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div>
+      <h1>Director 生产工作台 · V2.27</h1>
+      <div class="sub">Skill 控制业务阶段；Production Asset / Entity Graph 保存真实项目状态；ComfyUI / H3 / FaceFusion 只负责执行。媒体任务先成为候选，用户确认后才进入正式项目资产。</div>
+    </div>
+    <div class="links">
+      <a class="btn" href="/">AI Studio</a><a class="btn" href="/single">单次生产</a><a class="btn" href="/production">生产资产</a>
+      <button class="btn" id="refresh">刷新</button>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <div class="field"><label>导演项目</label><select id="projectSelect"><option value="">选择项目</option></select></div>
+    <div class="field"><label>新项目名称</label><input id="newProjectTitle" placeholder="例如：影子停止跟随"></div>
+    <button class="btn primary" id="createProject">创建</button>
+    <button class="btn" id="openProject">打开</button>
+  </div>
+
+  <div class="layout">
+    <aside>
+      <div class="panel">
+        <h2>项目结构</h2>
+        <div class="small">Chapter / Scene / Shot / Character / Location / Prop 全部写入现有 Entity Registry 和 Relation Graph。</div>
+        <div id="structureTree" style="margin-top:10px"></div>
+        <hr style="border-color:#23304a">
+        <div class="field"><label>实体类型</label><select id="entityType">
+          <option value="chapter">Chapter</option><option value="scene">Scene</option><option value="shot">Shot</option>
+          <option value="character">Character</option><option value="location">Location</option><option value="prop">Prop</option>
+        </select></div>
+        <div class="field" style="margin-top:8px"><label>名称</label><input id="entityName" placeholder="实体名称"></div>
+        <div class="field" style="margin-top:8px"><label>父实体</label><select id="entityParent"><option value="">无</option></select></div>
+        <button class="btn good" id="addEntity" style="margin-top:9px">新增实体</button>
+      </div>
+
+      <div class="panel">
+        <h2>Stage 01 → 04</h2>
+        <div id="stageBar" class="stagebar"></div>
+        <div id="projectStatus" class="small">未选择项目</div>
+        <div class="small" style="margin-top:9px">
+          01 · chuanzhang-chuangzuo-v1<br>
+          02 · chuanzhangzhenren-prompts<br>
+          03 · chuanzhang-tuxiangtishici<br>
+          04 · chuanzhang-fenjing-biaoqing
+        </div>
+      </div>
+    </aside>
+
+    <main>
+      <div class="panel">
+        <h2>当前 Skill Runtime</h2>
+        <div class="runtime-grid">
+          <div class="box">
+            <div id="skillHeadline">未选择项目</div>
+            <div id="runtimeCompletion" class="small" style="margin-top:8px"></div>
+          </div>
+          <div class="box">
+            <strong>原生步骤 / 下一动作</strong>
+            <div id="nativeStep" class="small" style="margin-top:8px"></div>
+          </div>
+        </div>
+        <details><summary>查看 Skill Contract</summary><div class="box" style="margin-top:8px"><pre id="contractRaw"></pre></div></details>
+      </div>
+
+      <div class="panel">
+        <h2>当前 Skill 应交付产物</h2>
+        <div id="contractArtifacts"><div class="small">执行当前 Skill 后显示。</div></div>
+      </div>
+
+      <div class="panel">
+        <h2>Director 对话 / Skill 执行</h2>
+        <div id="history" class="chat"><div class="small">选择项目后显示。</div></div>
+        <div class="field" style="margin-top:10px"><label>给当前 Skill 的真实输入</label><textarea id="directorMessage" placeholder="输入真实项目要求；Director 只按当前生产 Skill 执行。"></textarea></div>
+        <div class="row">
+          <button class="btn primary" id="sendMessage">执行当前 Skill</button>
+          <button class="btn" id="continueSkill">继续当前 Skill</button>
+          <button class="btn warn" id="selfCheck">按 Skill 自检</button>
+          <button class="btn good" id="confirmStage">确认当前 Stage</button>
+        </div>
+        <div id="lastResult" class="notice" style="margin-top:10px;display:none"></div>
+      </div>
+
+      <div class="panel">
+        <h2>项目生产执行</h2>
+        <div class="notice">正式项目媒体不直接写 READY。提交后先进入“候选结果”；只有点击“确认采用”才绑定到目标 Production Asset，并参与 Skill completion。</div>
+        <div class="grid2" style="margin-top:10px">
+          <div class="field"><label>目标项目资产</label><select id="targetAsset"><option value="">选择目标资产</option></select></div>
+          <div class="field"><label>提示词项目资产</label><select id="promptAsset"><option value="">不使用</option></select></div>
+          <div class="field"><label>能力</label><select id="capability"><option value="image">图片 · TXT2IMG</option><option value="video">H3 视频</option><option value="facefusion">FaceFusion</option></select></div>
+          <div class="field video-field"><label>H3 模式</label><select id="videoMode"><option value="t2va">T2VA · 文生视频</option><option value="fl2va">FL2VA · 首/尾帧</option><option value="ref2va">REF2VA · 参考图</option></select></div>
+          <div class="field video-field"><label>H3 速度</label><select id="videoProfile"><option value="standard">标准</option><option value="turbo">Turbo · 4步 LoRA</option></select></div>
+          <div class="field video-field"><label>首帧项目资产</label><select id="firstFrame"><option value="">不选择</option></select></div>
+          <div class="field video-field"><label>尾帧项目资产</label><select id="lastFrame"><option value="">不选择</option></select></div>
+          <div class="field video-field"><label>参考图项目资产</label><select id="referenceImage"><option value="">不选择</option></select></div>
+          <div class="field face-field"><label>FaceFusion Processor</label><select id="faceProcessor"></select></div>
+          <div class="field face-field"><label>来源项目资产</label><select id="faceSource"><option value="">不选择</option></select></div>
+          <div class="field face-field"><label>目标输入项目资产</label><select id="faceTarget"><option value="">不选择</option></select></div>
+          <div class="field"><label>Steps</label><input id="steps" type="number" value="20" min="1" max="100"></div>
+          <div class="field span2"><label>临时提示词覆盖</label><textarea id="promptOverride" placeholder="留空 = 读取上面的提示词项目资产"></textarea></div>
+        </div>
+        <div class="row"><button class="btn primary" id="executeAsset">提交候选任务</button></div>
+      </div>
+
+      <div class="panel">
+        <h2>候选结果</h2>
+        <div class="small">候选不会自动进入项目资产；确认前不会让 Skill Runtime 把媒体要求判定为完成。</div>
+        <div id="candidates" style="margin-top:8px"><div class="small">暂无候选。</div></div>
+      </div>
+    </main>
+
+    <section class="right">
+      <div class="panel"><h2>项目资产</h2><div id="assets"><div class="small">未加载</div></div></div>
+      <div class="panel"><h2>实体 Registry</h2><div id="entities"><div class="small">未加载</div></div></div>
+    </section>
+  </div>
+</div>
+<div id="toast" class="toast"></div>
+
+<script>
+const $=id=>document.getElementById(id);
+const STAGE_SKILLS={"01":"chuanzhang-chuangzuo-v1","02":"chuanzhangzhenren-prompts","03":"chuanzhang-tuxiangtishici","04":"chuanzhang-fenjing-biaoqing"};
+let projects=[],current="",snap=null,faceCaps={};
+
+function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function toast(m,bad=false){const t=$("toast");t.textContent=m;t.className="toast"+(bad?" bad":"");t.style.display="block";clearTimeout(window.__toast);window.__toast=setTimeout(()=>t.style.display="none",5000)}
+async function api(url,opt={}){const r=await fetch(url,opt);const tx=await r.text();let b;try{b=JSON.parse(tx)}catch{b=tx}if(!r.ok)throw new Error(b?.detail||b||`${r.status}`);return b}
+function jpost(url,obj){return api(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(obj)})}
+function st(v){return String(v?.value??v??"")}
+function assetUrl(a){return a?.storage?.url||((a?.storage?.urls||[])[0])||""}
+function isReady(a){return st(a?.status)==="ready"&&st(a?.dependency_state)!=="stale"&&a?.active!==false}
+function typeOk(a,t){return String(a?.asset_type||"").toUpperCase()===t}
+function getAsset(id){return (snap?.assets||[]).find(a=>a.asset_id===id)}
+
+async function loadProjects(){
+  projects=await api("/api/director/projects");const old=$("projectSelect").value;
+  $("projectSelect").innerHTML='<option value="">选择项目</option>'+projects.map(p=>`<option value="${esc(p.project_id)}">${esc(p.title)} · Stage ${esc(p.current_stage||"-")}</option>`).join("");
+  if(old&&projects.some(p=>p.project_id===old))$("projectSelect").value=old;else if(current&&projects.some(p=>p.project_id===current))$("projectSelect").value=current;
+}
+async function createProject(){
+  const title=$("newProjectTitle").value.trim();if(!title)return toast("请输入项目名称",true);
+  try{const p=await jpost("/api/director/projects",{title});current=p.project_id;$("newProjectTitle").value="";await loadProjects();$("projectSelect").value=current;await loadSnapshot();toast("项目已创建")}catch(e){toast(e.message,true)}
+}
+function renderStages(p){
+  $("stageBar").innerHTML=["01","02","03","04"].map(s=>{const cls=(p.completed_stages||[]).includes(s)?"done":p.current_stage===s?"current":"";return `<div class="stage ${cls}">${s}</div>`}).join("");
+  $("projectStatus").innerHTML=`状态：<b>${esc(p.status)}</b><br>当前 Stage：${esc(p.current_stage)}<br>已确认：${esc((p.completed_stages||[]).join(", ")||"无")}`;
+}
+function completionHtml(rt){
+  const c=rt?.skill_runtime?.completion||{},ready=c.ready===true,miss=[...(c.missing_artifact_ids||[]),...(c.missing_requirement_ids||[])];
+  return `<span class="pill ${ready?"ok":"warn"}">${ready?"READY":"WAIT"}</span><div style="margin-top:7px">${esc(c.reason||"尚未初始化")}</div>${miss.length?`<div style="margin-top:6px">缺少：${miss.map(x=>`<span class="pill bad">${esc(x)}</span>`).join("")}</div>`:""}`;
+}
+function renderStructure(entities,relations){
+  const map=Object.fromEntries(entities.map(e=>[e.entity_id,e])),children={};
+  for(const r of relations.filter(r=>r.relation_type==="contains"))(children[r.source_id]??=[]).push(r.target_id);
+  const targets=new Set(relations.filter(r=>r.relation_type==="contains").map(r=>r.target_id)),roots=entities.filter(e=>!targets.has(e.entity_id));
+  function card(e,d=0){const kids=(children[e.entity_id]||[]).map(id=>map[id]).filter(Boolean);return `<div class="entity indent${Math.min(d,3)}"><b>${esc(e.entity_type)} · ${esc(e.name)}</b><div class="meta">${esc(e.logical_key||e.entity_id)}</div></div>${kids.map(k=>card(k,d+1)).join("")}`}
+  $("structureTree").innerHTML=roots.length?roots.map(e=>card(e)).join(""):'<div class="small">尚无结构实体。</div>';
+  const opts='<option value="">无</option>'+entities.map(e=>`<option value="${esc(e.entity_id)}">${esc(e.entity_type)} · ${esc(e.name)}</option>`).join("");$("entityParent").innerHTML=opts;
+}
+function renderEntities(xs){$("entities").innerHTML=xs.length?xs.map(e=>`<div class="entity"><b>${esc(e.entity_type)} · ${esc(e.name)}</b><div class="meta">${esc(e.entity_id)}<br>assets ${(e.asset_ids||[]).length}</div></div>`).join(""):'<div class="small">暂无实体</div>'}
+function previewByUrl(url,type){
+  if(!url)return"";type=String(type||"").toUpperCase();
+  if(type==="IMAGE"||/\.(png|jpe?g|webp|gif)(\?|$)/i.test(url))return`<img src="${esc(url)}" loading="lazy">`;
+  if(type==="VIDEO"||/\.(mp4|webm|mov|mkv)(\?|$)/i.test(url))return`<video src="${esc(url)}" controls preload="metadata"></video>`;
+  return`<a class="btn" target="_blank" href="${esc(url)}">打开结果</a>`;
+}
+function renderAssets(xs){
+  const active=xs.filter(a=>a.active!==false);
+  $("assets").innerHTML=active.length?active.map(a=>{const stat=st(a.status),dep=st(a.dependency_state),u=assetUrl(a);
+    return `<div class="asset ${dep==="stale"?"stale":stat==="ready"?"ready":""}">
+      <div class="name">${esc(a.asset_type)} · ${esc(a.name)}</div>
+      <div>${a.contract_artifact_id?`<span class="pill blue">${esc(a.contract_artifact_id)}</span>`:""}<span class="pill ${stat==="ready"?"ok":stat==="failed"?"bad":"warn"}">${esc(stat)}</span>${dep==="stale"?'<span class="pill bad">STALE</span>':""}</div>
+      <div class="meta">${esc(a.asset_id)}<br>${esc(a.logical_key)} · v${esc(a.version)} · ${esc(a.asset_role)}</div>${previewByUrl(u,a.asset_type)}
+      <div class="row">${["IMAGE","VIDEO"].includes(String(a.asset_type).toUpperCase())?`<button class="btn primary" onclick="pickTarget('${esc(a.asset_id)}')">${stat==="ready"?"重新生产候选":"生产此资产"}</button>`:""}${u?`<a class="btn" target="_blank" href="${esc(u)}">打开</a>`:""}</div>
+    </div>`}).join(""):'<div class="small">暂无资产</div>';
+}
+function contractSpecs(c){const o=[];for(const g of(c?.output_groups||[]))for(const a of(g.artifacts||[]))o.push({...a,group_id:g.group_id||""});return o}
+function renderContract(rt,assets){
+  const specs=contractSpecs(rt?.skill_contract||{}),registry=rt?.skill_runtime?.artifact_registry||{},by={};
+  for(const a of assets||[])if(a.active!==false&&a.contract_artifact_id)(by[a.contract_artifact_id]??=[]).push(a);
+  $("contractArtifacts").innerHTML=specs.length?specs.map(s=>{const reg=registry[s.artifact_id]||{},arr=by[s.artifact_id]||[],ready=arr.some(isReady)||(reg.materialized===true&&reg.verified===true);
+    return `<div class="artifact"><strong>${esc(s.name||s.artifact_id)}</strong><div><span class="pill blue">${esc(s.artifact_id)}</span><span class="pill">${esc(s.asset_type||"TEXT")}</span><span class="pill">${esc(s.materialization||"text")}</span><span class="pill ${ready?"ok":"warn"}">${ready?"READY":"MISSING"}</span></div><div class="small">${esc(s.source_quote||s.description||"")}</div>${arr.length?`<div class="small">资产：${arr.map(a=>esc(a.name)+" v"+esc(a.version)+" / "+esc(a.status)).join(" · ")}</div>`:""}</div>`
+  }).join(""):'<div class="small">当前 Skill Contract 尚未初始化；先执行当前 Skill。</div>';
+}
+function renderHistory(p){
+  const h=p.history||[];$("history").innerHTML=h.length?h.map(x=>`<div class="turn ${esc(x.role)}"><div class="head">${esc(x.role)} · Stage ${esc(x.stage||"")}${x.skill?" · "+esc(x.skill):""}</div>${esc(x.content||"")}</div>`).join(""):'<div class="small">暂无对话。</div>';$("history").scrollTop=$("history").scrollHeight;
+}
+function fillSelect(id,items,empty){const el=$(id),old=el.value;el.innerHTML=`<option value="">${empty}</option>`+items.map(a=>`<option value="${esc(a.asset_id)}">${esc(a.name)} · ${esc(a.asset_type)} · v${esc(a.version)}</option>`).join("");if(items.some(a=>a.asset_id===old))el.value=old}
+function refreshSelects(assets){
+  const active=assets.filter(a=>a.active!==false),target=active.filter(a=>["IMAGE","VIDEO"].includes(String(a.asset_type).toUpperCase())&&!["queued","generating","archived","superseded"].includes(st(a.status)));
+  const text=active.filter(a=>isReady(a)&&["TEXT","STRUCTURED_DATA","FILE"].includes(String(a.asset_type).toUpperCase())&&assetUrl(a));
+  const imgs=active.filter(a=>isReady(a)&&typeOk(a,"IMAGE")&&assetUrl(a)),media=active.filter(a=>isReady(a)&&["IMAGE","VIDEO","AUDIO"].includes(String(a.asset_type).toUpperCase())&&assetUrl(a));
+  fillSelect("targetAsset",target,"选择目标资产");fillSelect("promptAsset",text,"不使用");fillSelect("firstFrame",imgs,"不选择");fillSelect("lastFrame",imgs,"不选择");fillSelect("referenceImage",imgs,"不选择");fillSelect("faceSource",media,"不选择");fillSelect("faceTarget",media,"不选择");
+}
+function renderCandidates(xs){
+  const live=xs.filter(c=>!["rejected"].includes(c.status));$("candidates").innerHTML=live.length?live.map(c=>{const files=c.output_files||[],u=files[0]||"",stat=c.status||"unknown";
+    return `<div class="candidate ${esc(stat)}"><div class="name">${esc(c.capability)} · ${esc(c.mode||c.processor||"")}</div><div><span class="pill ${stat==="completed"?"ok":stat==="failed"?"bad":"warn"}">${esc(stat)}</span>${c.confirmed_asset_id?'<span class="pill ok">已采用</span>':""}</div><div class="meta">candidate ${esc(c.candidate_id)}<br>task ${esc(c.task_id)}<br>target ${esc(c.target_asset_id)}</div>${previewByUrl(u,c.output_asset_type||"")}${c.error?`<div class="error small">${esc(c.error)}</div>`:""}<div class="row">${stat==="completed"&&!c.confirmed_asset_id?`<button class="btn good" onclick="confirmCandidate('${esc(c.candidate_id)}')">确认采用</button><button class="btn danger" onclick="rejectCandidate('${esc(c.candidate_id)}')">丢弃</button>`:""}${["queued","switching_gpu","running"].includes(stat)?`<button class="btn" onclick="syncCandidate('${esc(c.candidate_id)}')">同步状态</button>`:""}</div></div>`
+  }).join(""):'<div class="small">暂无候选。</div>';
+}
+function updateCapabilityUI(){
+  const cap=$("capability").value;document.querySelectorAll(".video-field").forEach(x=>x.style.display=cap==="video"?"flex":"none");document.querySelectorAll(".face-field").forEach(x=>x.style.display=cap==="facefusion"?"flex":"none");
+  $("steps").disabled=(cap==="video"&&$("videoProfile").value==="turbo");if($("steps").disabled)$("steps").value=4;
+}
+function updateVideoModeUI(){
+  const m=$("videoMode").value;$("firstFrame").disabled=m!=="fl2va";$("lastFrame").disabled=m!=="fl2va";$("referenceImage").disabled=m!=="ref2va";
+}
+async function loadSnapshot(){
+  current=$("projectSelect").value||current;if(!current)return;
+  snap=await api(`/api/director/workbench/projects/${current}/snapshot?sync_candidates=true`);
+  const p=snap.project,rt=snap.skill_runtime||{};renderStages(p);
+  $("skillHeadline").innerHTML=`<b>Stage ${esc(rt.current_stage||p.current_stage)} · ${esc(rt.skill||STAGE_SKILLS[p.current_stage]||"")}</b><br><span class="small">Contract SHA ${esc(rt.skill_contract?.source_sha256||"未初始化")}</span>`;
+  $("runtimeCompletion").innerHTML=completionHtml(rt);const state=p.stage_state?.[p.current_stage]||{};
+  $("nativeStep").innerHTML=`当前步骤：<b>${esc(state.internal_step||"Skill-driven / 未初始化")}</b><br>下一动作：${esc(state.next_expected_action||"执行当前 Skill 获取下一动作")}<br>Stage Ready：${state.stage_ready?"YES":"NO"}`;
+  $("contractRaw").textContent=JSON.stringify(rt.skill_contract||{},null,2);renderContract(rt,snap.assets);renderHistory(p);renderAssets(snap.assets);renderEntities(snap.entities);renderStructure(snap.entities,snap.relations);refreshSelects(snap.assets);faceCaps=snap.facefusion_capabilities||{};renderFaceProcessors();renderCandidates(snap.candidates||[]);updateCapabilityUI();updateVideoModeUI();
+}
+function renderFaceProcessors(){const keys=Object.keys(faceCaps).filter(k=>faceCaps[k]&&typeof faceCaps[k]==="object"&&faceCaps[k].available!==false);const old=$("faceProcessor").value;$("faceProcessor").innerHTML=keys.map(k=>`<option value="${esc(k)}">${esc(k)}</option>`).join("");if(keys.includes(old))$("faceProcessor").value=old}
+async function send(text){if(!current)return toast("先选择项目",true);text=(text||"").trim();if(!text)return toast("请输入消息",true);$("sendMessage").disabled=true;try{const r=await jpost(`/api/director/projects/${current}/message`,{text});$("lastResult").style.display="block";$("lastResult").innerHTML=`<b>Stage ${esc(r.stage)} · ${esc(r.skill)}</b><div style="white-space:pre-wrap;margin-top:7px">${esc(r.content||"")}</div>`;$("directorMessage").value="";await loadProjects();$("projectSelect").value=current;await loadSnapshot()}catch(e){toast(e.message,true)}finally{$("sendMessage").disabled=false}}
+async function confirmStage(){if(!current)return;try{await api(`/api/director/workbench/projects/${current}/finalize-and-confirm-stage`,{method:"POST"});toast("Stage 已按当前 Skill 收口并确认");await loadProjects();$("projectSelect").value=current;await loadSnapshot()}catch(e){toast(e.message,true)}}
+async function addEntity(){if(!current)return toast("先选择项目",true);const name=$("entityName").value.trim();if(!name)return toast("请输入实体名称",true);try{await jpost(`/api/director/workbench/projects/${current}/structure`,{entity_type:$("entityType").value,name,parent_entity_id:$("entityParent").value,metadata:{}});$("entityName").value="";toast("实体已创建");await loadSnapshot()}catch(e){toast(e.message,true)}}
+function pickTarget(id){$("targetAsset").value=id;const a=getAsset(id);if(a){$("capability").value=String(a.asset_type).toUpperCase()==="VIDEO"?"video":"image"}updateCapabilityUI();$("targetAsset").scrollIntoView({behavior:"smooth",block:"center"})}
+async function executeAsset(){
+  if(!current)return toast("先选择项目",true);const target=$("targetAsset").value;if(!target)return toast("请选择目标项目资产",true);
+  const cap=$("capability").value,prompt=$("promptOverride").value.trim();const payload={target_asset_id:target,capability:cap,prompt_asset_id:$("promptAsset").value,params:{}};
+  if(cap==="image"){payload.mode="txt2img";payload.params={positive_prompt:prompt,model_key:"smart",aspect_ratio:"16:9",style_name:"portrait_photo",style_strength:"standard",steps:Number($("steps").value||32),cfg:6.5,seed:-1,sampler:"dpmpp_2m",scheduler:"karras",count:1}}
+  else if(cap==="video"){const mode=$("videoMode").value;payload.mode=mode;payload.params={mode,prompt,width:768,height:448,length:124,steps:$("videoProfile").value==="turbo"?4:Number($("steps").value||20),seed:-1,ref_image_size:"match",video_profile:$("videoProfile").value};if(mode==="fl2va"){payload.first_frame_asset_id=$("firstFrame").value;payload.last_frame_asset_id=$("lastFrame").value}else if(mode==="ref2va"){payload.reference_image_asset_id=$("referenceImage").value}}
+  else{payload.processor=$("faceProcessor").value;payload.target_input_asset_id=$("faceTarget").value;payload.source_input_asset_id=$("faceSource").value;payload.authorized_adult=true;payload.params={}}
+  try{const r=await jpost(`/api/director/workbench/projects/${current}/execute-candidate`,payload);toast(`候选任务已提交 ${r.candidate.task_id}`);await loadSnapshot()}catch(e){toast(e.message,true)}
+}
+async function syncCandidate(id){try{await api(`/api/director/workbench/projects/${current}/candidates/${id}/sync`,{method:"POST"});await loadSnapshot()}catch(e){toast(e.message,true)}}
+async function confirmCandidate(id){try{const r=await jpost(`/api/director/workbench/projects/${current}/candidates/${id}/confirm`,{output_index:0});toast("候选已确认进入正式项目资产");await loadSnapshot()}catch(e){toast(e.message,true)}}
+async function rejectCandidate(id){try{await jpost(`/api/director/workbench/projects/${current}/candidates/${id}/reject`,{});toast("候选已丢弃");await loadSnapshot()}catch(e){toast(e.message,true)}}
+
+$("refresh").onclick=async()=>{await loadProjects();if(current){$("projectSelect").value=current;await loadSnapshot()}};
+$("createProject").onclick=createProject;$("openProject").onclick=()=>{current=$("projectSelect").value;loadSnapshot()};$("projectSelect").onchange=()=>{current=$("projectSelect").value;if(current)loadSnapshot()};
+$("addEntity").onclick=addEntity;$("sendMessage").onclick=()=>send($("directorMessage").value);$("continueSkill").onclick=()=>send("继续执行当前阶段。严格按当前生产 Skill 原流程继续，基于已有确认文本与项目资产完成当前应交付产物。");$("selfCheck").onclick=()=>send("按当前生产 Skill 原规则对当前阶段已有产出执行自检；只修正 Skill 明确要求修正的问题，不添加额外平台规则。");$("confirmStage").onclick=confirmStage;
+$("capability").onchange=updateCapabilityUI;$("videoMode").onchange=updateVideoModeUI;$("videoProfile").onchange=()=>{updateCapabilityUI()};$("executeAsset").onclick=executeAsset;
+(async()=>{try{await loadProjects();if(projects.length){current=projects[0].project_id;$("projectSelect").value=current;await loadSnapshot()}else{updateCapabilityUI();updateVideoModeUI()}}catch(e){toast(e.message,true)}})();
+</script>
+</body>
+</html>

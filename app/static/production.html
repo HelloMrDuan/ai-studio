@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>AI Studio · 项目生产资产</title>
+<style>
+:root{font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif;color:#e5e7eb;background:#0b1020}*{box-sizing:border-box}body{margin:0;background:#0b1020}.top{position:sticky;top:0;z-index:2;padding:18px 24px;border-bottom:1px solid #25304d;background:#0b1020ee;display:flex;gap:16px;align-items:center;justify-content:space-between}.top h1{font-size:20px;margin:0}.top a{color:#9cc3ff;text-decoration:none}.controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap}select,input,button{border:1px solid #33415f;background:#111a30;color:#e5e7eb;border-radius:8px;padding:9px 11px}button{cursor:pointer}button.primary{background:#2457d6;border-color:#2457d6}.wrap{padding:20px 24px;max-width:1600px;margin:auto}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.card,.panel{background:#11182b;border:1px solid #25304d;border-radius:12px;padding:16px}.card b{display:block;font-size:24px;margin-top:6px}.muted{color:#93a2bd;font-size:13px}.panel{margin-top:14px}.panel h2{font-size:16px;margin:0 0 12px}.stage-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.stage{padding:12px;border:1px solid #2a3653;border-radius:10px}.stage.ready{border-color:#1f8d5b}.stage.current{box-shadow:0 0 0 2px #2457d6 inset}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:9px;border-bottom:1px solid #25304d;vertical-align:top}th{color:#9dadc7}.status{padding:3px 8px;border-radius:999px;background:#26314a;white-space:nowrap}.status.ready{background:#143f32;color:#9ce1bd}.status.failed{background:#4f1f2a;color:#ffb1bd}.status.generating,.status.queued{background:#4c3c16;color:#ffd77d}.status.superseded,.status.archived{opacity:.65}.status.planned{background:#26314a}.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}.toolbar input,.toolbar select{min-width:130px}.json{white-space:pre-wrap;word-break:break-word;background:#0a1020;border:1px solid #25304d;padding:12px;border-radius:8px;max-height:340px;overflow:auto;font:12px/1.5 Consolas,monospace}.tabs{display:flex;gap:8px;margin-bottom:10px}.tab{background:#18223a}.tab.active{background:#2457d6}.hidden{display:none}.link{color:#85b4ff}.alert{padding:10px 12px;border-radius:8px;background:#3a2e12;color:#ffd77d;margin-bottom:10px}.ok{background:#103d2c;color:#9ce1bd}.danger{background:#4b1c27;color:#ffb4c0}.actions{display:flex;gap:6px;flex-wrap:wrap}.small{font-size:12px;padding:5px 7px}.split{display:grid;grid-template-columns:1.1fr .9fr;gap:14px}@media(max-width:1000px){.grid,.stage-row{grid-template-columns:1fr 1fr}.split{grid-template-columns:1fr}}@media(max-width:600px){.grid,.stage-row{grid-template-columns:1fr}.top{align-items:flex-start;flex-direction:column}.wrap{padding:14px}}
+</style>
+</head>
+<body>
+<div class="top">
+  <div><h1>项目生产资产</h1><div class="muted">Skill Contract → Production Asset Graph → 现有图片 / 视频 / FaceFusion 任务</div></div>
+  <div class="controls"><a href="/">← AI Studio</a><select id="project"></select><button id="refresh" class="primary">刷新</button></div>
+</div>
+<div class="wrap">
+  <div id="message"></div>
+  <datalist id="assetOptions"></datalist>
+  <div class="grid">
+    <div class="card"><span class="muted">当前阶段</span><b id="currentStage">-</b></div>
+    <div class="card"><span class="muted">活动资产</span><b id="assetCount">0</b></div>
+    <div class="card"><span class="muted">实体</span><b id="entityCount">0</b></div>
+    <div class="card"><span class="muted">完成门</span><b id="completion">-</b></div>
+  </div>
+  <div class="panel"><h2>生产阶段</h2><div id="stages" class="stage-row"></div></div>
+  <div class="split">
+    <div class="panel">
+      <h2>项目资产</h2>
+      <div class="toolbar">
+        <select id="stageFilter"><option value="">全部阶段</option><option>01</option><option>02</option><option>03</option><option>04</option></select>
+        <select id="typeFilter"><option value="">全部类型</option><option>TEXT</option><option>STRUCTURED_DATA</option><option>IMAGE</option><option>VIDEO</option><option>AUDIO</option><option>FILE</option><option>ENTITY</option><option>COLLECTION</option></select>
+        <button id="applyFilter">筛选</button>
+      </div>
+      <div style="overflow:auto"><table><thead><tr><th>资产</th><th>阶段/角色</th><th>版本</th><th>状态</th><th>来源</th><th>操作</th></tr></thead><tbody id="assets"></tbody></table></div>
+    </div>
+    <div class="panel">
+      <h2>当前 Skill Runtime</h2>
+      <div id="runtimeAlert"></div>
+      <div class="json" id="runtime">选择项目后加载</div>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>生产实体</h2>
+    <div style="overflow:auto"><table><thead><tr><th>类型</th><th>名称</th><th>阶段</th><th>关联资产</th><th>ID</th></tr></thead><tbody id="entities"></tbody></table></div>
+  </div>
+  <div class="panel">
+    <h2>接入现有平台任务 / 素材</h2>
+    <div class="toolbar">
+      <input id="bindAsset" placeholder="production asset_id" />
+      <input id="bindTask" placeholder="现有 task_id" />
+      <button id="bindTaskBtn" class="primary">绑定任务</button>
+      <span class="muted">图片、H3、FaceFusion 仍走现有任务系统；这里只建立项目关系，不复制媒体文件。</span>
+    </div>
+    <div class="toolbar">
+      <input id="fileUrl" placeholder="/files/..." style="min-width:260px" />
+      <input id="fileRole" placeholder="asset_role" />
+      <input id="fileName" placeholder="资产名称" />
+      <select id="fileType"><option>IMAGE</option><option>VIDEO</option><option>AUDIO</option><option>FILE</option></select>
+      <button id="registerFile">登记现有素材</button>
+    </div>
+  </div>
+  <div class="panel">
+    <h2>项目资产生产</h2><p class="muted">V2.25 起生成结果先进入候选区，不再自动绑定。<a class="link" href="/single">打开单次生产工作台</a></p>
+    <div class="toolbar">
+      <input id="execAsset" list="assetOptions" placeholder="目标 production asset_id" style="min-width:240px" />
+      <select id="execCapability"><option value="image">图片生成 · ComfyUI</option><option value="video">视频生成 · H3</option><option value="facefusion">人物与画面处理 · FaceFusion</option></select>
+      <input id="execPromptAsset" list="assetOptions" placeholder="Prompt asset_id（图片/视频可用）" style="min-width:220px" />
+      <button id="executeBtn" class="primary" disabled title="自动绑定已禁用，请使用单次生产工作台">自动绑定已禁用</button>
+    </div>
+    <div class="toolbar">
+      <input id="execInput1" list="assetOptions" placeholder="首帧 / 目标 asset_id" style="min-width:220px" />
+      <input id="execInput2" list="assetOptions" placeholder="尾帧 / 来源 asset_id" style="min-width:220px" />
+      <input id="execProcessor" placeholder="FaceFusion processor（可选）" style="min-width:220px" />
+      <label class="muted"><input id="execAuthorized" type="checkbox" /> 已满足人物身份素材授权要求</label>
+    </div>
+    <textarea id="execParams" rows="6" style="width:100%;box-sizing:border-box;background:#0a1020;color:#e7ecf7;border:1px solid #25304d;border-radius:8px;padding:10px" placeholder='参数 JSON，例如图片：{"model_key":"smart","aspect_ratio":"16:9"}；视频：{"mode":"fl2va","width":768,"height":448,"length":124,"steps":20}'>{}</textarea>
+    <div class="muted" style="margin-top:8px">这里只桥接项目资产与现有平台 API。图片、H3、FaceFusion 的模型、GPU、任务、输出文件仍由原系统处理；Production Runtime 只记录依赖、版本和 task/output 引用。</div>
+  </div>
+  <div class="panel">
+    <h2>声明待生产资产</h2>
+    <div class="toolbar">
+      <select id="declareStage"><option>01</option><option>02</option><option>03</option><option>04</option></select>
+      <select id="declareType"><option>IMAGE</option><option>VIDEO</option><option>TEXT</option><option>STRUCTURED_DATA</option><option>FILE</option><option>COLLECTION</option></select>
+      <input id="declareRole" placeholder="asset_role" />
+      <input id="declareKey" placeholder="logical_key" />
+      <input id="declareName" placeholder="资产名称" />
+      <input id="declareContract" placeholder="Contract Axxx（可选）" />
+      <button id="declareBtn">声明</button>
+    </div>
+    <div class="muted">用于真实媒体任务前先占位。绑定完成后的现有 task 后，系统会自动把 queued/running/completed/failed 映射为项目资产状态。</div>
+  </div>
+</div>
+<script>
+const $=id=>document.getElementById(id); let current=null, allAssets=[];
+async function api(url,opt={}){const r=await fetch(url,opt); if(!r.ok){let t=await r.text();throw new Error(`${r.status} ${t}`)} return r.json()}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function msg(text,ok=false){$('message').innerHTML=text?`<div class="alert ${ok?'ok':'danger'}">${esc(text)}</div>`:''}
+async function loadProjects(){const ps=await api('/api/director/projects'); $('project').innerHTML=ps.map(p=>`<option value="${p.project_id}">${esc(p.title||p.project_id)} · ${p.current_stage}</option>`).join(''); if(!current&&ps[0])current=ps[0].project_id; if(current)$('project').value=current}
+async function load(){current=$('project').value||current;if(!current)return;msg(''); const [p,r]=await Promise.all([api(`/api/director/projects/${current}/production?sync_tasks=true`),api(`/api/director/projects/${current}/skill-runtime`)]); const g=p.production||{}; allAssets=Object.values(g.assets||{}); $('assetOptions').innerHTML=allAssets.filter(x=>x.active).map(x=>`<option value="${esc(x.asset_id)}">${esc(x.name)} · ${esc(x.asset_type)} · Stage ${esc(x.stage)}</option>`).join(''); const ents=Object.values(g.entities||{}); $('currentStage').textContent=p.current_stage||'-'; $('assetCount').textContent=allAssets.filter(x=>x.active).length; $('entityCount').textContent=ents.length; const comp=(r.skill_runtime||{}).completion||{}; $('completion').textContent=comp.ready?'READY':'WAIT'; $('runtimeAlert').innerHTML=`<div class="alert ${comp.ready?'ok':''}">${esc(comp.reason||'未初始化')}${(comp.missing_artifact_ids||[]).length?` · 缺少产物 ${(comp.missing_artifact_ids||[]).join(', ')}`:''}</div>`; $('runtime').textContent=JSON.stringify({skill:r.skill,skill_contract:r.skill_contract,skill_runtime:r.skill_runtime},null,2); $('stages').innerHTML=['01','02','03','04'].map(st=>{const x=(p.stage_status||{})[st]||{};return `<div class="stage ${st===p.current_stage?'current':''} ${x.ready_asset_count?'ready':''}"><b>Stage ${st}</b><div class="muted">活动 ${x.active_asset_count||0} · READY ${x.ready_asset_count||0} · stale ${x.stale_asset_count||0}</div></div>`}).join(''); renderAssets(); $('entities').innerHTML=ents.map(e=>`<tr><td>${esc(e.entity_type)}</td><td>${esc(e.name)}</td><td>${esc(e.stage)}</td><td>${(e.asset_ids||[]).length}</td><td><code>${esc(e.entity_id)}</code></td></tr>`).join('')||'<tr><td colspan="5" class="muted">暂无实体</td></tr>'}
+function renderAssets(){const sf=$('stageFilter').value,tf=$('typeFilter').value; const xs=allAssets.filter(x=>(!sf||x.stage===sf)&&(!tf||x.asset_type===tf)).sort((a,b)=>String(a.stage).localeCompare(String(b.stage))||String(a.logical_key).localeCompare(String(b.logical_key))||Number(b.version)-Number(a.version)); $('assets').innerHTML=xs.map(a=>{const u=(a.storage||{}).url;const src=a.source||{};return `<tr><td><b>${esc(a.name)}</b><div class="muted"><code>${esc(a.asset_id)}</code><br>${esc(a.asset_type)} · ${esc(a.logical_key)}</div></td><td>${esc(a.stage)} / ${esc(a.asset_role)}</td><td>v${a.version}${a.active?' · active':''}</td><td><span class="status ${esc(a.status)}">${esc(a.status)}</span>${a.dependency_state==='stale'?'<div class="muted">上游版本已变化</div>':''}</td><td>${esc(src.module||src.type||'')}${src.task_id?`<br><code>${esc(src.task_id)}</code>`:''}${u?`<br><a class="link" target="_blank" href="${esc(u)}">打开文件</a>`:''}</td><td><div class="actions"><button class="small" onclick="copyId('${a.asset_id}')">复制ID</button>${!a.active?`<button class="small" onclick="activate('${a.asset_id}')">设为活动版</button>`:''}${['image','video','facefusion'].includes(String(src.producer_capability||''))?`<button class="small" onclick="prepareExecute('${a.asset_id}','${esc(src.producer_capability)}')">执行</button>`:''}<button class="small" onclick="impact('${a.asset_id}')">影响</button></div></td></tr>`}).join('')||'<tr><td colspan="6" class="muted">暂无资产</td></tr>'}
+window.prepareExecute=(id,capability)=>{$('execAsset').value=id;$('execCapability').value=capability||'image';$('execAsset').scrollIntoView({behavior:'smooth',block:'center'});msg('已选择待生产资产，可选择 Prompt / 输入资产后执行',true)};
+window.copyId=async id=>{await navigator.clipboard.writeText(id);msg('已复制 '+id,true)}
+window.activate=async id=>{await api(`/api/director/projects/${current}/production/assets/${id}/activate`,{method:'POST'});await load()}
+window.impact=async id=>{const d=await api(`/api/director/projects/${current}/production/assets/${id}/impact`);alert(JSON.stringify(d,null,2))}
+$('project').onchange=()=>{current=$('project').value;load()}; $('refresh').onclick=load; $('applyFilter').onclick=renderAssets;
+$('bindTaskBtn').onclick=async()=>{try{await api(`/api/director/projects/${current}/production/assets/${encodeURIComponent($('bindAsset').value.trim())}/bind-task/${encodeURIComponent($('bindTask').value.trim())}`,{method:'POST'});msg('任务已绑定',true);await load()}catch(e){msg(e.message)}};
+$('registerFile').onclick=async()=>{try{await api(`/api/director/projects/${current}/production/assets/register-file`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stage:$('currentStage').textContent,skill:'',logical_key:`file:${Date.now()}`,asset_type:$('fileType').value,asset_role:$('fileRole').value||'project_media',name:$('fileName').value||'项目素材',url:$('fileUrl').value})});msg('现有素材已登记',true);await load()}catch(e){msg(e.message)}};
+$('executeBtn').onclick=async()=>{try{
+  const assetId=$('execAsset').value.trim(); if(!assetId)throw new Error('请填写目标 production asset_id');
+  let params={}; const raw=$('execParams').value.trim(); if(raw){params=JSON.parse(raw); if(!params||Array.isArray(params)||typeof params!=='object')throw new Error('参数 JSON 必须是对象')}
+  const capability=$('execCapability').value;
+  const body={capability,params,prompt_asset_id:$('execPromptAsset').value.trim(),authorized_adult:$('execAuthorized').checked};
+  const a=$('execInput1').value.trim(),b=$('execInput2').value.trim();
+  if(capability==='video'){body.first_frame_asset_id=a;body.last_frame_asset_id=b; if(params.mode==='ref2va'){body.reference_image_asset_id=a;delete body.first_frame_asset_id}}
+  if(capability==='facefusion'){body.target_input_asset_id=a;body.source_input_asset_id=b;body.processor=$('execProcessor').value.trim()}
+  const d=await api(`/api/director/projects/${current}/production/assets/${encodeURIComponent(assetId)}/execute`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  msg(`已提交现有 ${capability} 任务：${d.task?.task_id||''}`,true); await load();
+}catch(e){msg(e.message)}};
+$('declareBtn').onclick=async()=>{try{await api(`/api/director/projects/${current}/production/assets/declare`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({stage:$('declareStage').value,skill:'',logical_key:$('declareKey').value||`planned:${Date.now()}`,asset_type:$('declareType').value,asset_role:$('declareRole').value||'project_asset',name:$('declareName').value||'待生产资产',contract_artifact_id:$('declareContract').value})});msg('待生产资产已声明',true);await load()}catch(e){msg(e.message)}};
+(async()=>{try{await loadProjects();await load();setInterval(()=>{if(current)load().catch(()=>{})},10000)}catch(e){msg(e.message)}})();
+</script>
+</body></html>

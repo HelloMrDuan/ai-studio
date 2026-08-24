@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0",
+  "source": {
+    "repo": "https://github.com/zhangxiansheng-888/chuanzhangAIshijie.git",
+    "commit": "c8a0f883b2c53fc8cf6ef6d7001b5bdb2844514f",
+    "root": "/root/autodl-tmp/ai-studio/skills/chuanzhangAIshijie",
+    "license": "MIT"
+  },
+  "workflow_skill": "chuanzhang-ai-shijie-workflow",
+  "stage_order": [
+    {
+      "stage": "01",
+      "skill": "chuanzhang-chuangzuo-v1"
+    },
+    {
+      "stage": "02",
+      "skill": "ai-studio-character-design"
+    },
+    {
+      "stage": "03",
+      "skill": "ai-studio-visual-design"
+    },
+    {
+      "stage": "04",
+      "skill": "chuanzhang-fenjing-biaoqing"
+    }
+  ],
+  "local_stage_overrides": {
+    "02": {
+      "skill": "ai-studio-character-design",
+      "reason": "Stage02 is general character design; portrait-only skill remains available outside the short-video stage pipeline",
+      "version": "2.35.3-character-design-stage"
+    },
+    "03": {
+      "skill": "ai-studio-visual-design",
+      "reason": "Stage03 is a bounded full visual-design package; generic image-prompt skill remains available outside the short-video stage workflow",
+      "version": "2.35.5-stage03-visual-closure"
+    }
+  }
+}

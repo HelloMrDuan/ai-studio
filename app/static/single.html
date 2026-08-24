@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>制作工具</title>
+<style>
+:root{color-scheme:dark;--bg:#070b14;--panel:#0d1422;--panel2:#111b2d;--line:#26334d;--text:#edf3ff;--muted:#91a0ba;--accent:#ff6b2c;--ok:#22c55e;--bad:#ef4444;--warn:#f59e0b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif}a{color:#8dc4ff}.wrap{max-width:1500px;margin:0 auto;padding:22px}.top{display:flex;gap:16px;align-items:center;justify-content:space-between;margin-bottom:18px}.title h1{margin:0;font-size:26px}.title p{margin:7px 0 0;color:var(--muted)}.links{display:flex;gap:9px;flex-wrap:wrap}.btn,.tab,select,input,textarea{font:inherit}.btn,.tab{border:1px solid var(--line);background:#151f33;color:var(--text);border-radius:9px;padding:9px 13px;cursor:pointer;text-decoration:none}.btn:hover,.tab:hover{border-color:#50617f}.btn.primary{background:var(--accent);border-color:var(--accent);color:white}.btn.good{background:#123923;border-color:#236a3c}.btn.danger{background:#38151a;border-color:#74303a}.btn:disabled{opacity:.48;cursor:not-allowed}.summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:16px}.card,.panel{background:var(--panel);border:1px solid var(--line);border-radius:13px}.card{padding:14px}.card small{display:block;color:var(--muted);margin-bottom:7px}.card b{font-size:19px}.panel{padding:16px;margin-bottom:16px}.tabs{display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap}.tab.active{background:#21304c;border-color:#617598}.pane{display:none}.pane.active{display:block}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.grid.two{grid-template-columns:repeat(2,minmax(0,1fr))}.field{display:flex;flex-direction:column;gap:6px}.field label{font-size:13px;color:#bcc8db}.field input,.field select,.field textarea,textarea,input,select{width:100%;background:#09111e;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px}.field textarea{min-height:100px;resize:vertical}.span2{grid-column:span 2}.span4{grid-column:1/-1}.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px}.hint{font-size:12px;color:var(--muted);line-height:1.6}.notice{padding:10px 12px;border-radius:9px;background:#101b2d;border:1px solid #2b3b5a;color:#b9c8df;margin:10px 0}.notice strong{color:#fff}.candidate-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.candidate{background:var(--panel2);border:1px solid var(--line);border-radius:12px;overflow:hidden}.preview{height:250px;background:#050912;display:flex;align-items:center;justify-content:center;overflow:hidden}.preview img,.preview video{width:100%;height:100%;object-fit:contain}.preview audio{width:90%}.empty-preview{color:var(--muted);padding:20px;text-align:center}.meta{padding:12px}.meta h3{margin:0 0 8px;font-size:16px}.kv{font-size:12px;color:var(--muted);line-height:1.7;word-break:break-all}.status{display:inline-block;padding:3px 8px;border-radius:999px;background:#26344d;color:#d6e0f0;font-size:12px}.status.completed{background:#173b28;color:#84e4a9}.status.failed{background:#431f25;color:#ff9da9}.status.running,.status.switching_gpu,.status.queued{background:#463615;color:#ffd27b}.actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:10px}.actions .btn{padding:7px 9px;font-size:12px}.promotion{margin-top:10px;padding-top:10px;border-top:1px dashed #34415a}.promotion summary{cursor:pointer;color:#bad0ef}.promote-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:9px}.promote-grid input,.promote-grid select{padding:7px;font-size:12px}.toast{position:fixed;right:20px;bottom:20px;max-width:520px;background:#18243a;border:1px solid #405170;padding:12px 14px;border-radius:10px;display:none;z-index:20}.toast.bad{border-color:#8f3e4b;background:#38171c}.hidden{display:none!important}@media(max-width:1000px){.summary,.grid,.candidate-grid{grid-template-columns:1fr 1fr}.span4{grid-column:1/-1}}@media(max-width:650px){.summary,.grid,.grid.two,.candidate-grid{grid-template-columns:1fr}.span2,.span4{grid-column:auto}.wrap{padding:12px}}
+.mask-wrap{position:relative;display:inline-block;max-width:100%;background:#050912;border:1px solid var(--line);border-radius:10px;overflow:hidden}.mask-wrap canvas{display:block;max-width:100%;height:auto}.mask-wrap #maskOverlay{position:absolute;inset:0;touch-action:none;cursor:crosshair}.mask-toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0}.cap-bad{color:#ff9da9}.cap-ok{color:#84e4a9}
+.text-history{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.text-turn{border:1px solid var(--line);border-radius:10px;padding:11px 12px;white-space:pre-wrap;line-height:1.65;word-break:break-word}
+.text-turn.user{background:#101a2b}.text-turn.assistant{background:#0b1321;border-color:#365174}
+.text-turn .who{font-size:11px;color:var(--muted);margin-bottom:5px}
+.embedded .top,.embedded .summary{display:none!important}.embedded .wrap{max-width:none;padding:0}.embedded{background:transparent}.embedded .panel{margin-top:0;border-radius:10px}.embedded .links{display:none!important}
+
+/* V2.35 standalone menu mode */
+body.singleTabOnly .tabs{display:none!important}
+body.singleTabOnly .top{display:none!important}
+body.singleTabOnly .panel{margin-top:0}
+body.singleTabOnly .wrap{max-width:none;padding-top:0}
+
+</style>
+</head>
+<body><script>if(new URLSearchParams(location.search).get("embed")==="1")document.body.classList.add("embedded")</script>
+<div class="wrap">
+  <div class="top">
+    <div class="title"><h1>制作工具</h1><p>文本、图片、MiniMax H3 视频、FaceFusion。</p></div>
+    <div class="links"><button class="btn hidden" id="refreshAll">刷新</button></div>
+  </div>
+  <div class="summary hidden">
+    <div class="card"><small>系统工作区</small><b id="workspaceTitle">读取中</b><div class="hint" id="workspaceId"></div></div>
+    <div class="card"><small>候选结果</small><b id="candidateCount">0</b><div class="hint">只有手动确认才持久化</div></div>
+    <div class="card"><small>正式项目资产</small><b id="formalCount">0</b><div class="hint">“单次生成”项目当前正式资产数</div></div>
+    <div class="card"><small>持久化策略</small><b>手动确认</b><div class="hint">Task Output → 候选 → 你决定是否保存</div></div>
+  </div>
+
+  <div class="panel hidden">
+    <div class="grid" id="capabilitySummary">
+      <div class="notice"><strong>图片能力</strong><div class="hint" id="imageCapsSummary">读取中</div></div>
+      <div class="notice"><strong>H3 视频</strong><div class="hint" id="videoCapsSummary">读取中</div></div>
+      <div class="notice"><strong>FaceFusion</strong><div class="hint" id="faceCapsSummary">读取中</div></div>
+      <div class="notice"><strong>规则</strong><div class="hint">底层使用标准工作流；AI 超分是可选后处理。候选输出可继续作为后续输入，但不会自动入素材库或项目。</div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div id="continuityToolContext" class="notice hidden" style="margin-bottom:12px"></div><div class="tabs"><button class="tab active" data-tab="text">文本</button><button class="tab" data-tab="image">图片</button><button class="tab" data-tab="video">视频</button><button class="tab" data-tab="face">FaceFusion</button></div>
+    
+    <section class="pane active" id="pane-text">
+      <div class="grid">
+        <div class="field"><label>文本模型</label><select id="textModel"><option value="">读取模型中</option></select></div>
+        <div class="field"><label>Temperature</label><input id="textTemperature" type="number" min="0" max="2" step="0.1" value="0.7"></div>
+        <div class="field"><label>最大输出 Tokens</label><input id="textMaxTokens" type="number" min="64" max="8192" step="64" value="2048"></div>
+        <div class="field span2"><label>系统指令（可选）</label><textarea id="textSystemPrompt" placeholder="留空则按普通文本生成"></textarea></div>
+        <div class="field span2"><label>输入内容</label><textarea id="textInput" placeholder="输入要生成、改写、续写、总结或分析的内容"></textarea></div>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn primary" id="generateTextButton">生成文本</button>
+        <button class="btn secondary" id="clearTextButton">清空对话</button>
+        <button class="btn secondary" id="copyTextButton">复制最后结果</button>
+        <span class="hint" id="textModelHint">读取 LLM 状态 · 长文本自动分层压缩</span>
+      </div>
+      <div class="text-history" id="textHistory"><div class="empty-preview">暂无文本结果</div></div>
+    </section>
+
+    <section class="pane" id="pane-image">
+      <div class="grid">
+        <div class="field"><label>图片模式</label><select id="imageMode"><option value="txt2img">文生图</option><option value="img2img">整体图生图</option><option value="inpaint">局部重绘</option><option value="reference">参考图生成</option></select></div>
+        <div class="field"><label>模型</label><input id="imageModel" value="z_image_turbo" list="imageModelOptions" /><datalist id="imageModelOptions"></datalist></div>
+        <div class="field"><label>画面比例</label><select id="imageAspect"><option value="16:9">16:9</option></select></div>
+        <div class="field"><label>风格</label><select id="imageStyle"><option value="portrait_photo">portrait_photo</option></select></div>
+        <div class="field span2"><label>正向提示词</label><textarea id="imagePositive" placeholder="描述希望得到的画面或需要修改的内容"></textarea></div>
+        <div class="field span2"><label>反向提示词</label><textarea id="imageNegative" placeholder="可选"></textarea></div>
+        <div class="field image-input hidden"><label>本地输入/参考图</label><input id="imageInput" type="file" accept="image/*" /></div>
+        <div class="field image-input hidden"><label>或从候选 / 素材库选择</label><select id="imageAssetUrl"><option value="">不选择</option></select></div>
+        <div class="field denoise-field hidden"><label>整体变化强度</label><select id="imageEditPreset"><option value="0.35">轻微 · 0.35</option><option value="0.55">中等 · 0.55</option><option value="0.72" selected>强 · 0.72</option><option value="0.90">大改 · 0.90</option></select></div>
+        <div class="field denoise-field hidden"><label>精确 denoise</label><input id="imageDenoise" type="number" min="0.05" max="1" step="0.05" value="0.72" /></div>
+        <div class="field reference-field hidden"><label>参考图影响权重</label><input id="imageRefWeight" type="number" min="0.05" max="2" step="0.05" value="0.80" /></div>
+        <div class="field txt2img-advanced"><label>姿态控制（现有 OpenPose）</label><select id="imagePose"><option value="off">关闭</option><option value="light">轻</option><option value="standard">标准</option></select></div>
+        <div class="field txt2img-advanced"><label>人物外貌增强</label><select id="imageAppearance"><option value="off">关闭</option><option value="auto">自动</option></select></div>
+        <div class="field txt2img-advanced"><label>外貌 LoRA 强度</label><input id="imageAppearanceStrength" type="number" value="0.30" min="0" max="1" step="0.05" /></div>
+        <div class="field"><label>风格强度</label><select id="imageStrength"><option value="standard">standard</option></select></div>
+        <div class="field"><label>Steps</label><input id="imageSteps" type="number" value="32" min="1" max="100" /></div>
+        <div class="field"><label>CFG</label><input id="imageCfg" type="number" value="6.5" step="0.5" min="0.1" max="30" /></div>
+        <div class="field"><label>Seed</label><input id="imageSeed" type="number" value="-1" /></div>
+        <div class="field"><label>Sampler</label><input id="imageSampler" value="dpmpp_2m" /></div>
+        <div class="field"><label>Scheduler</label><input id="imageScheduler" value="karras" /></div>
+        <div class="field image-transform-only hidden"><label>AI 超分（可选后处理）</label><label><input id="imageUpscale" type="checkbox" style="width:auto" /> 使用 4x-UltraSharp（仅识别到模型时可开）</label></div>
+      </div>
+      <div id="inpaintBox" class="hidden" style="margin-top:14px">
+        <div class="notice"><strong>局部重绘：</strong>先选择输入图，再直接在图片上涂抹需要重绘的区域。红色覆盖区会生成白色 mask；未涂区域会在生成后重新合成回原图，尽量保持原样。</div>
+        <div class="mask-toolbar"><button class="btn" id="maskPaint" type="button">涂抹重绘区</button><button class="btn" id="maskErase" type="button">橡皮擦</button><label>画笔 <input id="maskBrush" type="range" min="5" max="180" value="60" style="width:180px"></label><button class="btn danger" id="maskClear" type="button">清空遮罩</button><label class="btn">上传外部遮罩<input id="maskFile" type="file" accept="image/*" style="display:none"></label></div>
+        <div id="maskEditorHint" class="hint">选择输入图后显示遮罩编辑器。白色=重绘，黑色=保持。</div>
+        <div id="maskEditor" class="mask-wrap hidden"><canvas id="maskSource"></canvas><canvas id="maskOverlay"></canvas></div>
+        <canvas id="maskData" class="hidden"></canvas>
+      </div>
+      <div class="notice"><strong>规则：</strong>生成完成只成为候选 Task Output，不会自动进素材库或项目资产。整体图生图用于全画面变化；只改衣服/背景等指定区域请用“局部重绘”；“参考图生成”是 IP-Adapter 引导生成，不再冒充像素重绘。</div>
+      <div class="row"><button class="btn primary" id="runImage">生成图片候选</button><span class="hint" id="imageModeHint"></span></div>
+    </section>
+
+    <section class="pane" id="pane-video">
+      <div class="grid">
+        <div class="field"><label>H3 模式</label><select id="videoMode"><option value="t2va">T2VA · 文生视频</option><option value="fl2va" selected>FL2VA · 首尾帧</option><option value="ref2va">REF2VA · 参考图</option></select></div>
+        <div class="field"><label>生成速度</label><select id="videoProfile"><option value="standard" selected>标准 · 原 steps</option><option value="turbo">Turbo LoRA · 4步</option></select></div>
+        <div class="field"><label>宽度</label><input id="videoWidth" type="number" value="768" step="32" /></div>
+        <div class="field"><label>高度</label><input id="videoHeight" type="number" value="448" step="32" /></div>
+        <div class="field"><label>帧数</label><input id="videoLength" type="number" value="124" step="17" /></div>
+        <div class="field span4"><label>视频提示词</label><textarea id="videoPrompt" placeholder="描述人物动作、镜头运动、环境变化等"></textarea></div>
+        <div class="field video-first"><label>本地首帧</label><input id="videoFirst" type="file" accept="image/*" /></div>
+        <div class="field video-first"><label>或候选 / 素材库首帧</label><select id="videoFirstUrl"><option value="">不选择</option></select></div>
+        <div class="field video-last"><label>本地尾帧（可选）</label><input id="videoLast" type="file" accept="image/*" /></div>
+        <div class="field video-last"><label>或候选 / 素材库尾帧</label><select id="videoLastUrl"><option value="">不选择</option></select></div>
+        <div class="field video-ref hidden"><label>本地参考图</label><input id="videoRef" type="file" accept="image/*" /></div>
+        <div class="field video-ref hidden"><label>或候选 / 素材库参考图</label><select id="videoRefUrl"><option value="">不选择</option></select></div>
+        <div class="field"><label>Steps</label><input id="videoSteps" type="number" value="20" /></div>
+        <div class="field"><label>Seed</label><input id="videoSeed" type="number" value="-1" /></div>
+        <div class="field video-ref-only hidden"><label>REF2VA 参考尺寸策略</label><select id="videoRefSize"><option value="match">match · 匹配生成面积</option><option value="max">max · 高保真参考</option></select></div>
+      </div>
+      <div class="row"><button class="btn primary" id="runVideo">生成视频候选</button><span class="hint" id="videoModeHint">T2VA / FL2VA / REF2VA 直接复用现有 H3 后端，不做平台自造降级。</span></div>
+    </section>
+
+    <section class="pane" id="pane-face">
+      <div class="grid">
+        <div class="field"><label>处理器</label><select id="faceProcessor"></select></div>
+        <div class="field"><label>目标候选 / 素材库</label><select id="faceTargetUrl"><option value="">不选择</option></select></div>
+        <div class="field"><label>来源候选 / 素材库</label><select id="faceSourceUrl"><option value="">不选择</option></select></div>
+        <div class="field"><label>授权确认</label><label><input id="faceAuthorized" type="checkbox" style="width:auto" /> 本人 / 虚构 / 已授权成年人</label></div>
+        <div class="field"><label>本地目标</label><input id="faceTarget" type="file" /></div>
+        <div class="field"><label>本地来源</label><input id="faceSource" type="file" /></div>
+        <div class="field span2"><label>当前功能</label><div class="notice" id="faceDescription">读取 FaceFusion 能力...</div></div>
+        <div class="field span4"><label>处理参数</label><div class="grid" id="faceParamsGrid"></div></div>
+      </div>
+      <div class="row"><button class="btn primary" id="runFace">提交 FaceFusion 候选</button><span class="hint" id="faceModeHint">参数来自现有 FaceFusion capability，不在单次工作台另造一套。</span></div>
+    </section>
+  </div>
+
+  <div class="panel">
+    <div class="top" style="margin:0 0 12px"><div><h2 style="margin:0">候选结果</h2><p class="hint">试多少次都可以；只把你满意的结果手动保存。</p></div><button class="btn" id="refreshCandidates">刷新候选</button></div>
+    <div id="candidates" class="candidate-grid"></div>
+  </div>
+</div>
+<div id="toast" class="toast"></div>
+<script>
+const $=id=>document.getElementById(id);let workspace=null,projects=[],library=[],candidateInputs=[],catalog=null,faceCaps={},videoCaps={};
+async function api(url,opt={}){const r=await fetch(url,opt);const text=await r.text();let body;try{body=JSON.parse(text)}catch{body=text}if(!r.ok)throw new Error(body?.detail||body||`${r.status}`);return body}
+function toast(msg,bad=false){const t=$('toast');t.textContent=msg;t.className='toast'+(bad?' bad':'');t.style.display='block';clearTimeout(window.__tt);window.__tt=setTimeout(()=>t.style.display='none',5000)}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function status(v){return String(v?.value??v??'')}
+function media(url){const u=String(url||'');if(/\.(png|jpe?g|webp|gif|bmp)(\?|$)/i.test(u))return `<img src="${esc(u)}" loading="lazy">`;if(/\.(mp4|webm|mov|mkv)(\?|$)/i.test(u))return `<video src="${esc(u)}" controls></video>`;if(/\.(mp3|wav|m4a|flac|aac)(\?|$)/i.test(u))return `<audio src="${esc(u)}" controls></audio>`;return `<div class="empty-preview">${u?`<a href="${esc(u)}" target="_blank">打开结果文件</a>`:'等待生成结果'}</div>`}
+function setTab(name){document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.tab===name));document.querySelectorAll('.pane').forEach(x=>x.classList.toggle('active',x.id===`pane-${name}`))}
+document.querySelectorAll('.tab').forEach(x=>x.onclick=()=>setTab(x.dataset.tab));
+function applyImageCaps(){const caps=catalog?.image_capabilities||{};for(const opt of $('imageMode').options){const c=caps[opt.value];if(c&&c.available===false){opt.disabled=true;opt.title=c.reason||'当前不可用'}else{opt.disabled=false;opt.title=''}}if($('imageMode').selectedOptions[0]?.disabled)$('imageMode').value='txt2img';imageModeUI()}
+function imageModeUI(){const m=$('imageMode').value;document.querySelectorAll('.txt2img-advanced').forEach(x=>x.classList.toggle('hidden',m!=='txt2img'));document.querySelectorAll('.image-transform-only').forEach(x=>x.classList.toggle('hidden',m==='txt2img'));document.querySelectorAll('.image-input').forEach(x=>x.classList.toggle('hidden',m==='txt2img'));document.querySelectorAll('.denoise-field').forEach(x=>x.classList.toggle('hidden',m!=='img2img'));document.querySelectorAll('.reference-field').forEach(x=>x.classList.toggle('hidden',m!=='reference'));$('inpaintBox').classList.toggle('hidden',m!=='inpaint');const c=catalog?.image_capabilities?.[m];const base=m==='txt2img'?'现有文生图链':m==='img2img'?'标准 VAE 图生图':m==='inpaint'?'标准 mask 局部重绘；未遮罩区域合成保留':'IP-Adapter 参考图引导生成';if($('imageUpscale')){$('imageUpscale').disabled=!(c?.optional_ai_upscale);if(!c?.optional_ai_upscale)$('imageUpscale').checked=false}$('imageModeHint').innerHTML=`${esc(base)}${c?` · <span class="${c.available===false?'cap-bad':'cap-ok'}">${esc(c.available===false?(c.reason||'不可用'):'READY')}</span>${m!=='txt2img'?` · AI超分:${c.optional_ai_upscale?'可选':'未安装/未识别'}`:''}`:''}`;if(m==='inpaint')refreshMaskSource()}
+$('imageMode').onchange=imageModeUI;$('imageEditPreset').onchange=()=>{$('imageDenoise').value=$('imageEditPreset').value};imageModeUI();
+
+let maskMode='paint',maskDirty=false,maskDrawing=false,maskLast=null;
+function maskContexts(){return {src:$('maskSource').getContext('2d'),ov:$('maskOverlay').getContext('2d'),mask:$('maskData').getContext('2d')}}
+async function sourceForMask(){const f=$('imageInput').files?.[0];if(f)return URL.createObjectURL(f);return $('imageAssetUrl').value||''}
+async function refreshMaskSource(){if($('imageMode').value!=='inpaint')return;const url=await sourceForMask();if(!url){$('maskEditor').classList.add('hidden');$('maskEditorHint').textContent='选择输入图后显示遮罩编辑器。';return}const img=new Image();img.onload=()=>{const w=img.naturalWidth||img.width,h=img.naturalHeight||img.height;for(const id of ['maskSource','maskOverlay','maskData']){$(id).width=w;$(id).height=h}const {src,ov,mask}=maskContexts();src.clearRect(0,0,w,h);src.drawImage(img,0,0,w,h);ov.clearRect(0,0,w,h);mask.fillStyle='black';mask.fillRect(0,0,w,h);maskDirty=false;$('maskEditor').classList.remove('hidden');$('maskEditorHint').textContent=`${w}×${h} · 红色区域将被重绘`;if(url.startsWith('blob:'))URL.revokeObjectURL(url)};img.onerror=()=>toast('遮罩编辑器读取输入图失败',true);img.src=url}
+$('imageInput').addEventListener('change',refreshMaskSource);$('imageAssetUrl').addEventListener('change',refreshMaskSource);$('maskPaint').onclick=()=>{maskMode='paint';toast('画笔：涂抹重绘区')};$('maskErase').onclick=()=>{maskMode='erase';toast('画笔：橡皮擦')};$('maskClear').onclick=()=>{const {ov,mask}=maskContexts();ov.clearRect(0,0,$('maskOverlay').width,$('maskOverlay').height);mask.fillStyle='black';mask.fillRect(0,0,$('maskData').width,$('maskData').height);maskDirty=false};
+function maskPoint(ev){const c=$('maskOverlay'),r=c.getBoundingClientRect();return {x:(ev.clientX-r.left)*c.width/r.width,y:(ev.clientY-r.top)*c.height/r.height}}
+function maskStroke(a,b){const size=Number($('maskBrush').value)||60,{ov,mask}=maskContexts();for(const [ctx,isOverlay] of [[mask,false],[ov,true]]){ctx.save();ctx.lineCap='round';ctx.lineJoin='round';ctx.lineWidth=size;if(maskMode==='paint'){ctx.globalCompositeOperation='source-over';ctx.strokeStyle=isOverlay?'rgba(255,70,70,.48)':'white'}else{if(isOverlay){ctx.globalCompositeOperation='destination-out';ctx.strokeStyle='rgba(0,0,0,1)'}else{ctx.globalCompositeOperation='source-over';ctx.strokeStyle='black'}}ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();ctx.restore()}maskDirty=true}
+$('maskOverlay').addEventListener('pointerdown',e=>{maskDrawing=true;maskLast=maskPoint(e);$('maskOverlay').setPointerCapture(e.pointerId);maskStroke(maskLast,{x:maskLast.x+.01,y:maskLast.y+.01})});$('maskOverlay').addEventListener('pointermove',e=>{if(!maskDrawing)return;const p=maskPoint(e);maskStroke(maskLast,p);maskLast=p});for(const evn of ['pointerup','pointercancel'])$('maskOverlay').addEventListener(evn,()=>{maskDrawing=false;maskLast=null});
+
+function normalizeCollection(v){if(Array.isArray(v))return v;if(!v||typeof v!=='object')return [];for(const k of ['items','assets','data','results','list'])if(Array.isArray(v[k]))return v[k];return []}
+function inferMime(x){const m=String(x?.mime||x?.mime_type||x?.content_type||'');if(m)return m;const n=String(x?.name||x?.url||x?.file_url||x?.asset_url||'').toLowerCase();if(/\.(png|jpe?g|webp|bmp|gif)(\?|$)/.test(n))return'image/*';if(/\.(mp4|webm|mov|mkv|avi)(\?|$)/.test(n))return'video/*';if(/\.(mp3|wav|m4a|flac|aac)(\?|$)/.test(n))return'audio/*';return''}
+function normalizeReusable(x,prefix='素材'){const url=String(x?.url||x?.file_url||x?.asset_url||'').trim();if(!url)return null;const name=String(x?.name||x?.filename||url.split('/').pop()||url);return{...x,url,name,mime:inferMime({...x,url,name}),label:x?.label||`${prefix} · ${name}`}}
+function fillSelect(id,items,getValue,getLabel,keepFirst=true){const s=$(id);if(!s)return;const previous=s.value;const first=keepFirst?(s.options[0]?.outerHTML||'<option value="">不选择</option>'):'';s.innerHTML=first+items.map(x=>`<option value="${esc(getValue(x))}">${esc(getLabel(x))}</option>`).join('');if(keepFirst&&s.options[0])s.options[0].textContent=items.length?`不选择（可选 ${items.length} 项）`:'暂无可用素材';if([...s.options].some(o=>o.value===previous&&!o.disabled))s.value=previous}
+function mediaKind(x){const m=String(x?.mime||inferMime(x));if(m.startsWith('image/'))return'image';if(m.startsWith('video/'))return'video';if(m.startsWith('audio/'))return'audio';return'file'}
+function refreshReusableInputs(){const merged=[];const seen=new Set();for(const raw of [...candidateInputs,...library]){const x=normalizeReusable(raw,raw?.label?.startsWith('候选')?'候选':'素材');if(!x||seen.has(x.url))continue;seen.add(x.url);merged.push(x)}const imgs=merged.filter(x=>mediaKind(x)==='image');for(const id of ['imageAssetUrl','videoFirstUrl','videoLastUrl','videoRefUrl'])fillSelect(id,imgs,x=>x.url,x=>x.label||x.name||x.url,true);const spec=faceCaps?.[$('faceProcessor')?.value]||{};const sourceKind=spec.source_kind==='audio'?'audio':'image';const targetKinds=Array.isArray(spec.target_kinds)&&spec.target_kinds.length?spec.target_kinds:['image'];fillSelect('faceSourceUrl',merged.filter(x=>mediaKind(x)===sourceKind),x=>x.url,x=>x.label||x.name||x.url,true);fillSelect('faceTargetUrl',merged.filter(x=>targetKinds.includes(mediaKind(x))),x=>x.url,x=>x.label||x.name||x.url,true)}
+let standardVideoSteps=20;
+function syncVideoProfile(){
+  const profile=$('videoProfile')?.value||'standard';
+  const ps=(videoCaps?.profiles||{})[profile]||{};
+  if(profile==='turbo'){
+    if(!$('videoSteps').disabled){const current=Number($('videoSteps').value);if(Number.isFinite(current)&&current>0)standardVideoSteps=current}
+    $('videoSteps').value=String(ps.steps||4);$('videoSteps').disabled=true;
+  }else{
+    $('videoSteps').disabled=false;
+    if(Number($('videoSteps').value)===4&&standardVideoSteps!==4)$('videoSteps').value=String(standardVideoSteps||20);
+  }
+}
+function videoModeUI(){
+  const m=$('videoMode').value; const modes=videoCaps?.modes||{}; const spec=modes[m]||{};
+  document.querySelectorAll('.video-first').forEach(x=>x.classList.toggle('hidden',m!=='fl2va'));
+  document.querySelectorAll('.video-last').forEach(x=>x.classList.toggle('hidden',m!=='fl2va'));
+  document.querySelectorAll('.video-ref').forEach(x=>x.classList.toggle('hidden',m!=='ref2va'));
+  document.querySelectorAll('.video-ref-only').forEach(x=>x.classList.toggle('hidden',m!=='ref2va'));
+  syncVideoProfile();
+  const profile=$('videoProfile')?.value||'standard';const ps=(videoCaps?.profiles||{})[profile]||{};
+  const available=spec.enabled!==false&&(profile!=='turbo'||ps.enabled!==false);
+  const profileText=profile==='turbo'?(ps.enabled===false?`Turbo 不可用：${ps.message||'未识别 LoRA/节点'}`:`Turbo LoRA 已启用 · ${ps.steps||4}步 · ${ps.lora||'LoRA'}`):`标准 · ${$('videoSteps').value} steps · 不加载 Turbo LoRA`;
+  const contract=m==='t2va'?'仅提示词，不读取任何图片素材':m==='fl2va'?'首帧必需、尾帧可选，不读取参考图':m==='ref2va'?'参考图必需，不读取首帧/尾帧':'';
+  $('videoModeHint').innerHTML=`${esc(spec.label||m)} · ${esc(profileText)} · ${esc(contract)} · <span class="${available?'cap-ok':'cap-bad'}">${available?'READY':esc(spec.message||ps.message||'当前不可用')}</span>`;
+  $('runVideo').disabled=!available;
+}
+$('videoSteps').addEventListener('input',()=>{if(($('videoProfile')?.value||'standard')==='standard'){const n=Number($('videoSteps').value);if(Number.isFinite(n)&&n>0)standardVideoSteps=n;videoModeUI()}});
+$('videoMode').onchange=videoModeUI;$('videoProfile').onchange=videoModeUI;videoModeUI();
+function faceFieldHtml(p){const n=esc(p.name||''),label=esc(p.label||p.name||''),hint=p.hint?`<div class="hint">${esc(p.hint)}</div>`:'';if(p.type==='select')return `<div class="field"><label>${label}</label><select data-face-param="${n}">${(p.options||[]).map(o=>`<option value="${esc(o)}" ${String(o)===String(p.default)?'selected':''}>${esc(o)}</option>`).join('')}</select>${hint}</div>`;if(p.type==='multiselect')return `<div class="field"><label>${label}</label><select multiple data-face-param="${n}">${(p.options||[]).map(o=>`<option value="${esc(o)}" ${(Array.isArray(p.default)?p.default:[]).includes(o)?'selected':''}>${esc(o)}</option>`).join('')}</select>${hint}</div>`;if(p.type==='range')return `<div class="field"><label>${label}</label><input type="range" data-face-param="${n}" min="${esc(p.min)}" max="${esc(p.max)}" step="${esc(p.step)}" value="${esc(p.default)}"><div class="hint" data-range-value>${esc(p.default)}</div>${hint}</div>`;return `<div class="field"><label>${label}</label><input data-face-param="${n}" value="${esc(p.default??'')}">${hint}</div>`}
+function selectFaceProcessor(){const k=$('faceProcessor').value,s=faceCaps[k]||{};$('faceDescription').innerHTML=`<strong>${esc(s.label||k)}</strong><div class="hint">${esc(s.description||'')}</div>`;const ps=[...(s.params||[]),...(s.common_params||[])];$('faceParamsGrid').innerHTML=ps.length?ps.map(faceFieldHtml).join(''):'<div class="hint">当前处理器无额外参数</div>';$('faceParamsGrid').querySelectorAll('input[type="range"]').forEach(el=>{const out=el.parentElement.querySelector('[data-range-value]');const sync=()=>out.textContent=el.value;el.oninput=sync;sync()});const sourceSupported=!!s.source_kind||!!s.source_required;const sk=s.source_kind==='audio'?'音频':'人物图片';$('faceModeHint').textContent=`来源：${sourceSupported?(s.source_required?'必须':'可选'):'当前功能不使用来源素材'}${s.source_kind?' · '+sk:''}；目标：${(s.target_kinds||[]).join('/')||'按 FaceFusion 支持范围'}`;$('faceSource').accept=s.source_kind==='audio'?'audio/*':'image/*';$('faceTarget').accept=(s.target_kinds||[]).includes('video')?'image/*,video/*':'image/*';$('faceSource').disabled=!sourceSupported;$('faceSourceUrl').disabled=!sourceSupported;if(!sourceSupported){$('faceSource').value='';$('faceSourceUrl').value=''}$('runFace').disabled=s.available===false;refreshReusableInputs()}
+function collectFaceParams(){const o={};$('faceParamsGrid').querySelectorAll('[data-face-param]').forEach(el=>{if(el.multiple)o[el.dataset.faceParam]=Array.from(el.selectedOptions).map(x=>x.value);else if(el.type==='range'||el.type==='number')o[el.dataset.faceParam]=Number(el.value);else o[el.dataset.faceParam]=el.value});return o}
+function bindExclusiveFileAndSelect(fileId,selectId){const f=$(fileId),s=$(selectId);if(!f||!s)return;f.addEventListener('change',()=>{if(f.files?.length)s.value=''});s.addEventListener('change',()=>{if(s.value)f.value=''})}
+for(const pair of [['imageInput','imageAssetUrl'],['videoFirst','videoFirstUrl'],['videoLast','videoLastUrl'],['videoRef','videoRefUrl'],['faceTarget','faceTargetUrl'],['faceSource','faceSourceUrl']])bindExclusiveFileAndSelect(...pair);
+function localFileKind(file){const t=String(file?.type||'').toLowerCase(),n=String(file?.name||'').toLowerCase();if(t.startsWith('image/')||/\.(png|jpe?g|webp|bmp|gif)$/.test(n))return 'image';if(t.startsWith('video/')||/\.(mp4|webm|mov|mkv|avi)$/.test(n))return 'video';if(t.startsWith('audio/')||/\.(mp3|wav|m4a|flac|aac)$/.test(n))return 'audio';return 'file'}
+async function loadBasics(){[catalog,workspace,projects,library]=await Promise.all([api('/api/single/catalog'),api('/api/single/workspace'),api('/api/director/projects'),api('/api/assets?limit=500').catch(()=>[])]);$('workspaceTitle').textContent=workspace.title;$('workspaceId').textContent=workspace.project_id;$('candidateCount').textContent=workspace.candidate_count;$('formalCount').textContent=workspace.formal_asset_count;projects=normalizeCollection(projects);library=normalizeCollection(library).map(x=>normalizeReusable(x,'素材')).filter(Boolean);refreshReusableInputs();try{const p=await api('/api/image/presets');const ars=Object.entries(p.aspect_ratios||{}).map(([k,v])=>({k,label:v.label||k}));if(ars.length)fillSelect('imageAspect',ars,x=>x.k,x=>x.label,false);const styles=Object.entries(p.styles||{}).map(([k,v])=>({k,label:v.label||k}));if(styles.length)fillSelect('imageStyle',styles,x=>x.k,x=>x.label,false);const ss=Object.entries(p.style_strengths||{}).map(([k,v])=>({k,label:v.label||k}));if(ss.length)fillSelect('imageStrength',ss,x=>x.k,x=>x.label,false)}catch{}try{const m=await api('/api/image/models');const vals=[];if(Array.isArray(m.models))for(const x of m.models)vals.push(x);else if(m.models&&typeof m.models==='object')for(const [k,v] of Object.entries(m.models))vals.push({key:k,...v});$('imageModelOptions').innerHTML=vals.map(x=>`<option value="${esc(x.key||x.id||x.name||'')}">${esc(x.label||x.name||x.key||'')}</option>`).join('')}catch{}applyImageCaps();videoCaps=catalog.video_capabilities||{};faceCaps=catalog.facefusion_capabilities||{};const ic=catalog.image_capabilities||{};$('imageCapsSummary').textContent=Object.entries(ic).map(([k,v])=>`${k}:${v.available===false?'不可用':'READY'}`).join(' · ');const vm=videoCaps.modes||{};$('videoCapsSummary').textContent=Object.entries(vm).map(([k,v])=>`${k}:${v.enabled===false?'不可用':'READY'}`).join(' · ')||videoCaps.message||'未返回模式';const faceEntries=Object.entries(faceCaps).filter(([,v])=>v&&typeof v==='object'&&v.label);$('faceCapsSummary').textContent=faceEntries.length?`${faceEntries.filter(([,v])=>v.available!==false).length}/${faceEntries.length} 个处理器可用`:(faceCaps._error||'未返回处理器');const prevFace=$('faceProcessor').value;$('faceProcessor').innerHTML=faceEntries.map(([k,v])=>`<option value="${esc(k)}" ${v.available===false?'disabled':''}>${esc(v.label||k)}${v.available===false?'（不可用）':''}</option>`).join('');if([...$('faceProcessor').options].some(o=>o.value===prevFace&&!o.disabled))$('faceProcessor').value=prevFace;$('faceProcessor').onchange=selectFaceProcessor;videoModeUI();selectFaceProcessor();auditSelectors();}
+async function runImage(){if(!$('imagePositive').value.trim())return toast('请填写图片提示词',true);const mode=$('imageMode').value;const cap=catalog?.image_capabilities?.[mode];if(cap&&cap.available===false)return toast(cap.reason||'当前图片模式不可用',true);const fd=new FormData();for(const [k,v] of Object.entries({mode,positive_prompt:$('imagePositive').value.trim(),negative_prompt:$('imageNegative').value.trim(),model_key:$('imageModel').value.trim()||'smart',aspect_ratio:$('imageAspect').value,style_name:$('imageStyle').value,style_strength:$('imageStrength').value,steps:$('imageSteps').value,cfg:$('imageCfg').value,seed:$('imageSeed').value,sampler:$('imageSampler').value,scheduler:$('imageScheduler').value,denoise:$('imageDenoise').value,reference_weight:$('imageRefWeight').value,pose_control:$('imagePose').value,appearance_enhance_mode:$('imageAppearance').value,appearance_lora_strength:$('imageAppearanceStrength').value,upscale_enabled:$('imageUpscale')?.checked?'true':'false'}))fd.append(k,v);if(mode!=='txt2img'){const f=$('imageInput').files?.[0],u=$('imageAssetUrl').value;if(!f&&!u)return toast('请选择输入/参考图片',true);if(f)fd.append('input_image',f);else fd.append('input_asset_url',u);if(mode==='inpaint'){const mf=$('maskFile').files?.[0];if(mf){fd.append('mask_image',mf)}else{if(!maskDirty)return toast('请在图片上涂抹重绘区域，或上传外部遮罩',true);const blob=await new Promise(r=>$('maskData').toBlob(r,'image/png'));if(!blob)return toast('遮罩生成失败',true);fd.append('mask_image',blob,'inpaint-mask.png')}}}$('runImage').disabled=true;try{const d=await api('/api/single/image/tasks',{method:'POST',body:fd});toast(`候选任务已提交：${d.task.task_id}`);await loadCandidates()}catch(e){toast(e.message,true)}finally{$('runImage').disabled=false}}
+$('runImage').onclick=runImage;
+async function runVideo(){const mode=$('videoMode').value,profile=$('videoProfile').value;if(!$('videoPrompt').value.trim())return toast('请填写视频提示词',true);const fd=new FormData();for(const [k,v] of Object.entries({mode,video_profile:profile,prompt:$('videoPrompt').value.trim(),width:$('videoWidth').value,height:$('videoHeight').value,length:$('videoLength').value,steps:$('videoSteps').value,seed:$('videoSeed').value,ref_image_size:$('videoRefSize').value}))fd.append(k,v);if(mode==='fl2va'){const first=$('videoFirst').files?.[0],firstUrl=$('videoFirstUrl').value,last=$('videoLast').files?.[0],lastUrl=$('videoLastUrl').value;if(!first&&!firstUrl)return toast('FL2VA 必须提供首帧',true);if(first)fd.append('first_frame',first);else fd.append('first_asset_url',firstUrl);if(last)fd.append('last_frame',last);else if(lastUrl)fd.append('last_asset_url',lastUrl)}else if(mode==='ref2va'){const ref=$('videoRef').files?.[0],refUrl=$('videoRefUrl').value;if(!ref&&!refUrl)return toast('REF2VA 必须提供参考图片',true);if(ref)fd.append('reference_image',ref);else fd.append('reference_asset_url',refUrl)}$('runVideo').disabled=true;try{const d=await api('/api/single/video/tasks',{method:'POST',body:fd});toast(`视频候选已提交：${d.task.task_id}`);await loadCandidates()}catch(e){toast(e.message,true)}finally{videoModeUI()}}
+$('runVideo').onclick=runVideo;
+async function runFace(){const k=$('faceProcessor').value,spec=faceCaps[k]||{};if(!k)return toast('没有可用的 FaceFusion 处理器',true);const target=$('faceTarget').files?.[0],source=$('faceSource').files?.[0],tu=$('faceTargetUrl').value,su=$('faceSourceUrl').value,sourceSupported=!!spec.source_kind||!!spec.source_required;if(!target&&!tu)return toast('请选择目标素材',true);const targetKind=target?localFileKind(target):mediaKind({url:tu});const allowedTargets=Array.isArray(spec.target_kinds)&&spec.target_kinds.length?spec.target_kinds:['image'];if(targetKind&&!allowedTargets.includes(targetKind))return toast(`当前处理器目标只支持：${allowedTargets.join('/')}`,true);if(spec.source_required&&!source&&!su)return toast('当前处理器必须提供来源素材',true);if(sourceSupported&&(source||su)){const sourceKind=source?localFileKind(source):mediaKind({url:su});const expected=spec.source_kind||'image';if(sourceKind&&sourceKind!==expected)return toast(`当前处理器来源必须是：${expected}`,true)}const fd=new FormData();fd.append('processor',k);fd.append('params_json',JSON.stringify(collectFaceParams()));fd.append('authorized_adult',$('faceAuthorized').checked?'true':'false');if(target)fd.append('target',target);else fd.append('target_asset_url',tu);if(sourceSupported){if(source)fd.append('source',source);else if(su)fd.append('source_asset_url',su)}$('runFace').disabled=true;try{const d=await api('/api/single/facefusion/tasks',{method:'POST',body:fd});toast(`FaceFusion 候选已提交：${d.task.task_id}`);await loadCandidates()}catch(e){toast(e.message,true)}finally{selectFaceProcessor()}}
+$('runFace').onclick=runFace;
+function projectOptions(selected=''){selected=selected||continuityProjectId;return projects.map(p=>`<option value="${esc(p.project_id)}" ${p.project_id===selected?'selected':''}>${esc(p.title)} · ${esc(p.project_id)}</option>`).join('')}
+function entityOptions(){return (catalog?.entity_types||[]).map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}
+function roleOptions(){return (catalog?.asset_role_presets||[]).map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('')}
+function renderCandidate(c){const t=c.task||{},st=status(t.status||c.status),outs=t.output_files||c.output_files||[],url=outs[0]||'',done=st==='completed';return `<article class="candidate"><div class="preview">${media(url)}</div><div class="meta"><h3>${esc(c.capability)} · ${esc(c.mode)}</h3><div class="kv"><span class="status ${esc(st)}">${esc(st||'unknown')}</span><br>task: ${esc(c.task_id)}<br>${esc(t.message||c.message||'')}${t.error?`<br><span style="color:#ff9da9">${esc(t.error)}</span>`:''}</div><div class="actions"><button class="btn good" ${done?'':'disabled'} onclick="saveLib('${c.task_id}',0)">保存到素材库</button><button class="btn" ${done?'':'disabled'} onclick="togglePromote('${c.task_id}')">加入项目资产</button><button class="btn danger" onclick="dismissCand('${c.task_id}',true)">丢弃并删文件</button></div><details class="promotion" id="prom-${c.task_id}"><summary>手动归档设置</summary><div class="promote-grid"><select id="p-project-${c.task_id}">${projectOptions(workspace?.project_id||'')}</select><select id="p-entity-type-${c.task_id}">${entityOptions()}</select><input id="p-entity-name-${c.task_id}" placeholder="人物/场景/道具等实体名称（可选）"><select id="p-role-${c.task_id}">${roleOptions()}</select><input id="p-name-${c.task_id}" placeholder="资产名称"><input id="p-logical-${c.task_id}" placeholder="logical_key（留空=新资产）"><input id="p-chapter-${c.task_id}" placeholder="chapter_id（可选）"><input id="p-scene-${c.task_id}" placeholder="scene_id（可选）"><input id="p-shot-${c.task_id}" placeholder="shot_id（可选）"><select id="p-stage-${c.task_id}"><option value="">当前阶段</option><option>01</option><option>02</option><option>03</option><option>04</option></select></div><div class="actions"><button class="btn primary" onclick="promote('${c.task_id}',0,false)">仅加入项目资产</button><button class="btn good" onclick="promote('${c.task_id}',0,true)">保存素材库并加入项目</button></div></details>${(c.promotions||[]).length?`<div class="hint" style="margin-top:9px">已手动归档 ${c.promotions.length} 次</div>`:''}</div></article>`}
+function capturePromotionState(){const state={};document.querySelectorAll('.promotion').forEach(d=>{const key=d.id;state[key]={open:d.open,values:{}};d.querySelectorAll('input,select,textarea').forEach(el=>state[key].values[el.id]=el.value)});return state}
+function restorePromotionState(state){for(const [key,s] of Object.entries(state||{})){const d=$(key);if(!d)continue;d.open=!!s.open;for(const [id,v] of Object.entries(s.values||{})){const el=$(id);if(el&&[...((el.tagName==='SELECT')?el.options:[])].some?.(o=>o.value===v))el.value=v;else if(el&&el.tagName!=='SELECT')el.value=v}}}
+function auditSelectors(){const ids=['imageMode','imageAspect','imageStyle','imageAssetUrl','imageEditPreset','imagePose','imageAppearance','imageStrength','videoMode','videoProfile','videoFirstUrl','videoLastUrl','videoRefUrl','videoRefSize','faceProcessor','faceTargetUrl','faceSourceUrl'];const result={};for(const id of ids){const s=$(id);result[id]=s?{options:s.options.length,value:s.value}:null}console.info('AI Studio selector audit',result);return result}
+async function loadCandidates(){try{const state=capturePromotionState();const xs=normalizeCollection(await api('/api/single/tasks'));candidateInputs=[];for(const x of xs){const task=x.task||{};if(status(task.status||x.status)!=='completed')continue;const outs=task.output_files||x.output_files||[];for(const [idx,url] of outs.entries()){const item=normalizeReusable({url,name:String(url).split('/').pop(),mime:inferMime({url}),label:`候选 · ${x.capability||task.module||'output'} / ${x.mode||task.operation||''} / ${idx+1}`} ,'候选');if(item)candidateInputs.push(item)}}refreshReusableInputs();$('candidates').innerHTML=xs.length?xs.map(renderCandidate).join(''):'<div class="notice">暂无候选结果。先在上方生成一张图、一个视频或一次 FaceFusion 结果。</div>';restorePromotionState(state);workspace=await api('/api/single/workspace');$('candidateCount').textContent=workspace.candidate_count;$('formalCount').textContent=workspace.formal_asset_count;auditSelectors()}catch(e){toast(e.message,true)}}
+window.togglePromote=id=>{const d=$('prom-'+id);d.open=!d.open};
+window.saveLib=async(id,idx)=>{try{const d=await api(`/api/single/tasks/${id}/save-library`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({output_index:idx})});toast('已保存到素材库');await loadBasics();await loadCandidates()}catch(e){toast(e.message,true)}};
+window.promote=async(id,idx,saveFirst)=>{try{const body={output_index:idx,project_id:$(`p-project-${id}`).value,entity_type:$(`p-entity-type-${id}`).value,entity_name:$(`p-entity-name-${id}`).value,asset_role:$(`p-role-${id}`).value,name:$(`p-name-${id}`).value,logical_key:$(`p-logical-${id}`).value,chapter_id:$(`p-chapter-${id}`).value,scene_id:$(`p-scene-${id}`).value,shot_id:$(`p-shot-${id}`).value,stage:$(`p-stage-${id}`).value,save_library_first:saveFirst};const d=await api(`/api/single/tasks/${id}/add-project-asset`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});toast(`已手动加入项目资产：${d.asset.asset_id}`);await loadBasics();await loadCandidates()}catch(e){toast(e.message,true)}};
+window.dismissCand=async(id,del)=>{if(del&&!confirm('确认丢弃这个候选并删除它的任务输出文件？已另存到素材库/项目的副本不会删除。'))return;try{await api(`/api/single/tasks/${id}/dismiss`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delete_files:del})});toast('候选已丢弃');await loadCandidates()}catch(e){toast(e.message,true)}};
+
+
+let continuityProjectId='';
+let continuityShotId='';
+function ensureSelectOption(el,value,label){
+  if(!el||!value)return;
+  if(![...el.options].some(o=>o.value===value)){
+    const o=document.createElement('option');o.value=value;o.textContent=label||value;el.appendChild(o);
+  }
+  el.value=value;
+}
+async function loadContinuityToolContext(){
+  const q=new URLSearchParams(location.search);continuityProjectId=q.get('project_id')||'';continuityShotId=q.get('shot_id')||'';
+  if(!continuityProjectId||!continuityShotId)return;
+  try{
+    const ctx=await api(`/api/studio/projects/${encodeURIComponent(continuityProjectId)}/continuity/shots/${encodeURIComponent(continuityShotId)}/production-context`);
+    const banner=$('continuityToolContext');banner.classList.remove('hidden');
+    const shot=ctx?.resolved?.shot||{},scene=ctx?.resolved?.scene||{};
+    banner.innerHTML=`<strong>已载入项目镜头：</strong>${esc(shot.title||shot.summary||continuityShotId)}<br><span class="hint">${esc(scene.title||'')} · 人物/服装/武器/地点状态已按剧情上下文解析，可继续人工修改参数。</span>`;
+    if($('imagePositive'))$('imagePositive').value=ctx.image_prompt||'';
+    if($('videoPrompt'))$('videoPrompt').value=ctx.video_prompt||'';
+    if(ctx.primary_reference_url&&$('imageAssetUrl')){
+      ensureSelectOption($('imageAssetUrl'),ctx.primary_reference_url,'自动人物参考');
+      if(!ctx.multi_character&&$('imageMode')){
+        $('imageMode').value='reference';imageModeUI();
+      }
+    }
+    if(ctx.keyframe_url&&$('videoFirstUrl')){
+      ensureSelectOption($('videoFirstUrl'),ctx.keyframe_url,'当前镜头已确认关键帧');
+      if($('videoMode')){$('videoMode').value='fl2va';videoModeUI();}
+    }
+  }catch(e){toast('镜头连续性载入失败：'+e.message,true)}
+}
+
+let textMessages=[];
+let textRegistry=null;
+async function loadTextModels(){
+  const sel=$('textModel'),hint=$('textModelHint'); if(!sel||!hint)return;
+  try{
+    const data=await api('/api/llm/models'); textRegistry=data;
+    const models=Array.isArray(data.models)?data.models:[];
+    sel.innerHTML=models.map(m=>{
+      const disabled=m.installed===false?' disabled':'';
+      const suffix=m.installed===false?' · 未安装':m.active?' · 当前运行':m.selected?' · 已选择':'';
+      return `<option value="${esc(m.id)}"${m.selected?' selected':''}${disabled}>${esc(m.label||m.id)}${suffix}</option>`;
+    }).join('')||'<option value="">没有可用模型</option>';
+    const selected=models.find(m=>m.selected),active=models.find(m=>m.active);
+    hint.textContent=active?`当前运行：${active.label||active.id}`:selected?`已选择：${selected.label||selected.id}`:'未选择模型';
+  }catch(e){ sel.innerHTML='<option value="">模型读取失败</option>'; hint.textContent=e.message; }
+}
+function renderTextHistory(){
+  const box=$('textHistory'); if(!box)return;
+  if(!textMessages.length){box.innerHTML='<div class="empty-preview">暂无文本结果</div>';return}
+  box.innerHTML=textMessages.map(m=>`<div class="text-turn ${esc(m.role)}"><div class="who">${m.role==='user'?'你':'AI'}</div>${esc(m.content)}</div>`).join('');
+  box.scrollTop=box.scrollHeight;
+}
+async function ensureTextModel(){
+  const id=$('textModel').value;if(!id)throw new Error('请选择文本模型');
+  const models=Array.isArray(textRegistry?.models)?textRegistry.models:[];
+  const selected=models.find(m=>m.selected);
+  if(!selected||selected.id!==id){await api(`/api/llm/select/${encodeURIComponent(id)}`,{method:'POST'});await loadTextModels();}
+}
+async function generateText(){
+  const input=$('textInput').value.trim();if(!input)return toast('请输入文本内容',true);
+  const btn=$('generateTextButton');btn.disabled=true;$('textModelHint').textContent='正在生成文本…';
+  try{
+    await ensureTextModel();
+    textMessages.push({role:'user',content:input});renderTextHistory();$('textInput').value='';
+    const result=await api('/api/llm/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      messages:textMessages.map(x=>({role:x.role,content:x.content})),
+      system_prompt:$('textSystemPrompt').value.trim(),
+      temperature:Number($('textTemperature').value||0.7),
+      max_tokens:Number($('textMaxTokens').value||2048)
+    })});
+    const content=String(result?.content??'').trim();if(!content)throw new Error('文本模型返回空结果');
+    textMessages.push({role:'assistant',content});renderTextHistory();$('textModelHint').textContent='文本生成完成';
+  }catch(e){
+    if(textMessages.at(-1)?.role==='user')textMessages.pop();
+    renderTextHistory();$('textModelHint').textContent='文本生成失败';toast(e.message,true);
+  }finally{btn.disabled=false}
+}
+if($('generateTextButton'))$('generateTextButton').onclick=generateText;
+if($('clearTextButton'))$('clearTextButton').onclick=()=>{textMessages=[];renderTextHistory();$('textInput').value=''};
+if($('copyTextButton'))$('copyTextButton').onclick=async()=>{
+  const last=[...textMessages].reverse().find(x=>x.role==='assistant');if(!last)return toast('还没有可复制的结果',true);
+  try{await navigator.clipboard.writeText(last.content);toast('已复制最后结果')}catch{toast('浏览器不允许复制，请手动选择文本',true)}
+};
+
+
+// V2.35 standalone menu routing
+const __v235q=new URLSearchParams(location.search);
+const __v235tab=__v235q.get("tab");
+if(__v235q.get("single_tab")==="1")document.body.classList.add("singleTabOnly");
+if(["text","image","video","face"].includes(__v235tab))setTab(__v235tab);
+
+$('refreshCandidates').onclick=loadCandidates;$('refreshAll').onclick=async()=>{await loadBasics();await loadCandidates()};
+(async()=>{try{await loadTextModels();await loadBasics();await loadCandidates();await loadContinuityToolContext();setInterval(()=>{if(document.hidden)return;const active=document.querySelector('.status.running,.status.switching_gpu,.status.queued');if(active)loadCandidates()},5000)}catch(e){toast(e.message,true)}})();
+</script>
+</body>
+</html>

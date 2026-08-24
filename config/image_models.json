@@ -1,0 +1,166 @@
+{
+  "version": 3,
+  "default_model": "lustify",
+  "smart_fallback_order": [
+    "realvis",
+    "juggernaut",
+    "lustify",
+    "illustrious"
+  ],
+  "smart_routes": {
+    "portrait_photo": [
+      "realvis",
+      "juggernaut",
+      "lustify"
+    ],
+    "cinematic_photo": [
+      "juggernaut",
+      "realvis",
+      "lustify"
+    ],
+    "cyberpunk": [
+      "juggernaut",
+      "lustify",
+      "realvis"
+    ],
+    "anime": [
+      "illustrious",
+      "lustify"
+    ],
+    "cartoon": [
+      "illustrious",
+      "lustify"
+    ],
+    "cg_animation": [
+      "illustrious",
+      "juggernaut",
+      "lustify"
+    ],
+    "chinese_style": [
+      "illustrious",
+      "realvis",
+      "lustify"
+    ],
+    "ink_wash": [
+      "illustrious",
+      "lustify"
+    ],
+    "watercolor": [
+      "illustrious",
+      "lustify"
+    ],
+    "oil_painting": [
+      "realvis",
+      "juggernaut",
+      "lustify"
+    ],
+    "classical": [
+      "realvis",
+      "juggernaut",
+      "lustify"
+    ],
+    "render_3d": [
+      "juggernaut",
+      "illustrious",
+      "lustify"
+    ]
+  },
+  "models": {
+    "realvis": {
+      "label": "通用写实",
+      "name": "RealVisXL V5.0",
+      "description": "通用人像、东亚人物、生活摄影与写实场景",
+      "category": "realistic",
+      "checkpoint": "RealVisXL_V5.0_fp16.safetensors",
+      "aliases": [
+        "realvisxl_v5_fp16.safetensors",
+        "RealVisXL_V5.0_fp16.safetensors"
+      ],
+      "prompt_adapter": "realistic_natural",
+      "face_detailer": true,
+      "face_detailer_denoise": 0.28,
+      "upscaler": "4x-UltraSharp.pth",
+      "steps": 32,
+      "cfg": 5.0,
+      "sampler": "dpmpp_2m_sde",
+      "scheduler": "karras",
+      "appearance_lora": false
+    },
+    "lustify": {
+      "label": "高自由度写实",
+      "name": "Lustify SDXL v20",
+      "description": "当前已安装的高自由度 SDXL 写实模型",
+      "category": "creative",
+      "checkpoint": "lustifySDXLNSFWSFW_v20.safetensors",
+      "aliases": [
+        "lustify_sdxl_v20.safetensors",
+        "lustifySDXLNSFWSFW_v20.safetensors"
+      ],
+      "prompt_adapter": "lustify",
+      "face_detailer": true,
+      "face_detailer_denoise": 0.2,
+      "upscaler": "4x-UltraSharp.pth",
+      "steps": 30,
+      "cfg": 6.0,
+      "sampler": "dpmpp_2m_sde",
+      "scheduler": "karras",
+      "appearance_lora": true
+    },
+    "juggernaut": {
+      "label": "电影写实",
+      "name": "Juggernaut XL v9",
+      "description": "电影感人像、广告摄影、产品与场景写实",
+      "category": "cinematic",
+      "checkpoint": "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors",
+      "aliases": [
+        "juggernaut_xl_v9.safetensors",
+        "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors"
+      ],
+      "prompt_adapter": "cinematic_photo",
+      "face_detailer": true,
+      "face_detailer_denoise": 0.24,
+      "upscaler": "4x-UltraSharp.pth",
+      "steps": 35,
+      "cfg": 5.0,
+      "sampler": "dpmpp_2m",
+      "scheduler": "karras",
+      "appearance_lora": false
+    },
+    "illustrious": {
+      "label": "动漫插画",
+      "name": "Illustrious XL v2.0",
+      "description": "动漫人物、插画、卡通、CG 与东方绘画风格",
+      "category": "anime",
+      "checkpoint": "Illustrious-XL-v2.0.safetensors",
+      "aliases": [
+        "illustrious_xl_v2.safetensors",
+        "Illustrious-XL-v2.0.safetensors"
+      ],
+      "prompt_adapter": "illustration_tags",
+      "face_detailer": false,
+      "face_detailer_denoise": 0.0,
+      "upscaler": "RealESRGAN_x4plus_anime_6B.pth",
+      "steps": 30,
+      "cfg": 5.5,
+      "sampler": "dpmpp_2m",
+      "scheduler": "karras",
+      "appearance_lora": false
+    }
+  },
+  "appearance_profiles": {
+    "east_asian_female": {
+      "label": "东亚女性",
+      "description": "用于 Lustify 高自由度写实模型的东亚女性外貌增强",
+      "lora_name": "east-asian-female-face.safetensors",
+      "trigger": "yeonhwa",
+      "strength_model": 0.3,
+      "strength_clip": 0.3,
+      "supported_models": [
+        "lustify"
+      ],
+      "trigger_weight": 0.75,
+      "sha256": "f0aa3535772c82bdc229acdd19c4a126cf3b400ab7785b2d4fd87e806ff34360",
+      "size_bytes": 912581388
+    }
+  }
+}

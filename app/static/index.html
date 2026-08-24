@@ -1,0 +1,898 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI 漫剧工作台</title>
+<style>
+:root{color-scheme:dark;--bg:#070b13;--panel:#0d1421;--panel2:#101a2b;--line:#243149;--text:#eef4ff;--muted:#8fa0bb;--accent:#ff6b2c;--ok:#35c76f;--warn:#f1b84b;--bad:#ef5b67}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,"PingFang SC","Microsoft YaHei",sans-serif}button,input,select,textarea{font:inherit}
+.app{height:100vh;display:grid;grid-template-columns:250px 1fr;overflow:hidden}.sidebar{border-right:1px solid var(--line);padding:20px 14px;background:#09101c;height:100vh;overflow:hidden;display:flex;flex-direction:column}
+.brand{font-size:22px;font-weight:800}.brand span{color:var(--accent)}.brandSub{font-size:12px;color:var(--muted);margin:4px 0 22px}
+.sideTitle{font-size:12px;color:var(--muted);margin:16px 6px 7px}.projectSearch{margin-bottom:6px}.projectSearch input{width:100%;border:1px solid var(--line);background:#08111e;color:var(--text);border-radius:8px;padding:9px 10px}.projectScroll{min-height:0;flex:1;overflow:auto;padding-right:3px;scrollbar-width:thin}.projectItem{padding:11px 12px;border-radius:10px;cursor:pointer;margin:5px 0;border:1px solid transparent}.projectItem:hover{background:#111a2a}.projectItem.active{background:#18243a;border-color:#344765}.projectItem b{display:block}.projectItem small{display:block;color:var(--muted);margin-top:4px}
+.main{padding:24px 28px;max-width:1680px;width:100%;margin:0 auto;height:100vh;overflow:auto}.top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:16px}.top h1{margin:0;font-size:30px}.sub{color:var(--muted);font-size:13px;margin-top:5px}
+.btn{border:1px solid var(--line);background:#152036;color:var(--text);border-radius:9px;padding:9px 13px;cursor:pointer}.btn:hover{border-color:#50647f}.btn.primary{background:var(--accent);border-color:var(--accent)}.btn.good{background:#153923;border-color:#286541}.btn.danger{background:#3b171c;border-color:#73313a}.btn:disabled{opacity:.45;cursor:not-allowed}
+.nav{display:flex;gap:4px;margin-bottom:12px;border-bottom:1px solid var(--line);padding:0 0 8px}.nav button{padding:7px 10px;background:transparent;border-color:transparent;color:var(--muted)}.nav button:hover{background:#111a2a;color:var(--text)}.nav button.active{background:#17243a;border-color:#314765;color:var(--text)}.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}.panel h2,.panel h3{margin:0 0 11px}
+.flowWrap{background:#0a111d;border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:12px}.flowLabel{font-size:11px;color:var(--muted);margin-bottom:8px}.progress{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}.step{min-width:0;padding:8px 9px;border:1px solid #1c293d;border-radius:8px;color:var(--muted);font-size:11px;display:flex;gap:8px;align-items:center}.stepNo{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:#131d2d;color:#91a3bd;flex:0 0 auto;font-size:11px}.stepText{min-width:0}.step b{display:block;color:var(--text);font-size:12px;white-space:nowrap}.step em{display:block;font-style:normal;font-size:10px;color:var(--muted);margin-top:2px}.step.done{background:#0d2118;border-color:#244f37}.step.done .stepNo{background:#1b4b2f;color:#a8efbd}.step.current{background:#252016;border-color:#725333}.step.current .stepNo{background:#6b4a29;color:#ffe0b6}.step.ready{background:#111f31;border-color:#2d4b6b}
+.hero{padding:20px}.heroHead{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}.heroTitle{font-size:24px;font-weight:800;margin-top:3px}.badge{display:inline-block;padding:4px 9px;border-radius:999px;font-size:12px;background:#24314a}.badge.ok{background:#173b28;color:#99edb4}.badge.wait{background:#493617;color:#ffd37b}.badge.bad{background:#451f26;color:#ffa1ab}.heroText{white-space:pre-wrap;line-height:1.72;margin-top:14px;max-height:520px;overflow:auto;background:#09111e;border:1px solid #1f2b40;border-radius:10px;padding:14px}
+.field{display:flex;flex-direction:column;gap:6px}.field label{font-size:12px;color:#b8c5d8}.field input,.field select,.field textarea{border:1px solid var(--line);background:#08111e;color:var(--text);border-radius:8px;padding:10px;width:100%}.field textarea{min-height:94px;resize:vertical}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}.card{background:#09111e;border:1px solid var(--line);border-radius:11px;padding:11px}.card h4{margin:5px 0 7px}.meta{font-size:11px;color:var(--muted)}.card img,.card video{width:100%;max-height:220px;object-fit:contain;border-radius:8px;margin-top:8px;background:#050912}.card .row{margin-top:9px}
+.notice{font-size:12px;color:#aab9cf;background:#101a2b;border:1px solid #263754;border-radius:9px;padding:10px;line-height:1.6}.tabs{display:flex;gap:7px;margin-bottom:13px}.tab.active{background:#1d2d48;border-color:#526c91}.hidden{display:none!important}.job{margin-top:12px;padding:10px;border-radius:9px;background:#101b2d;border:1px solid #293a57}.job.failed{border-color:#793440}.job.input_required{border-color:#7b6128}
+.entityType{font-size:11px;color:#8facd1}.empty{color:var(--muted);padding:12px 2px}.resultHeader{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.modal{display:none;position:fixed;inset:0;background:#000a;align-items:center;justify-content:center;padding:20px;z-index:50}.modal.show{display:flex}.modalBody{width:min(760px,100%);background:#0d1421;border:1px solid var(--line);border-radius:14px;padding:18px}.toast{display:none;position:fixed;right:22px;bottom:22px;background:#183126;border:1px solid #356c4b;border-radius:9px;padding:12px 14px;z-index:80;max-width:620px}.toast.bad{background:#3a171c;border-color:#793540}
+
+.nextAction{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-items:center;background:#0e1726;border:1px solid #31415d;border-radius:12px;padding:14px 16px;margin-bottom:12px}
+.nextFlag{font-size:11px;font-weight:700;letter-spacing:.08em;color:#9eb0ca;background:#17243a;border:1px solid #314662;border-radius:999px;padding:6px 9px;white-space:nowrap}
+.nextCopy h2{font-size:18px;margin:0 0 4px}.nextCopy div{font-size:12px;color:var(--muted);line-height:1.55}.nextButtons{display:flex;gap:7px;align-items:center;justify-content:flex-end;flex-wrap:wrap}.nextButtons .btn{white-space:nowrap}
+.sectionHead{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px}.sectionHead h3{margin:0}.sectionHint{font-size:11px;color:var(--muted)}
+.entityOverview{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}.entityCount{background:#101a2a;border:1px solid #253550;border-radius:8px;padding:7px 10px;font-size:11px;color:var(--muted)}.entityCount b{color:var(--text);font-size:14px;margin-left:4px}
+.entityPills{display:flex;gap:7px;flex-wrap:wrap}.entityPill{border:1px solid #24344f;background:#09111e;border-radius:999px;padding:7px 10px;font-size:12px}.entityPill span{color:#8298b8;margin-right:6px;font-size:10px}
+.assetCompact{min-height:92px}.assetCompact h4{font-size:14px}.assetCompact .row{margin-top:7px}
+@media(max-width:1050px){.app{height:auto;min-height:100vh;grid-template-columns:1fr;overflow:visible}.sidebar{height:auto;max-height:340px;border-right:0;border-bottom:1px solid var(--line)}.projectScroll{max-height:190px}.main{height:auto;overflow:visible;padding:18px}.progress{grid-template-columns:repeat(3,1fr)}.grid2,.grid3{grid-template-columns:1fr}.nextAction{grid-template-columns:1fr}.nextButtons{justify-content:flex-start}}
+.toolPanel{padding:12px}.toolFrame{width:100%;height:calc(100vh - 235px);min-height:720px;border:0;border-radius:12px;background:#070b14}.sourceStat{font-size:12px;color:var(--muted);margin-top:6px}.sourceStat.long{color:#f0c56a}.nav{position:sticky;top:0;z-index:12;background:rgba(7,11,19,.94);backdrop-filter:blur(10px);padding:8px 0}.sidebar .btn{background:#111a2a}.main{max-width:none;padding:20px 24px;height:100vh;overflow:auto}.panel{box-shadow:0 8px 28px rgba(0,0,0,.12)}
+
+/* V2.34 clarity-first workbench */
+.main{padding:18px 22px}
+.top{margin-bottom:10px;align-items:center}.top h1{font-size:24px}.top .sub{font-size:12px}
+.taskFocus{background:linear-gradient(180deg,#111c2d,#0c1523);border:1px solid #38506f;border-radius:14px;padding:20px 22px;margin:0 0 12px;box-shadow:0 10px 30px rgba(0,0,0,.18)}
+.taskEyebrow{font-size:12px;font-weight:800;color:#9fb5d3;letter-spacing:.08em;margin-bottom:7px}
+.taskMain{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:20px;align-items:center}
+.taskMain h2{font-size:25px;line-height:1.25;margin:0 0 7px}.taskDesc{color:#aebcd1;line-height:1.65;font-size:13px;max-width:880px}
+.primaryCta{min-width:190px;min-height:48px;border:0;border-radius:10px;padding:12px 20px;background:#2f6fed;color:#fff;font-size:16px;font-weight:800;cursor:pointer;box-shadow:0 8px 24px rgba(47,111,237,.28)}
+.primaryCta:hover{filter:brightness(1.08)}.primaryCta:disabled{background:#24324a;color:#8291a8;box-shadow:none;cursor:not-allowed}
+.taskInputWrap{margin-top:14px;padding-top:14px;border-top:1px solid #24354d}.taskInputWrap textarea{min-height:92px}
+.textAction{margin-top:10px;background:transparent;border:0;color:#8facd1;padding:0;cursor:pointer;font-size:12px}.textAction:hover{color:#cbd8ea}
+.taskMeta{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}.taskMeta .notice{padding:7px 9px;background:#0c1421}
+.flowWrap{padding:9px 11px;margin-bottom:10px}.flowLabel{display:none}.progress{gap:4px}.step{padding:6px 8px}.stepNo{width:20px;height:20px}.step em{display:none}
+.nav{position:static;top:auto;z-index:auto;background:transparent;backdrop-filter:none;padding:6px 0 9px;margin-bottom:10px;gap:14px;border-bottom:1px solid #1c293d}
+.nav button{padding:5px 1px;border:0!important;border-radius:0;background:transparent!important;color:#7f91ab;font-size:13px}
+.nav button.active{color:#eef4ff;border-bottom:2px solid #5e8de8!important}.nav button:hover{color:#eef4ff}
+.summaryGrid{display:grid;grid-template-columns:1.1fr .9fr;gap:10px;margin-bottom:10px}.summaryPanel{background:#0c1421;border:1px solid #202e43;border-radius:12px;padding:13px 14px}
+.summaryHead{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:9px}.summaryHead h3{font-size:15px;margin:0}.summaryHead .btn{padding:5px 8px;font-size:11px}
+.summaryPanel .cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.summaryPanel .card{padding:9px}.summaryPanel .assetCompact{min-height:70px}.summaryPanel .card h4{font-size:13px}
+.latestResult{background:#0b1320;border:1px solid #202e43;border-radius:11px;padding:0;margin-bottom:10px}.latestResult summary{cursor:pointer;padding:12px 14px;font-size:13px;font-weight:700;color:#cbd7e9}.latestResult .heroText{border:0;border-top:1px solid #202e43;border-radius:0;margin:0;max-height:420px}
+.entityOverview{margin-bottom:8px}.entityCount{padding:6px 8px}.entityPills{gap:5px}.entityPill{padding:5px 8px;font-size:11px}
+.sidebar{padding:16px 12px}.brand{font-size:20px}.brandSub{margin-bottom:14px}.projectItem{padding:9px 10px}.sideTitle{margin-top:12px}
+#jobBox .job{margin-top:10px;padding:8px 10px;font-size:12px}
+@media(max-width:1050px){.taskMain{grid-template-columns:1fr}.primaryCta{width:100%}.summaryGrid{grid-template-columns:1fr}.summaryPanel .cards{grid-template-columns:1fr}.progress{grid-template-columns:repeat(3,1fr)}}
+
+
+/* V2.35 product navigation */
+.app{grid-template-columns:220px 1fr}
+.sidebar{padding:18px 12px}.brand{font-size:21px}.brandSub{margin-bottom:20px}
+.appMenu{display:flex;flex-direction:column;gap:5px}.appMenuBtn{width:100%;display:flex;align-items:center;gap:10px;text-align:left;border:1px solid transparent;background:transparent;color:#b5c3d8;border-radius:10px;padding:11px 12px;cursor:pointer;font-weight:700}.appMenuBtn:hover{background:#111b2b;color:#fff}.appMenuBtn.active{background:#182740;border-color:#365275;color:#fff}.appMenuIcon{width:28px;height:28px;border-radius:8px;background:#111d30;display:grid;place-items:center;color:#9db7d8;font-size:13px}.appMenuBtn.active .appMenuIcon{background:#24466f;color:#fff}.menuDivider{height:1px;background:#1e2a3c;margin:10px 4px}.menuHint{font-size:11px;color:#6f819d;padding:4px 12px 0;line-height:1.5}
+.appView{display:none}.appView.active{display:block}.appHeader{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:0 0 14px}.appHeader h1{margin:0;font-size:27px}.appHeader p{margin:5px 0 0;color:var(--muted);font-size:13px}.standaloneFrame{width:100%;height:calc(100vh - 105px);min-height:680px;border:1px solid var(--line);border-radius:14px;background:#08111e}
+.shortHead{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:12px}.shortHead h1{margin:0;font-size:27px}.shortProjects{background:#0b1320;border:1px solid var(--line);border-radius:13px;padding:12px;margin-bottom:14px}.projectToolbar{display:grid;grid-template-columns:minmax(220px,420px) auto 1fr;gap:9px;align-items:center}.projectToolbar input{border:1px solid var(--line);background:#08111e;color:var(--text);border-radius:8px;padding:9px 10px}.projectGrid{display:flex;gap:8px;overflow-x:auto;padding:9px 1px 2px;scrollbar-width:thin}.projectGrid .projectItem{min-width:190px;max-width:260px;margin:0;flex:0 0 auto;background:#0a121f;border:1px solid #1d2a40}.projectGrid .projectItem.active{background:#18243a;border-color:#426083}.projectWorkspace{display:none}.projectWorkspace.ready{display:block}.shortSubnav{display:flex;gap:6px;margin:0 0 10px}.shortSubnav .btn{padding:7px 11px}.shortSubnav .active{background:#1a2a44;border-color:#45638b}.makePane{background:#0b1320;border:1px solid var(--line);border-radius:12px;padding:14px}.makeTabs{display:flex;gap:7px;margin-bottom:13px}.makeTabs .tab{border:1px solid var(--line);background:#121e31;color:#c8d5e7;border-radius:9px;padding:8px 13px;cursor:pointer}.makeTabs .tab.active{background:#284b77;border-color:#4c75a8;color:#fff}.makeActions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.makeActions .field{min-width:0}.makeResults{margin-top:14px}
+.globalEditGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.globalEditStatus{margin-top:12px}.globalEditResults{margin-top:14px}
+@media(max-width:1000px){.app{grid-template-columns:1fr}.sidebar{height:auto;position:static;border-right:0;border-bottom:1px solid var(--line)}.appMenu{display:grid;grid-template-columns:repeat(3,1fr)}.appMenuBtn{justify-content:center}.menuDivider,.menuHint{display:none}.main{height:auto;min-height:calc(100vh - 180px)}.standaloneFrame{height:780px}.projectToolbar{grid-template-columns:1fr auto}.projectToolbar .projectMeta{display:none}.globalEditGrid,.makeActions{grid-template-columns:1fr}}
+
+
+/* ===== V2.35.9 SHOT DRIVEN PRODUCTION ===== */
+.shotStats{display:grid;grid-template-columns:repeat(5,minmax(120px,1fr));gap:8px;margin:14px 0}
+.shotStat{background:#09111e;border:1px solid var(--line);border-radius:10px;padding:12px}.shotStat span{display:block;color:var(--muted);font-size:11px}.shotStat b{display:block;font-size:20px;margin-top:4px}
+.shotToolbar{display:grid;grid-template-columns:180px 220px 180px 1fr;gap:10px;align-items:end;margin:12px 0}.shotBatchButtons{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.sceneProduction{margin-bottom:14px}.sceneProductionHead{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px 13px;border:1px solid var(--line);background:#0b1422;border-radius:11px 11px 0 0}.sceneProductionHead h3{margin:0;font-size:16px}
+.shotCard{background:#0b1320;border:1px solid var(--line);border-top:0;padding:14px}.shotCard:last-child{border-radius:0 0 11px 11px}.shotCardHead{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:start}
+.shotNumber{min-width:72px;text-align:center;background:#17243a;border:1px solid #314762;border-radius:9px;padding:8px 10px;font-weight:800}.shotTitle h4{margin:0 0 5px;font-size:15px}.shotSummary{color:#c5d1e2;line-height:1.55;font-size:13px}
+.shotStatus{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}.shotBadge{font-size:11px;border-radius:999px;padding:5px 8px;border:1px solid #30415d;background:#111c2d;color:#9fb1cb}.shotBadge.ok{background:#123321;border-color:#285b3d;color:#9ce4b4}.shotBadge.wait{background:#3b2d16;border-color:#6b5228;color:#ffd38c}
+.shotActions{display:flex;gap:7px;flex-wrap:wrap;margin-top:11px}.shotMedia{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:11px}.shotPreview{background:#07101b;border:1px solid #20304a;border-radius:9px;padding:8px;min-height:80px}.shotPreview img,.shotPreview video{width:100%;max-height:260px;object-fit:contain;border-radius:7px;background:#050912}.shotPreviewTitle{font-size:11px;color:var(--muted);margin-bottom:7px}
+.shotDetailGrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 14px;margin-top:10px}.shotDetailItem{font-size:12px;line-height:1.55}.shotDetailItem b{color:#91a8c8}.shotPrompt{white-space:pre-wrap;background:#07101b;border:1px solid #1f2d43;border-radius:8px;padding:10px;font-size:12px;line-height:1.6;margin-top:7px}.shotAdvanced summary{cursor:pointer}.candidateInline{margin-top:8px;padding:8px;border:1px dashed #42526e;border-radius:8px;background:#0d1726}
+@media(max-width:980px){.shotStats{grid-template-columns:repeat(2,1fr)}.shotToolbar{grid-template-columns:1fr}.shotBatchButtons{justify-content:flex-start}.shotCardHead{grid-template-columns:1fr}.shotStatus{justify-content:flex-start}.shotMedia,.shotDetailGrid{grid-template-columns:1fr}}
+/* ===== /V2.35.9 SHOT DRIVEN PRODUCTION ===== */
+
+/* ===== V2.36.0A Z-IMAGE-TURBO UI ===== */
+#shotProductionList .candidateInline img,
+#shotProductionList .candidateInline video,
+#shotProductionList .shotPreview img,
+#shotProductionList .shotPreview video{
+  width:auto!important;height:auto!important;max-width:100%!important;
+  max-height:520px!important;object-fit:contain!important;display:block;margin:0 auto;
+}
+#shotProductionList .candidateInline{overflow:hidden}
+/* ===== /V2.36.0A Z-IMAGE-TURBO UI ===== */
+
+
+/* ===== V2.36.1 E2E CHAIN UI ===== */
+.v2361Toolbar{grid-template-columns:150px 220px 180px minmax(320px,1fr)!important}
+.candidateStack{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin-top:9px}
+.candidateCard{border:1px dashed #41516d;border-radius:9px;background:#0b1726;padding:8px;min-width:0}
+.candidateCard .candidateHead{display:flex;justify-content:space-between;gap:7px;align-items:center;font-size:11px;margin-bottom:5px}
+.candidateCard img,.candidateCard video{width:100%;max-height:220px;object-fit:contain;border-radius:7px;background:#050912}
+.candidateButtons{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}.candidateButtons .btn{padding:6px 8px;font-size:11px}
+.shotInvalid{border-color:#7a4c29!important;background:#25190d!important}.shotInvalidText{color:#ffcc8b;font-size:11px;line-height:1.5;margin-top:6px}
+.lineageNote{font-size:11px;color:#91a8c8;margin-top:6px}.durationGood{color:#9ce4b4}.durationBad{color:#ff9ca7}
+.finalV2361Controls{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}.finalV2361Hint{font-size:11px;color:var(--muted);line-height:1.5;margin-top:6px}
+@media(max-width:1100px){.v2361Toolbar{grid-template-columns:1fr 1fr!important}.finalV2361Controls{grid-template-columns:1fr}}
+@media(max-width:720px){.v2361Toolbar{grid-template-columns:1fr!important}}
+/* ===== V2.36.1B SHOT VIDEO PROFILE UI ===== */
+.shotVideoProfileBox{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
+.shotVideoProfileLocal{min-width:168px;height:42px;padding:0 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel2);color:var(--text);font:inherit}
+.shotVideoProfileLocal:focus{outline:1px solid #4c78a8}
+.shotVideoProfileLocal:disabled{opacity:.55;cursor:not-allowed}
+/* ===== /V2.36.1B SHOT VIDEO PROFILE UI ===== */
+/* ===== V2.36.1C TIMELINE CONTRACT UI ===== */
+.timelineCandidateNote{margin-top:7px;padding:6px 8px;border-radius:7px;font-size:11px;border:1px solid #2c465f;background:#0b1725}
+.timelineCandidateNote.ok{color:#92e6ae;border-color:#295b3b;background:#0f2418}
+.timelineCandidateNote.bad{color:#ffb0b8;border-color:#71333e;background:#2c151a}
+/* ===== /V2.36.1C TIMELINE CONTRACT UI ===== */
+/* ===== V2.36.1F EVIDENCE ANCHOR UI ===== */
+.timelineEvidence{margin-top:6px;padding:7px 8px;border-radius:7px;border:1px solid #30465e;background:#0b1623;color:#b9cbe0;font-size:11px;line-height:1.45}
+/* ===== /V2.36.1F EVIDENCE ANCHOR UI ===== */
+/* ===== V2.37.0 PRODUCTION CONTRACT UI ===== */
+.shotMediaV237{grid-template-columns:repeat(3,minmax(0,1fr))}
+.shotMediaV237 .shotPreview{min-width:0}
+@media(max-width:1180px){.shotMediaV237{grid-template-columns:1fr}}
+/* ===== /V2.37.0 PRODUCTION CONTRACT UI ===== */\n/* ===== /V2.36.1 E2E CHAIN UI ===== */
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">AI 漫剧工作台</div>
+    <div class="brandSub">生成工具与短视频工作流</div>
+    <div class="sideTitle">功能</div>
+    <div class="appMenu">
+      <button class="appMenuBtn" data-app-menu="text" onclick="showAppView('text',this)"><span class="appMenuIcon">文</span><span>文本</span></button>
+      <button class="appMenuBtn" data-app-menu="image" onclick="showAppView('image',this)"><span class="appMenuIcon">图</span><span>图片</span></button>
+      <button class="appMenuBtn" data-app-menu="video" onclick="showAppView('video',this)"><span class="appMenuIcon">视</span><span>视频</span></button>
+      <button class="appMenuBtn" data-app-menu="face" onclick="showAppView('face',this)"><span class="appMenuIcon">脸</span><span>FaceFusion</span></button>
+      <button class="appMenuBtn" data-app-menu="videoedit" onclick="showAppView('videoedit',this)"><span class="appMenuIcon">改</span><span>视频改造</span></button>
+      <div class="menuDivider"></div>
+      <button class="appMenuBtn active" data-app-menu="shortvideo" onclick="showAppView('shortvideo',this)"><span class="appMenuIcon">片</span><span>短视频生成</span></button>
+    </div>
+    <div class="menuHint">独立工具用于单次生成；“短视频生成”按剧本 → 角色 → 视觉 → 分镜 → 制作 → 成片完整执行。</div>
+  </aside>
+
+  <main class="main">
+    <section class="appView" id="app-tool">
+      <div class="appHeader"><div><h1 id="toolTitle">文本</h1><p id="toolDesc">独立生成工具，不绑定短视频作品。</p></div></div>
+      <iframe id="standaloneToolFrame" class="standaloneFrame" title="独立生成工具"></iframe>
+    </section>
+
+    <section class="appView" id="app-videoedit">
+      <div class="appHeader"><div><h1>视频改造</h1><p>独立处理视频：仅换人物、仅换背景，或人物与背景一起替换。</p></div></div>
+      <div class="panel">
+        <div class="grid2">
+          <div class="field"><label>编辑模式</label><select id="geditMode" onchange="updateGlobalVideoEditUI()"><option value="person">仅换人物</option><option value="background">仅换背景</option><option value="person_background">人物 + 背景</option></select></div>
+          <div class="field"><label>结果名称</label><input id="geditName" value="视频改造结果"></div>
+        </div>
+        <div class="globalEditGrid" style="margin-top:12px">
+          <div class="field"><label>目标视频</label><select id="geditTarget"></select><input id="geditTargetUpload" type="file" accept="video/*"><button class="btn" onclick="uploadGlobalEditMedia('geditTargetUpload','source_video','geditTarget')">上传视频</button></div>
+          <div class="field" id="geditPersonField"><label>人物参考图</label><select id="geditPerson"></select><input id="geditPersonUpload" type="file" accept="image/*"><button class="btn" onclick="uploadGlobalEditMedia('geditPersonUpload','character_reference','geditPerson')">上传人物图</button></div>
+          <div class="field hidden" id="geditBackgroundField"><label>新背景</label><select id="geditBackground"></select><input id="geditBackgroundUpload" type="file" accept="image/*,video/*"><button class="btn" onclick="uploadGlobalEditMedia('geditBackgroundUpload','background_reference','geditBackground')">上传背景</button></div>
+        </div>
+        <label id="geditAuthField" style="display:block;margin-top:12px"><input id="geditAuthorized" type="checkbox"> 我确认人物素材为本人、虚构人物或已获明确授权的成年人</label>
+        <button class="btn primary" id="runGlobalEditBtn" style="margin-top:12px" onclick="runGlobalVideoEdit()">开始视频改造</button>
+        <div id="globalEditJob" class="globalEditStatus"></div>
+      </div>
+      <div class="panel globalEditResults"><h3>处理结果</h3><div class="cards" id="globalEditResults"></div></div>
+    </section>
+
+    <section class="appView active" id="app-shortvideo">
+      <div class="shortHead"><div><h1>短视频生成</h1><div class="sub">新建作品后，按 6 步工作流完成整条短视频。</div></div><button class="btn primary" onclick="openNewProject()">＋ 新建作品</button></div>
+      <div class="shortProjects">
+        <div class="projectToolbar"><input id="projectSearch" placeholder="搜索作品" oninput="renderProjectList()"><button class="btn" onclick="openNewProject()">新建作品</button><div class="projectMeta meta">项目只在“短视频生成”中管理，不占用全局菜单。</div></div>
+        <div class="projectGrid" id="projectList"></div>
+      </div>
+
+      <div class="projectWorkspace" id="projectWorkspace">
+        <div class="top"><div><h1 id="projectTitle">选择一个作品</h1><div class="sub" id="projectSub">选择作品后按流程继续。</div></div></div>
+
+        <div class="flowWrap"><div class="flowLabel">制作流程</div><div class="progress" id="progress"></div></div>
+
+        <div class="taskFocus" id="taskFocus">
+          <div class="taskEyebrow">现在要做</div>
+          <div class="taskMain"><div><h2 id="nextActionTitle">选择一个作品</h2><div class="taskDesc" id="nextActionDesc">选择上方作品后，这里显示唯一下一步。</div></div><button class="primaryCta" id="primaryActionBtn" onclick="performPrimaryAction()" disabled>选择作品</button></div>
+          <div class="taskInputWrap hidden" id="taskInputWrap"><div class="field"><label id="phaseInputLabel">补充信息</label><textarea id="phaseInput" oninput="syncPrimaryInputState()" placeholder="填写系统要求补充的信息，然后继续。"></textarea></div></div>
+          <button class="textAction" id="optionalInputToggle" onclick="toggleOptionalInput()">＋ 有额外创作要求</button>
+          <div class="taskMeta"><div id="sourceProfile" class="notice hidden"></div></div><div id="jobBox"></div>
+        </div>
+
+        <div class="shortSubnav">
+          <button class="btn active" data-short-view="create" onclick="showView('create',this)">当前阶段</button>
+          <button class="btn" data-short-view="continuity" onclick="showView('continuity',this)">连续性</button>
+          <button class="btn" data-short-view="make" onclick="showView('make',this)">制作</button>
+          <button class="btn" data-short-view="final" onclick="showView('final',this)">成片</button>
+        </div>
+
+        <section id="view-create">
+          <div class="summaryGrid"><div class="summaryPanel"><div class="summaryHead"><h3>当前成果</h3><button class="btn" onclick="document.getElementById('latestResult').open=true;document.getElementById('latestResult').scrollIntoView({behavior:'smooth',block:'center'})">查看正文</button></div><div class="cards" id="phaseAssets"></div></div><div class="summaryPanel"><div class="summaryHead"><h3>故事元素</h3><button class="btn" onclick="showView('continuity')">查看全部</button></div><div id="entities"></div></div></div>
+          <details class="latestResult" id="latestResult"><summary>查看当前阶段最新结果</summary><div class="heroText" id="phaseResult">创建或选择一个作品。</div></details>
+        </section>
+
+        <section id="view-continuity" class="hidden">
+          <div class="panel"><div class="resultHeader"><div><h2>故事连续性</h2><div class="sub">人物、场景、道具和镜头状态自动解析；人工只负责纠错。</div></div><button class="btn" onclick="reanalyzeContinuity()">重新分析</button></div><div id="continuityStatus" class="notice" style="margin-top:10px">等待连续性分析</div><div class="grid2" style="margin-top:12px"><div class="field"><label>章节 / 集</label><select id="continuityEpisode" onchange="changeContinuityEpisode()"></select></div><div class="field"><label>查看</label><select id="continuityMode" onchange="renderContinuity()"><option value="scenes">场景</option><option value="characters">角色</option><option value="locations">地点</option><option value="props">武器 / 道具</option><option value="shots">镜头</option></select></div></div></div>
+          <div class="panel"><div id="continuityList" class="cards"></div></div><div class="panel" id="resolvedPanel"><h3>当前状态</h3><div id="resolvedState" class="empty">点击一个场景或镜头查看当前状态。</div></div>
+        </section>
+
+        <section id="view-make" class="hidden">
+  <!-- V2361_E2E_CHAIN_UI -->
+  <div class="panel shotOverview">
+    <div class="resultHeader">
+      <div>
+        <h2>第 ⑤ 步 · 分镜制作</h2>
+        <div class="sub">正式 Shot 是唯一制作单元。④ image_prompt 直接生成“分镜代表画面”；Qwen3-32B 只编译独立的 H3 视频首帧/前向动作。候选只有“采用”后才进入正式槽。</div>
+      </div>
+      <!-- V2.37.1_STAGE04_REBUILD_UI --><button class="btn warn" id="stage04RebuildBtn" onclick="rebuildStage04Contract()">重建④正式分镜（Qwen3-32B）</button><button class="btn" onclick="openStoryboardMaster()">查看完整分镜</button>
+    </div>
+    <div id="shotStats" class="shotStats"></div>
+    <div class="shotToolbar v2361Toolbar">
+      <div class="field"><label>统一画幅</label><select id="shotAspect">
+        <option value="16:9">16:9</option><option value="9:16">9:16</option>
+        <option value="1:1">1:1</option><option value="4:3">4:3</option>
+        <option value="3:4">3:4</option><option value="21:9">21:9</option>
+      </select></div>
+      <div class="field"><label>画面模型</label><select id="shotImageModel">
+        <option value="z_image_turbo" selected>Z-Image-Turbo（默认）</option>
+        <option value="smart">Smart（旧模型）</option>
+      </select><div class="meta">⑤只用工作分辨率，不强制 4K / AI 超分</div></div>
+      <div class="field"><label>视频生成</label><select id="shotVideoProfile">
+        <option value="standard">标准质量 · 20步</option><option value="turbo">Turbo · 4步</option>
+      </select></div>
+      <div class="shotBatchButtons">
+        <button class="btn" onclick="batchGenerateShotImages()">批量生成缺失分镜画面</button>
+        <button class="btn good" onclick="batchAdoptShotCandidates('image','shot_keyframe','分镜画面')">批量采用分镜画面</button>
+        <button class="btn good" onclick="batchAdoptShotCandidates('image','shot_video_start_frame','视频首帧')">批量采用视频首帧</button>
+        <button class="btn" onclick="batchGenerateShotVideos()">批量生成缺失视频</button>
+        <button class="btn good" onclick="batchAdoptShotCandidates('video','shot_clip','视频')">批量采用视频</button>
+      </div>
+    </div>
+    <div class="notice" id="shotQualityHint">分镜检查中…</div>
+  </div>
+  <div id="shotProductionList"></div>
+
+  <details class="panel shotAdvanced" id="shotPersonPanel">
+    <summary><b>人物处理 / 高级制作</b> · 处理结果仍先成为候选，采用后才成为当前有效派生版本</summary>
+    <div class="grid3" style="margin-top:14px">
+      <div class="field"><label>当前镜头</label><input id="faceShotLabel" value="尚未选择镜头" readonly><input id="faceShotId" type="hidden"></div>
+      <div class="field"><label>处理目标</label><select id="faceTargetKind"><option value="video">优先处理视频</option><option value="image">处理画面</option></select></div>
+      <div class="field"><label>处理方式</label><select id="faceProcessor" onchange="updatePersonInputs()"></select></div>
+      <div class="field hidden" id="personSourceField"><label>人物参考图</label><select id="faceSource"></select></div>
+      <div class="field" id="faceAuthField"><label><input id="faceAuthorized" type="checkbox"> 人物素材为本人、虚构人物或已获明确授权成年人</label></div>
+    </div>
+    <button class="btn primary" style="margin-top:12px" onclick="runShotPerson()">开始人物处理</button>
+  </details>
+</section>
+
+<section id="view-final" class="hidden"><div class="panel"><h2>第 ⑥ 步 · 成片</h2><div class="notice">选择已经确认的视频，按顺序合成为最终 MP4。</div><div id="finalVideos" style="margin-top:10px"></div><div class="field" style="margin-top:11px"><label>成片名称</label><input id="finalName" value="最终成片"></div><button class="btn primary" style="margin-top:11px" onclick="assembleFinal()">生成成片</button></div><div class="panel"><h3>最终输出</h3><div class="cards" id="finalAssets"></div></div></section>
+      </div>
+    </section>
+  </main>
+</div>
+<div class="modal" id="newModal"><div class="modalBody">
+  <h2>新建作品</h2>
+  <div class="grid2">
+    <div class="field"><label>作品名称</label><input id="newTitle" placeholder="例如：影子停止跟随"></div>
+    <div class="field"><label>内容类型</label><select id="sourceType"><option value="idea">一句创意 / 短片需求</option><option value="script">已有剧本</option><option value="chapter">小说单章</option><option value="novel">整本小说 / 长篇项目</option></select></div>
+  </div>
+  <div class="field" style="margin-top:10px"><label>创作内容</label><textarea id="sourceText" style="min-height:220px" placeholder="粘贴创意、剧本或小说单章"></textarea></div>
+  <div class="field" style="margin-top:10px"><label>读取 TXT / MD</label><input id="sourceFile" type="file" accept=".txt,.md,text/plain,text/markdown" onchange="readLocalSource(this)"></div>
+  <div class="row" style="margin-top:12px"><button class="btn primary" onclick="createProject()">创建作品</button><button class="btn" onclick="closeNewProject()">取消</button></div>
+</div></div>
+<div class="modal" id="continuityModal"><div class="modalBody">
+  <h2>调整连续性</h2>
+  <div class="field"><label>直接告诉系统哪里不对</label><textarea id="continuityInstruction" style="min-height:140px" placeholder="例如：从这一场开始，林彻换成白色西装，不再携带长刀。"></textarea></div>
+  <div class="grid2" style="margin-top:10px">
+    <div class="field"><label>作用范围</label><select id="continuityScope"><option value="from_here">从这里开始，直到剧情再次明确改变</option><option value="scene">只在当前场景</option><option value="episode">当前章节 / 集</option><option value="shot">只在当前镜头</option></select></div>
+    <div class="field"><label>锁定</label><label><input id="continuityLocked" type="checkbox"> 即使后续剧情出现变化也保持人工设置</label></div>
+  </div>
+  <div class="row" style="margin-top:12px"><button class="btn primary" onclick="applyContinuityOverride()">应用</button><button class="btn" onclick="closeContinuityModal()">取消</button></div>
+</div></div>
+<div class="toast" id="toast"></div>
+
+<script>
+const $=id=>document.getElementById(id);
+let projects=[],current='',snap=null,pollTimer=null,view='create',appView='shortvideo';let continuityResolved=null,continuityAnchor={type:'scene',id:''};
+const PHASE={'01':'剧本','02':'角色','03':'画面设计','04':'分镜'};
+const ENTITY_LABEL={chapter:'章节',scene:'场景',shot:'镜头',character:'角色',location:'场景',prop:'道具'};
+const PROC_LABEL={face_swapper:'人物替换',deep_swapper:'深度人物替换',face_enhancer:'人脸增强',expression_restorer:'表情修复',face_editor:'人脸编辑',age_modifier:'年龄调整',lip_syncer:'口型同步',background_remover:'背景移除',frame_enhancer:'画质增强',frame_colorizer:'画面上色'};
+
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+async function api(url,opt={}){const r=await fetch(url,opt),t=await r.text();let b;try{b=JSON.parse(t)}catch{b=t}if(!r.ok)throw new Error(b?.detail||b||String(r.status));return b}
+function jpost(url,obj){return api(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(obj)})}
+function toast(m,b=false){const e=$('toast');e.textContent=m;e.className='toast'+(b?' bad':'');e.style.display='block';clearTimeout(window.__t);window.__t=setTimeout(()=>e.style.display='none',5000)}
+function status(a){return String(a?.status?.value??a?.status??'').toLowerCase()}
+function assetUrl(a){return a?.storage?.url||a?.storage?.urls?.[0]||''}
+function ready(a){return status(a)==='ready'&&String(a?.dependency_state?.value??a?.dependency_state??'')!=='stale'&&a?.active!==false}
+function previewUrl(u,t){if(!u)return'';t=String(t||'').toUpperCase();if(t==='IMAGE'||/\.(png|jpe?g|webp)(\?|$)/i.test(u))return`<img src="${esc(u)}" loading="lazy">`;if(t==='VIDEO'||/\.(mp4|webm|mov)(\?|$)/i.test(u))return`<video src="${esc(u)}" controls preload="metadata"></video>`;return`<a class="btn" target="_blank" href="${esc(u)}">打开</a>`}
+function preview(a){return previewUrl(assetUrl(a),a.asset_type)}
+
+function showView(v,btn){
+  if(v==='tools'){showView('make');return}
+  if(v==='videoedit'){showAppView('videoedit');return}
+  view=v;for(const x of ['create','continuity','make','final']){const e=$('view-'+x);if(e)e.classList.toggle('hidden',x!==v)}
+  document.querySelectorAll('[data-short-view]').forEach(x=>x.classList.toggle('active',x.dataset.shortView===v));if(btn)btn.classList.add('active');
+  if(v==='make'&&snap)renderMake();
+}
+function renderProjectList(){
+  const q=String($('projectSearch')?.value||'').trim().toLowerCase();
+  const rows=(projects||[]).filter(p=>!q||String(p.title||'').toLowerCase().includes(q));
+  $('projectList').innerHTML=rows.map(p=>`<div class="projectItem ${p.project_id===current?'active':''}" onclick="openProject('${p.project_id}')"><b>${esc(p.title)}</b><small>${esc(p.current_label||'制作中')}</small></div>`).join('')||'<div class="empty">'+(q?'没有匹配作品':'暂无作品')+'</div>';
+}
+async function loadProjects(){projects=await api('/api/studio/projects');renderProjectList()}
+async function openProject(id){current=id;manualInputOpen=false;showAppView('shortvideo');await refreshAll();const m=document.querySelector('.main');if(m)m.scrollTop=0}
+async function refreshAll(){await loadProjects();if(!current&&projects.length)current=projects[0].project_id;const w=$('projectWorkspace');if(!current){if(w)w.classList.remove('ready');return}if(w)w.classList.add('ready');snap=await api(`/api/studio/projects/${current}`);renderAll();startPolling()}
+
+// ===== V2.36.1 E2E SHOT CHAIN UI =====
+function productionEntityMap(){return Object.fromEntries((snap?.entities||[]).map(e=>[String(e.entity_id||''),e]))}
+function shotHydrated(raw){const s={...(raw||{})},e=productionEntityMap()[String(s.entity_id||'')]||{},c=e?.metadata?.continuity||{};for(const[k,v]of Object.entries(c)){const cur=s[k];if(cur===undefined||cur===null||cur===''||(Array.isArray(cur)&&!cur.length))s[k]=v}return s}
+function formalShots(){return(snap?.continuity?.shots||[]).filter(s=>!s.provisional&&s.shot_id).map(shotHydrated).slice().sort((a,b)=>Number(a.global_order||a.sequence||a.order||0)-Number(b.global_order||b.sequence||b.order||0))}
+function shotSceneMap(){return Object.fromEntries((snap?.continuity?.scenes||[]).map(s=>[String(s.scene_id||''),s]))}
+function shotAssetId(a){return String(a?.metadata?.shot_id||a?.source?.shot_id||'')}
+function shotCanonicalKey(id,role){const m={shot_keyframe:'keyframe',shot_video_start_frame:'video-start-frame',shot_clip:'video',shot_image_processed:'keyframe-processed',shot_video_processed:'video-processed'};return m[role]?`studio:shot:${id}:${m[role]}`:''}
+function shotUsable(a){return !!a&&a.active!==false&&String(a.status||'').toLowerCase()==='ready'&&String(a.dependency_state||'').toLowerCase()!=='stale'}
+function shotRoleAssets(id,role,{allowStale=false}={}){return(snap?.assets||[]).filter(a=>a.active!==false&&String(a.status||'').toLowerCase()==='ready'&&shotAssetId(a)===String(id)&&String(a.asset_role||'')===role&&(allowStale||String(a.dependency_state||'').toLowerCase()!=='stale'))}
+function newestAsset(rows){return rows.slice().sort((a,b)=>Number(a.version||0)-Number(b.version||0)||String(a.updated_at||'').localeCompare(String(b.updated_at||''))).pop()||null}
+function currentRoleAsset(id,role){const rows=shotRoleAssets(id,role),canonical=shotCanonicalKey(id,role),canon=rows.filter(a=>String(a.logical_key||'')===canonical);return newestAsset(canon.length?canon:rows)}
+function assetAncestors(id){const by=Object.fromEntries((snap?.assets||[]).map(a=>[String(a.asset_id||''),a])),seen=new Set(),stack=[String(id||'')];let guard=0;while(stack.length&&guard++<300){const cur=stack.pop();if(!cur||seen.has(cur))continue;seen.add(cur);for(const p of(by[cur]?.parent_asset_ids||[])){const x=String(p||'');if(x&&!seen.has(x))stack.push(x)}}seen.delete(String(id||''));return seen}
+function representativeContractOk(a){const m=a?.metadata||{};return shotUsable(a)&&String(m.production_contract_version||'')==='stage04-production-v2'&&String(m.prompt_source||'')==='stage04.image_prompt'&&String(m.semantic_compile||'')==='locked'&&!!String(m.shot_contract_fingerprint||'')}
+function videoStartContractOk(a){const m=a?.metadata||{};return shotUsable(a)&&String(m.video_start_contract_version||'')==='stage04-video-start-v2'&&String(m.text_model_policy||'')==='qwen3-32b'&&!!String(m.video_motion_prompt_asset_id||'')&&!!String(m.shot_contract_fingerprint||'')}
+function baseShotImage(id){const a=currentRoleAsset(id,'shot_keyframe');return representativeContractOk(a)?a:null}
+function latestShotImage(id){const base=baseShotImage(id);if(!base)return null;const p=currentRoleAsset(id,'shot_image_processed');if(p&&assetAncestors(p.asset_id).has(String(base.asset_id)))return p;return base}
+function currentVideoStart(id){const a=currentRoleAsset(id,'shot_video_start_frame');return videoStartContractOk(a)?a:null}
+function rawShotVideo(id){return newestAsset(shotRoleAssets(id,'shot_clip',{allowStale:true}))}
+function baseShotVideo(id){const start=currentVideoStart(id),base=currentRoleAsset(id,'shot_clip');if(!start||!base)return null;const m=base.metadata||{};if(String(m.video_contract_version||'')!=='h3-start-frame-lineage-v2')return null;return assetAncestors(base.asset_id).has(String(start.asset_id))?base:null}
+function latestShotVideo(id){const base=baseShotVideo(id);if(!base)return null;const p=currentRoleAsset(id,'shot_video_processed');if(p&&assetAncestors(p.asset_id).has(String(base.asset_id)))return p;return base}
+function staleOrMismatchedVideo(id){const raw=rawShotVideo(id),current=latestShotVideo(id);return raw&&(!current||String(raw.asset_id)!==String(current.asset_id))?raw:null}
+function targetForCandidate(c){return(snap?.assets||[]).find(a=>a.asset_id===c.target_asset_id)}
+function candidateShotId(c){return shotAssetId(targetForCandidate(c)||{})}
+function pendingShotCandidates(id,cap,role=''){return(snap?.candidates||[]).filter(c=>{if(c.confirmed_asset_id||['rejected','failed'].includes(String(c.status||''))||String(c.capability||'')!==cap||candidateShotId(c)!==String(id))return false;const t=targetForCandidate(c)||{};return !role||String(t.asset_role||'')===role}).sort((a,b)=>String(b.updated_at||b.created_at||'').localeCompare(String(a.updated_at||a.created_at||'')))}
+function pendingShotCandidate(id,cap,role=''){return pendingShotCandidates(id,cap,role)[0]||null}
+function runningCandidate(id,cap,role=''){return pendingShotCandidates(id,cap,role).find(c=>['queued','switching_gpu','running','generating'].includes(String(c.status||'')))||null}
+function shotProductionStats(){const shots=formalShots(),scenes=new Set(shots.map(s=>String(s.scene_id||'')).filter(Boolean));return{total:shots.length,scenes:scenes.size,imageReady:shots.filter(s=>!!latestShotImage(s.shot_id)).length,startReady:shots.filter(s=>!!currentVideoStart(s.shot_id)).length,videoReady:shots.filter(s=>!!latestShotVideo(s.shot_id)).length,pending:(snap?.candidates||[]).filter(c=>!c.confirmed_asset_id&&!['rejected','failed'].includes(String(c.status||''))&&candidateShotId(c)).length,duration:shots.reduce((n,s)=>n+Number(s.duration_seconds||0),0)}}
+function shotStatusLabel(c,a){if(c&&['queued','switching_gpu','running','generating'].includes(String(c.status||'')))return[a?'重新生成中':'生成中','wait'];if(c&&c.status==='completed')return[a?'新候选待采用':'待采用','wait'];if(a)return['已采用','ok'];if(!c)return['未生成',''];return[String(c.status||'等待'),'']}
+function shotCandidatePreview(c,type){const u=(c?.output_files||[])[0]||'';return u?previewUrl(u,type):''}
+function storyboardMasterAsset(){return(snap?.assets||[]).filter(a=>ready(a)&&(a.asset_role==='storyboard_master'||a.logical_key==='studio:stage04:detailed-storyboard')).sort((a,b)=>Number(a.version||0)-Number(b.version||0)).pop()||null}
+function openStoryboardMaster(){const a=storyboardMasterAsset();if(!a)return toast('没有找到完整详细分镜资产',true);const u=assetUrl(a);if(!u)return toast('分镜资产没有可打开文件',true);window.open(u,'_blank')}
+function shotNames(ids,map){return(ids||[]).map(id=>map[String(id)]?.name).filter(Boolean).join('、')}
+function shotImagePayload(){const m=$('shotImageModel')?.value||'z_image_turbo',z=m==='z_image_turbo';return{aspect_ratio:$('shotAspect')?.value||'16:9',model_key:m,steps:z?9:32,cfg:z?1.0:6.5,sampler:z?'euler':'dpmpp_2m',scheduler:z?'simple':'karras'}}
+function candidateContractState(t){const role=String(t?.asset_role||''),m=t?.metadata||{};if(role==='shot_keyframe'){const ok=String(m.production_contract_version||'')==='stage04-production-v2'&&String(m.prompt_source||'')==='stage04.image_prompt'&&String(m.semantic_compile||'')==='locked';return[ok,ok?'④分镜 Prompt 锁定':'旧画面候选']}if(role==='shot_video_start_frame'){const ok=String(m.video_start_contract_version||'')==='stage04-video-start-v2'&&String(m.text_model_policy||'')==='qwen3-32b';return[ok,ok?'Qwen3-32B 视频首帧合同':'旧视频首帧候选']}if(role==='shot_clip'){const ok=String(m.video_contract_version||'')==='h3-start-frame-lineage-v2';return[ok,ok?'H3 首帧血缘已绑定':'旧视频候选']}return[true,'']}
+function shotCandidateCards(id,cap,label,defaultType,role){const rows=pendingShotCandidates(id,cap,role).slice(0,6);if(!rows.length)return'';return`<div class="candidateStack">${rows.map(c=>{const t=targetForCandidate(c)||{},type=String(t.asset_type||defaultType||'IMAGE').toUpperCase(),done=c.status==='completed',run=['queued','switching_gpu','running','generating'].includes(String(c.status||'')),m=t.metadata||{},[contractOk,contractLabel]=candidateContractState(t),evidence=Array.isArray(m.source_evidence)?m.source_evidence:(Array.isArray(m.timeline_source_evidence)?m.timeline_source_evidence:[]);return`<div class="candidateCard"><div class="candidateHead"><b>${esc(label)}</b><span>${esc(c.status||'')}</span></div>${shotCandidatePreview(c,type)}${contractLabel?`<div class="timelineCandidateNote ${contractOk?'ok':'bad'}">${esc(contractLabel)}</div>`:''}${evidence.length?`<div class="timelineEvidence">原文依据：${esc(String(evidence[0]||'').slice(0,96))}${String(evidence[0]||'').length>96?'…':''}</div>`:''}<div class="candidateButtons">${done?(contractOk?`<button class="btn good" onclick="adoptShotCandidate('${esc(c.candidate_id)}')">采用</button><button class="btn danger" onclick="rejectShotCandidate('${esc(c.candidate_id)}')">丢弃</button>`:`<button class="btn" disabled>不可采用</button><button class="btn danger" onclick="rejectShotCandidate('${esc(c.candidate_id)}')">丢弃</button>`):`<button class="btn" disabled>${run?'生成中':'等待'}</button>`}</div></div>`}).join('')}</div>`}
+async function adoptShotCandidate(id){try{await jpost(`/api/director/workbench/projects/${current}/candidates/${id}/confirm`,{output_index:0});toast('候选已采用，正式版本与下游血缘已刷新');await refreshAll();showView('make')}catch(e){toast(e.message,true)}}
+async function rejectShotCandidate(id){try{await jpost(`/api/director/workbench/projects/${current}/candidates/${id}/reject`,{});toast('候选已丢弃');await refreshAll();showView('make')}catch(e){toast(e.message,true)}}
+function renderShotProduction(){
+ const shots=formalShots(),stats=shotProductionStats(),scenes=shotSceneMap(),entities=productionEntityMap(),statsEl=$('shotStats'),list=$('shotProductionList'),hint=$('shotQualityHint');if(!statsEl||!list)return;
+ statsEl.innerHTML=[['场景',stats.scenes],['正式镜头',stats.total],['预计时长',stats.duration?`${stats.duration.toFixed(1)}s`:'—'],['分镜画面',`${stats.imageReady}/${stats.total||0}`],['视频首帧',`${stats.startReady}/${stats.total||0}`],['当前有效视频',`${stats.videoReady}/${stats.total||0}`]].map(([k,v])=>`<div class="shotStat"><span>${k}</span><b>${v}</b></div>`).join('');
+ if(!shots.length){hint.textContent='没有读取到正式分镜。请回到④分镜检查正式 Shot。';list.innerHTML='<div class="panel empty">当前没有正式镜头。</div>';return}
+ const md=shots.filter(s=>!Number(s.duration_seconds||0)).length,mi=shots.filter(s=>!String(s.image_prompt||'').trim()).length,mv=shots.filter(s=>!String(s.video_prompt||'').trim()).length;
+ hint.textContent=`分镜覆盖 ${stats.scenes} 个场景、${stats.total} 个正式镜头。${md||mi||mv?`真实制作字段缺失：时长 ${md}，画面 Prompt ${mi}，视频 Prompt ${mv}。缺失项不会蒙混生成。`:'④由 Qwen3-32B Narrative Backbone 重建：Beat 只消费 Scene 核心正文，正文锚点必须全部分类为剧情 Beat 或描述 support；纯枚举/铺陈不再单独占 Shot。每批 Shot 还要通过所选原文证据蕴含、时间边界和实体可见性审计。'}`;
+ let last='',html=[];
+ for(const s of shots){
+  const sid=String(s.shot_id),sceneId=String(s.scene_id||''),scene=scenes[sceneId]||{};
+  if(sceneId!==last){if(last)html.push('</div>');const count=shots.filter(x=>String(x.scene_id||'')===sceneId).length;html.push(`<div class="sceneProduction"><div class="sceneProductionHead"><div><h3>${esc(scene.title||'场景')}</h3><div class="meta">${esc(scene.summary||'')}</div></div><div class="meta">${count} 镜头</div></div>`);last=sceneId}
+  const img=latestShotImage(sid),startFrame=currentVideoStart(sid),vid=latestShotVideo(sid),badVid=staleOrMismatchedVideo(sid);
+  const ic=pendingShotCandidate(sid,'image','shot_keyframe'),sc=pendingShotCandidate(sid,'image','shot_video_start_frame'),vc=pendingShotCandidate(sid,'video','shot_clip'),fc=pendingShotCandidate(sid,'facefusion');
+  const[il,icls]=shotStatusLabel(ic,img),[sl,scls]=shotStatusLabel(sc,startFrame),[vl,vcls]=shotStatusLabel(vc,vid);
+  const no=Number(s.global_order||s.sequence||s.order||0),chars=shotNames(s.character_entity_ids,entities),props=shotNames(s.prop_entity_ids,entities),duration=Number(s.duration_seconds||0);
+  const ir=runningCandidate(sid,'image','shot_keyframe'),sr=runningCandidate(sid,'image','shot_video_start_frame'),vr=runningCandidate(sid,'video','shot_clip');
+  const rawImg=currentRoleAsset(sid,'shot_keyframe'),rawStart=currentRoleAsset(sid,'shot_video_start_frame'),legacyImg=rawImg&&!img,legacyStart=rawStart&&!startFrame;
+  html.push(`<div class="shotCard" id="shotcard_${esc(sid)}"><div class="shotCardHead"><div class="shotNumber">镜头 ${String(no).padStart(3,'0')}</div><div class="shotTitle"><h4>${esc(s.title||'未命名镜头')} · <span class="${duration?'durationGood':'durationBad'}">${duration?duration.toFixed(1)+'s':'缺少时长'}</span></h4><div class="shotSummary">${esc(s.summary||s.action||'')}</div><div class="meta" style="margin-top:6px">${chars?`角色：${esc(chars)}　`:''}${props?`道具：${esc(props)}`:''}</div></div><div class="shotStatus"><span class="shotBadge ${icls}">分镜画面 · ${il}</span><span class="shotBadge ${scls}">视频首帧 · ${sl}</span><span class="shotBadge ${vcls}">视频 · ${vl}</span>${legacyImg?'<span class="shotBadge wait">旧画面不计入正式制作</span>':''}${legacyStart?'<span class="shotBadge wait">旧首帧需重生成</span>':''}${badVid&&!vid?'<span class="shotBadge wait">旧视频已失效</span>':''}${fc?`<span class="shotBadge wait">人物处理 · ${fc.status==='completed'?'待采用':'处理中'}</span>`:''}</div></div>
+  <div class="shotActions"><button class="btn" ${ir?'disabled':''} onclick="generateShotImage('${esc(sid)}')">${img?'重新生成分镜画面':'生成分镜画面'}</button><button class="btn" ${sr?'disabled':''} onclick="generateShotVideoStart('${esc(sid)}')">${startFrame?'重新生成视频首帧':'生成视频首帧'}</button><div class="shotVideoProfileBox"><select class="shotVideoProfileLocal" id="shotVideoProfile_${esc(sid)}" ${vr?'disabled':''} onchange="setShotVideoProfile('${esc(sid)}',this.value)" title="单镜头 H3 生成质量"><option value="standard" ${shotVideoProfileFor(sid)==='standard'?'selected':''}>H3 标准 · 20步</option><option value="turbo" ${shotVideoProfileFor(sid)==='turbo'?'selected':''}>H3 Turbo · 4步</option></select><button class="btn" ${!startFrame||!duration||vr?'disabled':''} onclick="generateShotVideo('${esc(sid)}')">${vid||badVid?'重新生成视频':'生成视频'}</button></div><button class="btn" ${!img&&!vid?'disabled':''} onclick="openShotPerson('${esc(sid)}')">人物处理</button><button class="btn" onclick="toggleShotDetails('${esc(sid)}')">查看分镜细节</button></div>
+  ${shotCandidateCards(sid,'image','分镜画面候选','IMAGE','shot_keyframe')}${shotCandidateCards(sid,'image','H3 视频首帧候选','IMAGE','shot_video_start_frame')}${shotCandidateCards(sid,'video','视频候选','VIDEO','shot_clip')}${shotCandidateCards(sid,'facefusion','人物处理候选','IMAGE')}
+  <div class="shotMedia shotMediaV237"><div class="shotPreview"><div class="shotPreviewTitle">当前分镜代表画面</div>${img?preview(img):(legacyImg?`${preview(rawImg)}<div class="shotInvalidText">这是旧版已采用画面，可预览但不再计入 18 镜头正式制作；重新生成后采用④ Prompt 锁定版本。</div>`:'<div class="empty">未采用 / ④ Prompt 锁定生成</div>')}</div><div class="shotPreview"><div class="shotPreviewTitle">当前 H3 视频首帧</div>${startFrame?preview(startFrame):(legacyStart?`${preview(rawStart)}<div class="shotInvalidText">这是旧版视频首帧，不符合 Qwen3-32B 独立时序合同；需要重新生成。</div>`:'<div class="empty">未采用 / Qwen3-32B 时序合同生成</div>')}</div><div class="shotPreview ${badVid&&!vid?'shotInvalid':''}"><div class="shotPreviewTitle">当前有效视频</div>${vid?preview(vid):(badVid?`${preview(badVid)}<div class="shotInvalidText">此视频仍可预览，但已因视频首帧版本变化而失效；不会计入 18/18，也不能进入成片。</div>`:'<div class="empty">未采用 / 需要先采用视频首帧</div>')}</div></div>
+  <div class="lineageNote">正式槽：分镜画面 ${img?esc(img.logical_key||'legacy'):'—'}；视频首帧 ${startFrame?esc(startFrame.logical_key||'legacy'):'—'}；视频 ${vid?esc(vid.logical_key||'legacy'):'—'}。三条链互不偷换；候选采用前不会覆盖正式槽。</div>
+  <div class="hidden" id="shotdetail_${esc(sid)}"><div class="shotDetailGrid"><div class="shotDetailItem"><b>时长：</b>${duration?duration.toFixed(1)+'s':'缺失'}</div><div class="shotDetailItem"><b>构图：</b>${esc(s.composition||'—')}</div><div class="shotDetailItem"><b>景别：</b>${esc(s.shot_size||'—')}</div><div class="shotDetailItem"><b>机位：</b>${esc(s.camera||'—')}</div><div class="shotDetailItem"><b>镜头运动：</b>${esc(s.camera_move||'—')}</div><div class="shotDetailItem"><b>人物动作：</b>${esc(s.action||'—')}</div><div class="shotDetailItem"><b>表演/表情：</b>${esc(s.performance||'—')}</div><div class="shotDetailItem"><b>环境/光线：</b>${esc(s.environment||'—')}</div><div class="shotDetailItem"><b>连续性：</b>${esc(s.continuity||'—')}</div><div class="shotDetailItem"><b>对白：</b>${esc(s.dialogue||'—')}</div><div class="shotDetailItem"><b>旁白：</b>${esc(s.narration||'—')}</div><div class="shotDetailItem"><b>音效：</b>${esc(s.sound||'—')}</div><div class="shotDetailItem"><b>音乐：</b>${esc(s.music||'—')}</div></div><div class="meta" style="margin-top:10px">④严格合同 · Covered Beats / 三状态 / 原文依据</div><div class="shotPrompt">${esc(JSON.stringify(s.covered_beat_orders||[]))}<br>代表：${esc(s.representative_state||"—")}<br>视频起始：${esc(s.video_start_state||"—")}<br>视频结束：${esc(s.video_end_state||"—")}<br>原文依据：${esc(String((s.source_provenance?.source_evidence||[])[0]||"—"))}</div><div class="meta" style="margin-top:10px">④静态代表画面 Prompt（⑤直接锁定消费）</div><div class="shotPrompt">${esc(s.image_prompt||'缺失')}</div><div class="meta" style="margin-top:10px">④视频运动 Prompt（作为 Qwen3-32B 时序编译事实之一）</div><div class="shotPrompt">${esc(s.video_prompt||'缺失')}</div></div></div>`);
+ }
+ if(last)html.push('</div>');list.innerHTML=html.join('');
+}
+function toggleShotDetails(id){$('shotdetail_'+id)?.classList.toggle('hidden')}
+async function generateShotImage(id){try{await jpost(`/api/studio/projects/${current}/shots/${id}/generate-image`,shotImagePayload());toast('分镜代表画面候选已提交 · 直接使用④ image_prompt，未二次改写剧情');await refreshAll();showView('make')}catch(e){toast(e.message,true)}}
+// ===== V2.37.0 PER-SHOT H3 PROFILE =====
+function shotVideoProfileStore(){return window.__shotVideoProfileByShot||(window.__shotVideoProfileByShot={})}
+function shotVideoProfileFor(id){const map=shotVideoProfileStore(),key=String(id||'');return map[key]||$('shotVideoProfile')?.value||'standard'}
+function setShotVideoProfile(id,value){const v=value==='turbo'?'turbo':'standard';shotVideoProfileStore()[String(id||'')]=v}
+async function generateShotVideoStart(id){try{toast('Qwen3-32B 正在编译该镜头的视频起始态 / 过渡态 / 结果态…');await jpost(`/api/studio/projects/${current}/shots/${id}/generate-video-start`,shotImagePayload());toast('H3 视频首帧候选已提交；它与分镜代表画面是独立资产');await refreshAll();showView('make')}catch(e){toast(e.message,true)}}
+async function generateShotVideo(id){const profile=shotVideoProfileFor(id);try{await jpost(`/api/studio/projects/${current}/shots/${id}/generate-video`,{aspect_ratio:$('shotAspect')?.value||'16:9',video_profile:profile});toast(`H3 视频候选已提交 · ${profile==='turbo'?'Turbo · 4步':'标准 · 20步'}；使用已采用的独立视频首帧`);await refreshAll();showView('make')}catch(e){toast(e.message,true)}}
+// ===== /V2.37.0 PER-SHOT H3 PROFILE =====
+async function batchGenerateShotImages(){const rows=formalShots().filter(s=>!latestShotImage(s.shot_id)&&!pendingShotCandidate(s.shot_id,'image','shot_keyframe')).slice(0,8);if(!rows.length)return toast('没有缺失的分镜代表画面任务');let ok=0;for(const s of rows){try{await jpost(`/api/studio/projects/${current}/shots/${s.shot_id}/generate-image`,shotImagePayload());ok++}catch(e){toast(`镜头 ${s.global_order||s.order}：${e.message}`,true);break}}toast(`已提交 ${ok} 个分镜代表画面任务${rows.length===8?'（单次最多 8 个）':''}`);await refreshAll();showView('make')}
+async function batchGenerateShotVideos(){const rows=formalShots().filter(s=>currentVideoStart(s.shot_id)&&Number(s.duration_seconds||0)>0&&!latestShotVideo(s.shot_id)&&!pendingShotCandidate(s.shot_id,'video','shot_clip')).slice(0,8);if(!rows.length)return toast('没有可提交的缺失视频；要求先有已采用的视频首帧和真实镜头时长');let ok=0;for(const s of rows){try{await jpost(`/api/studio/projects/${current}/shots/${s.shot_id}/generate-video`,{aspect_ratio:$('shotAspect')?.value||'16:9',video_profile:$('shotVideoProfile')?.value||'standard'});ok++}catch(e){toast(`镜头 ${s.global_order||s.order}：${e.message}`,true);break}}toast(`已提交 ${ok} 个视频任务${rows.length===8?'（单次最多 8 个）':''}`);await refreshAll();showView('make')}
+async function batchAdoptShotCandidates(cap,role,label){const rows=formalShots().map(s=>pendingShotCandidates(s.shot_id,cap,role).find(c=>c.status==='completed'&&candidateContractState(targetForCandidate(c)||{})[0])).filter(Boolean).slice(0,20);if(!rows.length)return toast(`没有待采用的${label||''}候选`);let ok=0;for(const c of rows){try{await jpost(`/api/director/workbench/projects/${current}/candidates/${c.candidate_id}/confirm`,{output_index:0});ok++}catch(e){toast(e.message,true);break}}toast(`已采用 ${ok} 个${label||''}候选`);await refreshAll();showView('make')}
+function openShotPerson(id){const s=formalShots().find(x=>String(x.shot_id)===String(id));if(!s)return;$('faceShotId').value=id;$('faceShotLabel').value=`镜头 ${String(s.global_order||s.order||0).padStart(3,'0')} · ${s.title||''}`;$('faceTargetKind').value=latestShotVideo(id)?'video':'image';$('shotPersonPanel').open=true;updatePersonInputs();$('shotPersonPanel').scrollIntoView({behavior:'smooth',block:'center'})}
+async function runShotPerson(){const id=$('faceShotId').value;if(!id)return toast('先从具体镜头点击“人物处理”',true);const processor=$('faceProcessor').value,source=$('faceSource')?.value||'',caps=snap?.facefusion_capabilities||{},spec=caps[processor]||{},need=!!(spec.source_required||spec.source_kind);if(need&&!source)return toast('当前处理方式需要人物参考图',true);if(need&&!$('faceAuthorized').checked)return toast('请确认人物素材授权范围',true);try{await jpost(`/api/studio/projects/${current}/shots/${id}/facefusion`,{processor,source_asset_id:source,target_kind:$('faceTargetKind').value,authorized_adult:$('faceAuthorized').checked,params:{}});toast('人物处理候选已提交；采用前不会替换当前正式资产');await refreshAll();showView('make')}catch(e){toast(e.message,true)}}
+function openTools(shotId=''){if(!current)return toast('先选择作品',true);showView('make');if(shotId)setTimeout(()=>document.getElementById('shotcard_'+shotId)?.scrollIntoView({behavior:'smooth',block:'center'}),80)}
+function openShotTools(shotId){openTools(shotId)}
+function ensureV2361FinalControls(){const name=$('finalName');if(!name||$('finalAspect'))return;const host=name.closest('.grid2')||name.parentElement?.parentElement;if(!host)return;const wrap=document.createElement('div');wrap.className='finalV2361Controls';wrap.innerHTML=`<div class="field"><label>成片画幅</label><select id="finalAspect"><option value="16:9">16:9</option><option value="9:16">9:16</option><option value="1:1">1:1</option><option value="4:3">4:3</option><option value="3:4">3:4</option><option value="21:9">21:9</option></select></div><div class="field"><label>导出规格</label><select id="finalProfile"><option value="working">工作分辨率 · 标准化</option><option value="1080p">1080p · Lanczos 标准缩放</option><option value="4k">4K 长边 · Lanczos 标准缩放</option></select><div class="finalV2361Hint">4K 这里明确是 FFmpeg Lanczos 标准缩放，不冒充 AI 超分；⑤仍保持工作分辨率。</div></div>`;host.parentElement?.insertBefore(wrap,host.nextSibling);const sa=$('shotAspect');if(sa&&$('finalAspect'))$('finalAspect').value=sa.value||'16:9';const btn=$('assembleBtn');if(btn)btn.textContent='按当前有效血缘生成成片'}
+// ===== V2.37.1 STRICT STAGE04 UI =====
+async function v2371Get(url){const r=await fetch(url,{headers:{Accept:'application/json'}});let b={};try{b=await r.json()}catch(_){b={}}if(!r.ok)throw new Error(b.detail||b.error||`HTTP ${r.status}`);return b}
+async function rebuildStage04Contract(){
+ if(!current)return toast('当前没有作品',true);
+ if(!confirm('将使用 Qwen3-32B 按小说正文重新建立④正式 Shot。旧 Shot 和旧制作资产不会删除，但新 Shot 会获得新的 ID，旧画面/视频不会计入新制作链。继续吗？'))return;
+ const btn=$('stage04RebuildBtn');if(btn)btn.disabled=true;
+ try{
+  await jpost(`/api/studio/projects/${current}/stage04/rebuild-production`,{});
+  toast('④严格分镜重建已提交 · Qwen3-32B');
+  const pid=current;let rounds=0;
+  while(rounds++<720){
+   await new Promise(resolve=>setTimeout(resolve,2500));
+   const s=await v2371Get(`/api/studio/projects/${pid}/stage04/rebuild-production/status`);
+   if(s.status==='completed'){toast(`④严格分镜重建完成 · ${s.formal_shots||s.shots_done||0} 个正式镜头`);await refreshAll();showView('make');return}
+   if(s.status==='failed')throw new Error(s.error||s.message||'④严格分镜重建失败');
+   if(rounds%8===0)toast(s.message||'④严格分镜重建中…');
+  }
+  throw new Error('④严格分镜重建等待超时，请检查任务状态');
+ }catch(e){toast(e.message,true)}
+ finally{if(btn)btn.disabled=false}
+}
+// ===== /V2.37.1 STRICT STAGE04 UI =====
+// ===== /V2.36.1 E2E SHOT CHAIN UI =====
+
+
+function renderProgress(){
+ const p=snap.project,done=new Set(p.completed_stages||[]),stats=shotProductionStats(),finals=(snap.assets||[]).filter(a=>ready(a)&&a.asset_role==='final_cut'),productionDone=stats.total>0&&stats.videoReady===stats.total;
+ const steps=[['01','剧本'],['02','角色'],['03','视觉'],['04','分镜'],['make','制作'],['final','成片']];
+ $('progress').innerHTML=steps.map(([k,n],i)=>{let cls='',state='待开始';if(['01','02','03','04'].includes(k)){if(done.has(k)){cls='done';state='已完成'}else if(p.status==='active'&&p.current_stage===k){cls='current';state='当前'}}else if(k==='make'){if(productionDone||finals.length){cls='done';state='已完成'}else if(p.status!=='active'&&done.has('04')){cls='current';state=`${stats.videoReady}/${stats.total||0} 视频`}}else if(k==='final'){if(finals.length){cls='done';state='已完成'}else if(productionDone){cls='current';state='当前'}}return`<div class="step ${cls}"><div class="stepNo">${i+1}</div><div class="stepText"><b>${n}</b><em>${state}</em></div></div>`}).join('');
+}
+
+function latestText(stage){const h=(snap.project.history||[]).filter(x=>x.stage===stage&&x.role==='assistant');return h.length?h[h.length-1].content:''}
+function creatorStatus(){
+  const p=snap.project,stage=p.current_stage||'04',job=snap.active_job,state=p.stage_state?.[stage]||{},comp=state.skill_runtime?.completion||{};
+  if(job&&['queued','running'].includes(job.status))return['处理中','wait'];
+  if(job&&job.status==='input_required')return['需要补充','wait'];
+  if(job&&job.status==='failed')return['执行失败','bad'];
+  if(comp.ready)return['可确认','ok'];
+  return['待生成','wait'];
+}
+let nextViewAction='';let primaryActionMode='none';let primaryRequiresInput=false;let manualInputOpen=false;
+function runNextViewAction(){
+  if(nextViewAction==='continuity'){showView('continuity');return}
+  if(nextViewAction==='tools'){showView('make');return}
+  if(nextViewAction==='videoedit'){showAppView('videoedit');return}
+  if(nextViewAction==='final'){showView('final');return}
+}
+function syncPrimaryInputState(){
+  const btn=$('primaryActionBtn');
+  if(!btn)return;
+  if(primaryActionMode==='busy'||primaryActionMode==='none'){btn.disabled=true;return}
+  btn.disabled=!!(primaryRequiresInput&&!String($('phaseInput')?.value||'').trim());
+}
+function toggleOptionalInput(){
+  manualInputOpen=!manualInputOpen;
+  renderNextAction();
+  if(manualInputOpen)setTimeout(()=>$('phaseInput')?.focus(),0);
+}
+async function performPrimaryAction(){
+  if(primaryActionMode==='busy'||primaryActionMode==='none')return;
+  if(primaryRequiresInput&&!String($('phaseInput')?.value||'').trim()){
+    toast('请先填写需要补充的信息',true);$('phaseInput')?.focus();return;
+  }
+  if(primaryActionMode==='approve'){const el=$('phaseInput');if(el)el.value='通过';await runPhase();return}if(primaryActionMode==='run'){await runPhase();return}
+  if(primaryActionMode==='confirm'){await confirmPhase();return}
+  if(primaryActionMode==='view'){runNextViewAction();return}
+}
+function renderNextAction(){
+  const p=snap.project,stage=p.current_stage||'04',job=snap.active_job,state=p.stage_state?.[stage]||{},comp=state.skill_runtime?.completion||{};
+  const title=$('nextActionTitle'),desc=$('nextActionDesc'),btn=$('primaryActionBtn'),wrap=$('taskInputWrap'),toggle=$('optionalInputToggle'),label=$('phaseInputLabel');
+  const input=String($('phaseInput')?.value||'').trim();
+  primaryActionMode='none';primaryRequiresInput=false;nextViewAction='';
+  btn.disabled=false;
+  wrap.classList.toggle('hidden',!(manualInputOpen||input));
+  toggle.classList.remove('hidden');
+  toggle.textContent=manualInputOpen?'－ 收起额外要求':'＋ 有额外创作要求';
+  label.textContent='额外创作要求（可选）';
+
+  if(job&&['queued','running'].includes(job.status)){
+    title.textContent='正在处理当前步骤';
+    desc.textContent=job.message||'系统正在自动执行，完成后这里会自动变成下一步。';
+    btn.textContent='处理中…';primaryActionMode='busy';btn.disabled=true;
+    wrap.classList.add('hidden');toggle.classList.add('hidden');return;
+  }
+
+
+  if(job&&['review','review_attention'].includes(job.status)&&['02','03','04'].includes(stage)){
+    const phase=PHASE[stage]||'当前阶段';
+    const nextName=stage==='02'?'视觉':stage==='03'?'分镜':'制作';
+    title.textContent=`${phase}已生成`;
+    desc.textContent=job.message||`检查当前${phase}结果；没问题就确认进入${nextName}。有修改再展开额外要求。`;
+    wrap.classList.add('hidden');toggle.classList.remove('hidden');manualInputOpen=false;
+    btn.textContent=`确认并进入${nextName}`;primaryActionMode='approve';primaryRequiresInput=false;syncPrimaryInputState();return;
+  }
+
+  if(job&&job.status==='input_required'){
+    const cm=job.character_mode||{};
+    const stage02CanRetry=stage==='02'&&cm.reference_image_required!==true;
+    if(stage02CanRetry){
+      title.textContent='继续生成角色';
+      desc.textContent=cm.schema_version?
+        '当前角色不要求真人身份保持，人物参考图只是可选增强。直接继续按剧本生成角色。':
+        '这是旧的角色阶段暂停状态。继续后系统会先重新判断是否真的需要身份参考图；不需要时直接按剧本生成。';
+      wrap.classList.add('hidden');toggle.classList.remove('hidden');manualInputOpen=false;
+      btn.textContent='继续生成角色';primaryActionMode='run';primaryRequiresInput=false;syncPrimaryInputState();return;
+    }
+    title.textContent='请补充信息';
+    desc.textContent=job.reason||job.message||'当前步骤缺少必须由你提供的信息。填写后继续，不需要去其他页面。';
+    label.textContent='系统需要你补充';
+    wrap.classList.remove('hidden');toggle.classList.add('hidden');manualInputOpen=true;
+    btn.textContent='提交补充并继续';primaryActionMode='run';primaryRequiresInput=true;syncPrimaryInputState();return;
+  }
+
+  if(job&&job.status==='failed'){
+    title.textContent=`重新生成${PHASE[stage]||'当前内容'}`;
+    desc.textContent=job.error||job.message||'上次执行失败。可以直接重试，也可以先补充要求。';
+    btn.textContent='重新生成';primaryActionMode='run';syncPrimaryInputState();return;
+  }
+
+  // V2357_STAGE04_DETAIL_UI
+  if(p.status==='active'&&stage==='04'){
+    const pipe=state.studio_stage04_pipeline||{};
+    const covered=Number(pipe.covered_scene_count||0),sceneCount=Number(pipe.scene_count||0),shotCount=Number(pipe.shot_count||0);
+    if(pipe.ready===true&&pipe.coverage_ok===true){
+      title.textContent='详细分镜已生成';
+      desc.textContent=`已覆盖 ${covered}/${sceneCount} 个场景，共 ${shotCount} 个正式镜头。检查没问题后确认进入制作。`;
+      wrap.classList.add('hidden');toggle.classList.remove('hidden');manualInputOpen=false;
+      btn.textContent='确认并进入制作';primaryActionMode='approve';primaryRequiresInput=false;syncPrimaryInputState();return;
+    }
+    title.textContent='生成详细分镜';
+    desc.textContent=snap.source_profile?.longform
+      ?'长章节按场景和剧情节拍分批读取原文并详细拆镜，全部场景覆盖后再合并；不会把整章压成几条粗略镜头。'
+      :'按场景和剧情节拍生成可直接进入图片/视频制作的详细镜头，全部覆盖后再确认进入制作。';
+    btn.textContent='生成详细分镜';primaryActionMode='run';primaryRequiresInput=false;syncPrimaryInputState();return;
+  }
+
+
+  if(p.status==='active'){
+    const phase=PHASE[stage]||'当前阶段';
+    const nextName=stage==='01'?'角色':stage==='02'?'视觉':stage==='03'?'分镜':'制作素材';
+    if(comp.ready&&!manualInputOpen){
+      title.textContent=`${phase}已完成`;
+      desc.textContent=`检查结果没问题，就进入${nextName}。这是现在唯一需要确认的动作。`;
+      btn.textContent=`确认并进入${nextName}`;primaryActionMode='confirm';toggle.classList.remove('hidden');syncPrimaryInputState();return;
+    }
+    if(comp.ready&&manualInputOpen){
+      title.textContent=`修改${phase}`;
+      desc.textContent='填写你要调整的内容，提交后系统会继续当前阶段，不会直接进入下一阶段。';
+      label.textContent='要修改什么';
+      wrap.classList.remove('hidden');
+      btn.textContent='提交修改并继续';primaryActionMode='run';primaryRequiresInput=true;syncPrimaryInputState();return;
+    }
+    title.textContent=`生成${phase}`;
+    const long=snap.source_profile?.longform&&stage==='01';
+    if(stage==='02'){
+      desc.textContent='系统会根据剧本判断角色是否真的需要身份参考图。虚构/原创角色直接生成，参考图默认只是可选增强。';
+    }else{
+      desc.textContent=long?'长章节会自动分片处理。你只需要点击生成，系统不会把整章一次塞进模型。':'点击一次即可，系统会自动完成当前阶段内部步骤；只有确实缺信息才会停下来问你。';
+    }
+    btn.textContent=`开始生成${phase}`;primaryActionMode='run';syncPrimaryInputState();return;
+  }
+
+  wrap.classList.add('hidden');toggle.classList.add('hidden');
+  const finals=(snap.assets||[]).filter(a=>ready(a)&&a.asset_role==='final_cut'),stats=shotProductionStats();
+  if(finals.length){title.textContent='作品已完成';desc.textContent='最终成片已经生成。';btn.textContent='查看成片';primaryActionMode='view';nextViewAction='final';syncPrimaryInputState();return}
+  if(stats.total>0&&stats.videoReady===stats.total){title.textContent='最后一步：合成成片';desc.textContent=`${stats.total} 个正式镜头的视频均已采用，可以按分镜顺序合成成片。`;btn.textContent='进入成片';primaryActionMode='view';nextViewAction='final';syncPrimaryInputState();return}
+  if(stats.total>0){title.textContent='现在要做：制作镜头素材';desc.textContent=`分镜共 ${stats.scenes} 场 / ${stats.total} 镜头；画面 ${stats.imageReady}/${stats.total}，视频 ${stats.videoReady}/${stats.total}${stats.pending?`，另有 ${stats.pending} 个结果处理中或待采用`:''}。`;btn.textContent='查看制作列表';primaryActionMode='view';nextViewAction='tools';syncPrimaryInputState();return}
+  title.textContent='分镜数据需要检查';desc.textContent='核心阶段显示已完成，但没有读取到正式 Shot。请检查④分镜结果。';btn.textContent='查看连续性';primaryActionMode='view';nextViewAction='continuity';syncPrimaryInputState();
+}
+
+function renderCreate(){
+  const p=snap.project,stage=p.current_stage||'04';
+  $('projectTitle').textContent=p.title;
+  $('projectSub').textContent=p.status==='active'?`当前进度：${PHASE[stage]||'创作'} · 只看下方“现在要做”`:'核心创作已完成 · 继续按“现在要做”完成素材和成片';
+  $('phaseResult').textContent=latestText(stage)||snap.last_result||'当前阶段还没有生成结果。';
+  const sp=snap.source_profile||{},spBox=$('sourceProfile');
+  if(sp.char_count){
+    const a=snap.continuity?.analysis||{};
+    spBox.classList.remove('hidden');
+    spBox.textContent=`源文本 ${Number(sp.char_count).toLocaleString()} 字符 · ${sp.longform?'已启用长章节分片':'直接上下文'}${sp.longform?` · ${a.chunks_done||0}/${a.chunks_total||'…'} 片`:''}`;
+  }else spBox.classList.add('hidden');
+
+  const all=(snap.assets||[]).filter(a=>a.stage===stage&&a.active!==false).slice().reverse();
+  const seen=new Set(),assets=[];
+  for(const a of all){
+    const key=String(a.logical_key||a.asset_role||assetDisplayName(a)||a.asset_id);
+    if(seen.has(key))continue;
+    seen.add(key);assets.push(a);
+    if(assets.length>=4)break;
+  }
+  $('phaseAssets').innerHTML=assets.length?assets.map(simpleAssetCard).join(''):'<div class="empty">当前阶段暂无成果</div>';
+  renderEntities();
+  renderNextAction();
+  renderJob();
+}
+function assetDisplayName(a){
+  const role=String(a.asset_role||''),name=String(a.name||'');
+  if(role==='source_brief'||role==='source_full'||name==='当前创作入口')return '原始创作内容';
+  if(/^Stage\s*0?\d+\s*[•·-]/i.test(name))return `${PHASE[String(a.stage||'')]||'本阶段'}生成稿`;
+  return name||'未命名成果';
+}
+function simpleAssetCard(a){
+  const t=String(a.asset_type||'').toUpperCase(),u=assetUrl(a);
+  const typeLabel=t==='TEXT'?'文本':t==='IMAGE'?'图片':t==='VIDEO'?'视频':t==='STRUCTURED_DATA'?'结构数据':t;
+  return`<div class="card assetCompact"><div class="entityType">${esc(typeLabel)}</div><h4>${esc(assetDisplayName(a))}</h4>${u?preview(a):'<div class="meta">内容已记录在当前项目中</div>'}</div>`;
+}
+function renderEntities(){
+  const xs=snap.entities||[],counts={character:0,location:0,scene:0,shot:0,prop:0};
+  xs.forEach(e=>{if(e&&counts[e.entity_type]!==undefined)counts[e.entity_type]++});
+  const overview=[['角色',counts.character],['场景',counts.scene+counts.location],['镜头',counts.shot],['道具',counts.prop]]
+    .map(([n,c])=>`<div class="entityCount">${n}<b>${c}</b></div>`).join('');
+  const sample=xs.slice(0,6).map(e=>`<div class="entityPill"><span>${esc(ENTITY_LABEL[e.entity_type]||e.entity_type||'元素')}</span>${esc(e.name)}</div>`).join('');
+  $('entities').innerHTML=xs.length?`<div class="entityOverview">${overview}</div><div class="entityPills">${sample}</div>${xs.length>6?`<div class="meta" style="margin-top:7px">其余 ${xs.length-6} 个在“连续性”中查看。</div>`:''}`:'<div class="empty">暂无故事元素</div>';
+}
+function renderJob(){
+  const j=snap.active_job;
+  if(!j||j.status==='input_required'){$('jobBox').innerHTML='';return}
+  if(['queued','running'].includes(j.status)){
+    $('jobBox').innerHTML=`<div class="job"><b>${esc(j.message||'正在处理…')}</b>${j.turn_count?`<div class="meta">已自动推进 ${esc(j.turn_count)} 步</div>`:''}</div>`;return;
+  }
+  if(j.status==='failed'){
+    $('jobBox').innerHTML=`<div class="job failed"><b>上次执行失败</b>${j.error?`<div class="meta">${esc(j.error)}</div>`:''}</div>`;return;
+  }
+  $('jobBox').innerHTML='';
+}
+function fill(id,items,empty='不选择'){const el=$(id),old=el.value;el.innerHTML=`<option value="">${empty}</option>`+items.map(a=>`<option value="${esc(a.asset_id)}">${esc(a.name)}</option>`).join('');if(items.some(a=>a.asset_id===old))el.value=old}
+// ===== V2.35.9C SHOT UI RECOVERY =====
+window.__AI_STUDIO_UI_BUILD__='2.36.1-e2e-chain';
+
+function updatePersonInputs(){
+  const caps=snap?.facefusion_capabilities||{};
+  const processor=$('faceProcessor');
+  const spec=processor?(caps[processor.value]||{}):{};
+  const needSource=!!(spec.source_required||spec.source_kind);
+  const sourceField=$('personSourceField');
+  if(sourceField)sourceField.classList.toggle('hidden',!needSource);
+  const authField=$('faceAuthField');
+  if(authField)authField.classList.toggle('hidden',!needSource);
+}
+
+function safeUpdatePersonInputs(){
+  try{
+    if(typeof updatePersonInputs==='function')updatePersonInputs();
+  }catch(err){
+    console.warn('人物处理控件初始化失败，但不阻断镜头制作列表：',err);
+  }
+}
+// ===== /V2.35.9C SHOT UI RECOVERY =====
+
+function renderMake(){
+ const assets=(snap.assets||[]).filter(a=>ready(a)&&assetUrl(a)),images=assets.filter(a=>a.asset_type==='IMAGE');fill('faceSource',images,'选择人物参考图');
+ const caps=snap.facefusion_capabilities||{},keys=Object.keys(caps).filter(k=>caps[k]&&caps[k].available!==false&&!k.startsWith('_')),fp=$('faceProcessor');if(fp){const old=fp.value;fp.innerHTML=keys.map(k=>`<option value="${esc(k)}">${esc(caps[k].label||k)}</option>`).join('');if(keys.includes(old))fp.value=old;updatePersonInputs()}
+ renderShotProduction();
+}
+
+// ===== V2.35.9D RENDER ISOLATION + FINAL UI =====
+window.__AI_STUDIO_UI_BUILD__='2.35.9d-render-isolation-final-ui';
+
+function safeRenderSection(name,fn){
+  try{
+    fn();
+  }catch(err){
+    console.error(`[${name}] 渲染失败，但已隔离，不影响其他页面：`,err);
+  }
+}
+
+function ensureShotFinalDom(){
+  const root=$('view-final');
+  if(!root)return null;
+
+  if($('finalVideos')&&$('finalResults')&&$('finalName')&&$('assembleBtn')){
+    return root;
+  }
+
+  root.innerHTML=`
+    <div class="panel">
+      <div class="resultHeader">
+        <div>
+          <h2>第 ⑥ 步 · 成片</h2>
+          <div class="sub">按正式分镜顺序检查全部镜头视频。只有 18/18 等全部镜头视频均已采用，才能合成最终成片。</div>
+        </div>
+      </div>
+
+      <div id="finalGate" class="notice" style="margin-top:12px"></div>
+
+      <div class="grid2" style="margin-top:14px">
+        <div class="field">
+          <label>成片名称</label>
+          <input id="finalName" value="最终成片">
+        </div>
+        <div class="field" style="justify-content:flex-end">
+          <label>&nbsp;</label>
+          <button id="assembleBtn" class="btn primary" onclick="assembleFinal()">按分镜顺序生成成片</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>镜头视频检查</h3>
+      <div id="finalVideos"></div>
+    </div>
+
+    <div class="panel">
+      <h3>最终成片</h3>
+      <div id="finalResults"></div>
+    </div>
+  `;
+  return root;
+}
+// ===== /V2.35.9D RENDER ISOLATION + FINAL UI =====
+
+function renderFinal(){
+  const root=ensureShotFinalDom();
+  if(!root)return;
+  ensureV2361FinalControls();
+  const shots=formalShots();
+  const rows=shots.map(s=>({shot:s,video:latestShotVideo(s.shot_id),invalid:staleOrMismatchedVideo(s.shot_id)}));
+  const missing=rows.filter(x=>!x.video);
+  const pending=shots.reduce((n,s)=>n+pendingShotCandidates(s.shot_id,'video').filter(c=>c.status==='completed').length,0);
+  const videoBox=$('finalVideos'),resultBox=$('finalResults'),gate=$('finalGate'),btn=$('assembleBtn');
+  if(gate){gate.textContent=rows.length?`正式镜头 ${rows.length} 个；当前有效视频 ${rows.length-missing.length}/${rows.length}${missing.length?`，仍有 ${missing.length} 个镜头缺失或血缘失效。`:'，全部通过当前画面/视频血缘门禁。'}${pending?` 另有 ${pending} 个新视频候选待决定，不会自动替换当前正式视频。`:''}`:'没有读取到正式分镜镜头，不能生成成片。';gate.style.borderColor=(!rows.length||missing.length)?'#71333e':'#2f5b42'}
+  if(videoBox){videoBox.innerHTML=rows.length?rows.map(({shot,video,invalid},i)=>`<div class="card ${!video&&invalid?'shotInvalid':''}" style="display:block;margin:7px 0"><b>${i+1}. 镜头 ${String(shot.global_order||shot.order||0).padStart(3,'0')} · ${esc(shot.title||'')}</b><div class="meta">${video?`当前有效 · ${esc(video.name||'镜头视频')}`:(invalid?'旧视频存在但已失效，需要重新生成':'缺少当前有效视频')}</div>${video?preview(video):(invalid?preview(invalid):'')}</div>`).join(''):'<div class="empty">没有正式分镜镜头。</div>'}
+  const finals=(snap.assets||[]).filter(a=>shotUsable(a)&&a.asset_role==='final_cut').slice().sort((a,b)=>Number(b.version||0)-Number(a.version||0));
+  if(resultBox){resultBox.innerHTML=finals.length?finals.map(a=>`<div class="card"><h4>${esc(a.name)}</h4><div class="meta">${esc(a.metadata?.export_profile||'working')} · ${esc(a.metadata?.target_width||'')}×${esc(a.metadata?.target_height||'')} · 24fps</div>${preview(a)}</div>`).join(''):'<div class="empty">还没有当前有效最终成片</div>'}
+  if(btn){btn.disabled=!!missing.length||!rows.length;btn.title=missing.length?`还有 ${missing.length} 个镜头没有当前有效视频`:''}
+}
+
+function renderAll(){if(!snap)return;renderProgress();renderCreate();renderContinuity();safeRenderSection('制作',renderMake);safeRenderSection('成片',renderFinal);loadProjects()}
+
+const STATE_LABELS={outfit:'服装',weapon:'武器',weapons:'武器',hair:'发型',hairstyle:'发型',injury:'伤势',injuries:'伤势',makeup:'妆容',equipment:'装备',equipped_items:'装备',carried_items:'携带',possessions:'持有',condition:'状态',holder:'持有人',holder_entity_id:'持有人',location:'位置',appearance_variant:'外观版本',time:'时间',time_of_day:'时间',weather:'天气',lighting:'光线',atmosphere:'氛围',crowd:'人群',damage:'损坏',layout:'布局',decor:'陈设'};
+function stateLines(obj,prefix=''){
+  if(!obj||typeof obj!=='object')return[];
+  const out=[];
+  for(const [k,v] of Object.entries(obj)){
+    const label=STATE_LABELS[k]||k;
+    if(v&&typeof v==='object'&&!Array.isArray(v)){
+      const nested=stateLines(v,prefix?`${prefix} / ${label}`:label);out.push(...nested);
+    }else if(v!==''&&v!==null&&v!==undefined){
+      const val=Array.isArray(v)?v.join('、'):String(v);
+      out.push(`${prefix?prefix+' / ':''}${label}：${val}`);
+    }
+  }
+  return out;
+}
+function continuityData(){return snap?.continuity||{analysis:{status:'idle'},episodes:[],scenes:[],shots:[],entities:[],overrides:[]}}
+function renderContinuityStatus(){
+  const c=continuityData(),a=c.analysis||{},status=a.status||'idle';
+  const labels={idle:'等待分析',running:'正在自动分析',ready:'连续性已建立',failed:'分析失败'};
+  let txt=labels[status]||status;
+  if(a.chunks_total)txt+=` · ${a.chunks_done||0}/${a.chunks_total}`;
+  if(a.message)txt+=` · ${a.message}`;
+  const ir=a.identity_resolution||{};
+  if((ir.deterministic_matches||0)+(ir.semantic_matches||0)>0)txt+=` · 身份复用 ${Number(ir.deterministic_matches||0)+Number(ir.semantic_matches||0)}`;
+  if(ir.semantic_groups)txt+=` · 同片段合并 ${ir.semantic_groups}`;
+  if(a.error)txt+=` · ${a.error}`;
+  $('continuityStatus').textContent=txt;
+}
+function fillContinuityEpisodes(){
+  const c=continuityData(),el=$('continuityEpisode'),old=el.value||c.active_episode_id||'';
+  el.innerHTML=(c.episodes||[]).map(e=>`<option value="${esc(e.episode_id)}">${esc(e.order)}. ${esc(e.title)}</option>`).join('')||'<option value="">尚未解析章节 / 集</option>';
+  if((c.episodes||[]).some(e=>e.episode_id===old))el.value=old;
+}
+function entityName(id){
+  const e=(continuityData().entities||[]).find(x=>x.entity_id===id);
+  return e?.name||'';
+}
+function renderContinuity(){
+  const c=continuityData();renderContinuityStatus();fillContinuityEpisodes();
+  const mode=$('continuityMode')?.value||'scenes',ep=$('continuityEpisode')?.value||c.active_episode_id||'';
+  let html='';
+  if(mode==='scenes'){
+    const rows=(c.scenes||[]).filter(x=>!ep||x.episode_id===ep);
+    html=rows.map(s=>`<div class="card"><div class="entityType">场景 ${esc(s.order)}</div><h4>${esc(s.title)}</h4><div class="meta">${esc(s.summary||'')}</div><div class="meta" style="margin-top:6px">地点：${esc(entityName(s.location_entity_id)||'未明确')}<br>角色：${esc((s.character_entity_ids||[]).map(entityName).filter(Boolean).join('、')||'无')}</div><div class="row"><button class="btn" onclick="openResolvedScene('${esc(s.scene_id)}')">查看当前状态</button><button class="btn" onclick="openContinuityModal('scene','${esc(s.scene_id)}')">调整</button></div></div>`).join('');
+  }else if(mode==='shots'){
+    const rows=(c.shots||[]).filter(x=>!ep||x.episode_id===ep);
+    html=rows.map(s=>`<div class="card"><div class="entityType">${s.provisional?'剧情镜头种子':'正式分镜'}</div><h4>${esc(s.title)}</h4><div class="meta">${esc(s.summary||'')}</div><div class="row"><button class="btn" onclick="openResolvedShot('${esc(s.shot_id)}')">查看状态</button><button class="btn" onclick="openContinuityModal('shot','${esc(s.shot_id)}')">调整</button><button class="btn primary" onclick="openShotTools('${esc(s.shot_id)}')">载入制作工具</button></div></div>`).join('');
+  }else{
+    const typeMap={characters:'character',locations:'location',props:'prop'},wanted=typeMap[mode];
+    const rows=(c.entities||[]).filter(x=>x.entity_type===wanted);
+    const imageAssets=(snap.assets||[]).filter(a=>ready(a)&&a.asset_type==='IMAGE');
+    html=rows.map(e=>`<div class="card"><div class="entityType">${esc(ENTITY_LABEL[e.entity_type]||e.entity_type)}</div><h4>${esc(e.name)}</h4>${(e.aliases||[]).length?`<div class="meta">别名 / 称谓：${esc((e.aliases||[]).join('、'))}</div>`:''}<div class="meta" style="margin-top:6px">${stateLines(e.core_profile||{}).join('<br>')||'等待更多剧情信息'}</div>${(e.references||[]).length?`<div class="meta" style="margin-top:7px">已绑定参考：${esc((e.references||[]).map(r=>r.label||r.role).join('、'))}</div>`:''}<div class="field" style="margin-top:8px"><select id="ref_${esc(e.entity_id)}"><option value="">选择项目图片作为参考</option>${imageAssets.map(a=>`<option value="${esc(a.asset_id)}">${esc(a.name)}</option>`).join('')}</select></div><div class="row"><button class="btn" onclick="bindContinuityReference('${esc(e.entity_id)}','${esc(e.entity_type)}')">绑定参考</button></div></div>`).join('');
+  }
+  $('continuityList').innerHTML=html||'<div class="empty">暂无对应数据，连续性分析会随项目文本和分镜自动更新。</div>';
+}
+async function changeContinuityEpisode(){
+  const ep=$('continuityEpisode').value;if(!ep)return;
+  try{await jpost(`/api/studio/projects/${current}/continuity/active-episode`,{episode_id:ep});snap.continuity.active_episode_id=ep;renderContinuity()}catch(e){toast(e.message,true)}
+}
+async function openResolvedScene(id){
+  try{continuityResolved=await api(`/api/studio/projects/${current}/continuity/scenes/${id}`);continuityAnchor={type:'scene',id};renderResolvedState()}catch(e){toast(e.message,true)}
+}
+async function openResolvedShot(id){
+  try{continuityResolved=await api(`/api/studio/projects/${current}/continuity/shots/${id}`);continuityAnchor={type:'shot',id};renderResolvedState()}catch(e){toast(e.message,true)}
+}
+function renderResolvedState(){
+  const r=continuityResolved;if(!r)return;
+  const scene=r.scene||{},shot=r.shot||null,loc=r.location;
+  let html=`<div class="card"><div class="entityType">${shot?'镜头':'场景'}</div><h4>${esc((shot||scene).title||'当前状态')}</h4><div class="meta">${esc((shot||scene).summary||scene.summary||'')}</div></div>`;
+  if(loc)html+=`<div class="card"><div class="entityType">地点</div><h4>${esc(loc.name)}</h4><div class="meta">${stateLines(loc.state||{}).map(esc).join('<br>')||'无额外状态变化'}</div></div>`;
+  for(const ch of r.characters||[])html+=`<div class="card"><div class="entityType">角色</div><h4>${esc(ch.name)}</h4><div class="meta">${stateLines(ch.state||{}).map(esc).join('<br>')||'沿用默认设定'}</div></div>`;
+  for(const p of r.props||[])html+=`<div class="card"><div class="entityType">武器 / 道具</div><h4>${esc(p.name)}</h4><div class="meta">${stateLines(p.state||{}).map(esc).join('<br>')||'无额外状态变化'}</div></div>`;
+  html+=`<div class="row"><button class="btn" onclick="openContinuityModal('${continuityAnchor.type}','${continuityAnchor.id}')">这里不对，调整</button></div>`;
+  $('resolvedState').innerHTML=`<div class="cards">${html}</div>`;
+}
+function openContinuityModal(type,id){continuityAnchor={type,id};$('continuityInstruction').value='';$('continuityScope').value=type==='shot'?'shot':'from_here';$('continuityModal').classList.add('show')}
+function closeContinuityModal(){$('continuityModal').classList.remove('show')}
+async function applyContinuityOverride(){
+  const instruction=$('continuityInstruction').value.trim();if(!instruction)return toast('请说明要怎么调整',true);
+  try{
+    await jpost(`/api/studio/projects/${current}/continuity/override`,{anchor_type:continuityAnchor.type,anchor_id:continuityAnchor.id,instruction,scope:$('continuityScope').value,locked:$('continuityLocked').checked});
+    closeContinuityModal();toast('连续性已调整');await refreshAll();
+    if(continuityAnchor.type==='shot')await openResolvedShot(continuityAnchor.id);else await openResolvedScene(continuityAnchor.id);
+  }catch(e){toast(e.message,true)}
+}
+async function bindContinuityReference(entityId,entityType){
+  const assetId=$(`ref_${entityId}`).value;if(!assetId)return toast('先选择一张项目图片',true);
+  const role=entityType==='character'?'identity':entityType==='location'?'location_reference':'prop_reference';
+  try{await jpost(`/api/studio/projects/${current}/continuity/references`,{entity_id:entityId,asset_id:assetId,role});toast('参考资产已绑定');await refreshAll()}catch(e){toast(e.message,true)}
+}
+async function reanalyzeContinuity(){try{await jpost(`/api/studio/projects/${current}/continuity/analyze`,{});toast('已开始重新分析');await refreshAll()}catch(e){toast(e.message,true)}}
+function toolUrl(shotId=''){const q=new URLSearchParams({embed:'1'});if(current)q.set('project_id',current);if(shotId)q.set('shot_id',shotId);return '/single?'+q.toString()}
+function updateVideoEditUI(){
+  const m=$('editMode').value,person=m==='person'||m==='person_background',bg=m==='background'||m==='person_background';
+  $('editPersonField').classList.toggle('hidden',!person);$('editBackgroundField').classList.toggle('hidden',!bg);$('editAuthField').classList.toggle('hidden',!person);
+}
+function videoEditAssetAccepted(a){
+  if(a.asset_role!=='video_edit_result')return true;
+  const j=snap.video_edit_job;
+  if(j&&j.result_asset_id===a.asset_id)return j.review_status==='accepted';
+  return true;
+}
+function videoEditResultCard(a){
+  const j=snap.video_edit_job&&snap.video_edit_job.result_asset_id===a.asset_id?snap.video_edit_job:null,review=j?.review_status||'accepted';
+  return`<div class="card"><div class="resultHeader"><div><div class="entityType">视频改造</div><h4>${esc(a.name)}</h4></div><span class="badge ${review==='accepted'?'ok':review==='rejected'?'bad':'wait'}">${review==='accepted'?'已采用':review==='rejected'?'已丢弃':'待确认'}</span></div>${preview(a)}${review==='pending'&&j?`<div class="row"><button class="btn good" onclick="reviewVideoEdit('${esc(j.job_id)}','accept')">采用</button><button class="btn danger" onclick="reviewVideoEdit('${esc(j.job_id)}','reject')">丢弃</button></div>`:''}</div>`;
+}
+function renderVideoEdit(){
+  const assets=(snap.assets||[]).filter(a=>ready(a)&&assetUrl(a)),videos=assets.filter(a=>a.asset_type==='VIDEO'&&videoEditAssetAccepted(a)),images=assets.filter(a=>a.asset_type==='IMAGE'),backgrounds=assets.filter(a=>['IMAGE','VIDEO'].includes(a.asset_type)&&videoEditAssetAccepted(a));
+  fill('editTarget',videos,'选择目标视频');fill('editPerson',images,'选择人物参考图');fill('editBackground',backgrounds,'选择新背景');updateVideoEditUI();
+  const j=snap.video_edit_job;
+  if(!j)$('videoEditJob').innerHTML='';else{const cls=j.status==='completed'?(j.review_status==='accepted'?'ok':'wait'):j.status==='failed'?'bad':'wait';$('videoEditJob').innerHTML=`<div class="job ${esc(j.status)}"><span class="badge ${cls}">${esc(j.status)}</span> <b>${esc(j.message||'')}</b>${j.error?`<div class="meta">${esc(j.error)}</div>`:''}${j.result_url?previewUrl(j.result_url,'VIDEO'):''}${j.status==='completed'&&(j.review_status||'pending')==='pending'?`<div class="row"><button class="btn good" onclick="reviewVideoEdit('${esc(j.job_id)}','accept')">采用</button><button class="btn danger" onclick="reviewVideoEdit('${esc(j.job_id)}','reject')">丢弃</button></div>`:''}</div>`}
+  const results=assets.filter(a=>a.asset_role==='video_edit_result').slice().reverse();$('videoEditResults').innerHTML=results.length?results.map(videoEditResultCard).join(''):'<div class="empty">暂无视频改造结果</div>';
+  $('runVideoEditBtn').disabled=!!j&&(['queued','running'].includes(j.status)||(j.status==='completed'&&(j.review_status||'pending')==='pending'));
+}
+async function reviewVideoEdit(jobId,action){try{await jpost(`/api/studio/projects/${current}/video-edit/jobs/${jobId}/review`,{action});toast(action==='accept'?'已采用视频改造结果':'已丢弃视频改造结果');await refreshAll()}catch(e){toast(e.message,true)}}
+async function uploadEditMedia(inputId,role,selectId){
+  const f=$(inputId).files?.[0];if(!f)return toast('先选择要上传的文件',true);const fd=new FormData();fd.append('file',f);fd.append('role',role);fd.append('name',f.name);try{toast('正在上传…');const d=await api(`/api/studio/projects/${current}/import-media`,{method:'POST',body:fd});await refreshAll();$(selectId).value=d.asset.asset_id;toast('素材已加入当前项目')}catch(e){toast(e.message,true)}
+}
+async function runVideoEdit(){
+  const mode=$('editMode').value,b={mode,target_asset_id:$('editTarget').value,person_source_asset_id:$('editPerson').value,background_asset_id:$('editBackground').value,authorized_adult:$('editAuthorized').checked,name:$('editName').value||'视频编辑结果'};
+  if(!b.target_asset_id)return toast('请选择目标视频',true);if((mode==='person'||mode==='person_background')&&!b.person_source_asset_id)return toast('请选择人物参考图',true);if((mode==='background'||mode==='person_background')&&!b.background_asset_id)return toast('请选择新背景',true);try{await jpost(`/api/studio/projects/${current}/video-edit`,b);toast('视频改造已开始');await refreshAll()}catch(e){toast(e.message,true)}
+}
+
+
+const TOOL_META={text:['文本','独立文本生成、改写、续写、总结和分析。'],image:['图片','独立图片生成与编辑。'],video:['视频','独立 H3 视频生成。'],face:['FaceFusion','独立人物替换、增强、口型与背景处理。']};
+function showAppView(name,btn){
+  appView=name;
+  document.querySelectorAll('.appView').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('[data-app-menu]').forEach(x=>x.classList.toggle('active',x.dataset.appMenu===name));
+  if(name==='shortvideo'){$('app-shortvideo').classList.add('active');return}
+  if(name==='videoedit'){$('app-videoedit').classList.add('active');loadGlobalVideoEdit().catch(e=>toast(e.message,true));return}
+  $('app-tool').classList.add('active');const meta=TOOL_META[name]||TOOL_META.text;$('toolTitle').textContent=meta[0];$('toolDesc').textContent=meta[1];
+  const frame=$('standaloneToolFrame'),url=`/single?embed=1&single_tab=1&tab=${encodeURIComponent(name)}`;if(frame.dataset.url!==url){frame.src=url;frame.dataset.url=url}
+}
+
+let geditProject='',geditSnap=null,geditPoll=null;
+function geditAccepted(a){if(a.asset_role!=='video_edit_result')return true;const j=geditSnap?.video_edit_job;if(j&&j.result_asset_id===a.asset_id)return j.review_status==='accepted';return true}
+function updateGlobalVideoEditUI(){const m=$('geditMode').value,p=m==='person'||m==='person_background',b=m==='background'||m==='person_background';$('geditPersonField').classList.toggle('hidden',!p);$('geditBackgroundField').classList.toggle('hidden',!b);$('geditAuthField').classList.toggle('hidden',!p)}
+function gfill(id,items,empty){const el=$(id),old=el.value;el.innerHTML=`<option value="">${empty}</option>`+items.map(a=>`<option value="${esc(a.asset_id)}">${esc(a.name)}</option>`).join('');if(items.some(a=>a.asset_id===old))el.value=old}
+function renderGlobalVideoEdit(){
+  if(!geditSnap)return;const assets=(geditSnap.assets||[]).filter(a=>ready(a)&&assetUrl(a)),videos=assets.filter(a=>a.asset_type==='VIDEO'&&geditAccepted(a)),images=assets.filter(a=>a.asset_type==='IMAGE'),backgrounds=assets.filter(a=>['IMAGE','VIDEO'].includes(a.asset_type)&&geditAccepted(a));
+  gfill('geditTarget',videos,'选择目标视频');gfill('geditPerson',images,'选择人物参考图');gfill('geditBackground',backgrounds,'选择新背景');updateGlobalVideoEditUI();
+  const j=geditSnap.video_edit_job,box=$('globalEditJob');if(!j)box.innerHTML='';else{const review=j.review_status||'pending';box.innerHTML=`<div class="job ${esc(j.status||'')}"><b>${esc(j.message||j.status||'处理中')}</b>${j.error?`<div class="meta">${esc(j.error)}</div>`:''}${j.result_url?previewUrl(j.result_url,'VIDEO'):''}${j.status==='completed'&&review==='pending'?`<div class="row"><button class="btn good" onclick="reviewGlobalVideoEdit('${esc(j.job_id)}','accept')">采用</button><button class="btn danger" onclick="reviewGlobalVideoEdit('${esc(j.job_id)}','reject')">丢弃</button></div>`:''}</div>`}
+  const results=assets.filter(a=>a.asset_role==='video_edit_result').slice().reverse();$('globalEditResults').innerHTML=results.length?results.map(a=>`<div class="card"><h4>${esc(a.name)}</h4>${preview(a)}</div>`).join(''):'<div class="empty">暂无视频改造结果</div>';
+  $('runGlobalEditBtn').disabled=!!j&&(['queued','running'].includes(j.status)||(j.status==='completed'&&(j.review_status||'pending')==='pending'));
+}
+async function loadGlobalVideoEdit(){const ws=await api('/api/single/workspace');geditProject=ws.project_id;geditSnap=await api(`/api/studio/projects/${geditProject}`);renderGlobalVideoEdit();clearInterval(geditPoll);geditPoll=setInterval(async()=>{if(appView!=='videoedit'||!geditProject)return;try{geditSnap=await api(`/api/studio/projects/${geditProject}`);renderGlobalVideoEdit()}catch{}},4000)}
+async function uploadGlobalEditMedia(inputId,role,selectId){if(!geditProject)await loadGlobalVideoEdit();const f=$(inputId).files?.[0];if(!f)return toast('先选择文件',true);const fd=new FormData();fd.append('file',f);fd.append('role',role);fd.append('name',f.name);try{const d=await api(`/api/studio/projects/${geditProject}/import-media`,{method:'POST',body:fd});geditSnap=await api(`/api/studio/projects/${geditProject}`);renderGlobalVideoEdit();$(selectId).value=d.asset.asset_id;toast('素材已加入视频改造工作区')}catch(e){toast(e.message,true)}}
+async function runGlobalVideoEdit(){if(!geditProject)await loadGlobalVideoEdit();const mode=$('geditMode').value,b={mode,target_asset_id:$('geditTarget').value,person_source_asset_id:$('geditPerson').value,background_asset_id:$('geditBackground').value,authorized_adult:$('geditAuthorized').checked,name:$('geditName').value||'视频改造结果'};if(!b.target_asset_id)return toast('请选择目标视频',true);if((mode==='person'||mode==='person_background')&&!b.person_source_asset_id)return toast('请选择人物参考图',true);if((mode==='background'||mode==='person_background')&&!b.background_asset_id)return toast('请选择新背景',true);try{await jpost(`/api/studio/projects/${geditProject}/video-edit`,b);toast('视频改造已开始');geditSnap=await api(`/api/studio/projects/${geditProject}`);renderGlobalVideoEdit()}catch(e){toast(e.message,true)}}
+async function reviewGlobalVideoEdit(jobId,action){try{await jpost(`/api/studio/projects/${geditProject}/video-edit/jobs/${jobId}/review`,{action});geditSnap=await api(`/api/studio/projects/${geditProject}`);renderGlobalVideoEdit();toast(action==='accept'?'已采用':'已丢弃')}catch(e){toast(e.message,true)}}
+
+function startPolling(){clearInterval(pollTimer);pollTimer=setInterval(async()=>{if(!current)return;try{snap=await api(`/api/studio/projects/${current}`);renderAll()}catch{}},4000)}
+
+async function runPhase(){
+ if(!current)return;try{await jpost(`/api/studio/projects/${current}/run-stage`,{input:$('phaseInput').value.trim(),max_turns:16});$('phaseInput').value='';manualInputOpen=false;toast('已开始处理');await refreshAll();if(snap?.project?.status==='completed'&&(snap.project.completed_stages||[]).includes('04')){showView('make');setTimeout(()=>$('view-make')?.scrollIntoView({behavior:'smooth',block:'start'}),80)}else{showView('create');$('taskFocus')?.scrollIntoView({behavior:'smooth',block:'start'})}}catch(e){toast(e.message,true)}
+}
+
+async function confirmPhase(){if(!current)return;try{await api(`/api/studio/projects/${current}/confirm-stage`,{method:'POST'});manualInputOpen=false;showView('create');toast('已确认，进入下一阶段');await refreshAll();$('taskFocus')?.scrollIntoView({behavior:'smooth',block:'start'})}catch(e){toast(e.message,true)}}
+async function generateImage(){try{await jpost(`/api/studio/projects/${current}/generate-image`,{prompt_asset_id:$('imagePrompt').value,name:$('imageName').value,params:{aspect_ratio:$('imageAspect').value,steps:32,model_key:'smart',style_name:'portrait_photo',style_strength:'standard',cfg:6.5,seed:-1,sampler:'dpmpp_2m',scheduler:'karras',count:1}});toast('画面开始生成');await refreshAll()}catch(e){toast(e.message,true)}}
+async function generateVideo(){try{const m=$('videoMode').value,b={prompt_asset_id:$('videoPrompt').value,name:$('videoName').value,mode:m,video_profile:$('videoProfile').value,steps:20};if(m==='fl2va'){b.first_frame_asset_id=$('firstFrame').value;b.last_frame_asset_id=$('lastFrame').value}if(m==='ref2va')b.reference_image_asset_id=$('refFrame').value;await jpost(`/api/studio/projects/${current}/generate-video`,b);toast('视频开始生成');await refreshAll()}catch(e){toast(e.message,true)}}
+async function runPerson(){try{await jpost(`/api/studio/projects/${current}/facefusion`,{processor:$('faceProcessor').value,source_asset_id:$('faceSource').value,target_asset_id:$('faceTarget').value,name:'人物处理结果'});toast('人物处理开始');await refreshAll()}catch(e){toast(e.message,true)}}
+async function confirmCandidate(id){try{await jpost(`/api/director/workbench/projects/${current}/candidates/${id}/confirm`,{output_index:0});toast('已采用');await refreshAll()}catch(e){toast(e.message,true)}}
+async function rejectCandidate(id){try{await jpost(`/api/director/workbench/projects/${current}/candidates/${id}/reject`,{});toast('已丢弃');await refreshAll()}catch(e){toast(e.message,true)}}
+async function assembleFinal(){
+ try{const rows=formalShots().map(s=>({shot:s,video:latestShotVideo(s.shot_id)})),missing=rows.filter(x=>!x.video);if(!rows.length)throw new Error('没有正式分镜镜头');if(missing.length)throw new Error(`还有 ${missing.length} 个镜头缺少当前有效视频或血缘已失效，拒绝生成成片`);toast('正在逐镜头标准化并按分镜顺序合成…');await jpost(`/api/studio/projects/${current}/assemble`,{asset_ids:rows.map(x=>x.video.asset_id),name:$('finalName')?.value||'最终成片',aspect_ratio:$('finalAspect')?.value||$('shotAspect')?.value||'16:9',export_profile:$('finalProfile')?.value||'working'});toast('成片已完成并通过 ffprobe 验收');await refreshAll();showView('final')}catch(e){toast(e.message,true)}
+}
+
+function openNewProject(){$('newModal').classList.add('show');updateSourceCount()}function closeNewProject(){$('newModal').classList.remove('show')}
+async function readLocalSource(el){const f=el.files?.[0];if(f){$('sourceText').value=await f.text();updateSourceCount()}}
+function updateSourceCount(){const n=$('sourceText').value.length,e=$('sourceCount');if(!e)return;e.textContent=n.toLocaleString()+' 字符'+(n>12000?' · 长章节模式：自动分片，不会整章塞入一次提示词':'');e.classList.toggle('long',n>12000)}
+async function createProject(){const title=$('newTitle').value.trim(),source=$('sourceText').value.trim();if(!title||!source)return toast('作品名称和创作内容不能为空',true);try{const p=await jpost('/api/studio/projects',{title,source_type:$('sourceType').value,source_text:source});current=p.project_id;closeNewProject();$('newTitle').value='';$('sourceText').value='';await refreshAll();toast('作品已创建')}catch(e){toast(e.message,true)}}
+
+(async()=>{try{showAppView('shortvideo',document.querySelector('[data-app-menu="shortvideo"]'));await loadProjects();if(projects.length){current=projects[0].project_id;await refreshAll()}else{$('projectWorkspace').classList.remove('ready')}}catch(e){toast(e.message,true)}})();
+</script>
+</body>
+</html>

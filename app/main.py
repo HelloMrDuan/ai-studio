@@ -3,6 +3,7 @@ import json
 import logging
 from contextlib import nullcontext
 from pathlib import Path
+from typing import TypedDict
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -46,6 +47,19 @@ facefusion = FaceFusionService(settings)
 runner = TaskRunner(store, assets, gpu, comfyui, h3_video, facefusion)
 logger = logging.getLogger("ai-studio")
 _llm_activation_lock = asyncio.Lock()
+
+
+class StageProgress(TypedDict):
+    stage_id: str
+    stage_name: str
+    status: str
+    current_step: int
+    total_steps: int
+    percent: int
+    completed_items: list[str]
+    current_item: str
+    eta_seconds: int | None
+    source: str
 
 
 async def _llm_status_payload() -> dict:
@@ -5423,6 +5437,323 @@ async def studio_catalog() -> dict:
     }
 
 
+_STUDIO_PROGRESS_LABELS = {
+    "01": "剧本", "02": "角色", "03": "视觉",
+    "04": "分镜", "05": "制作", "06": "成片",
+}
+
+
+def _studio_progress_eta(created_at: str, percent: int) -> int | None:
+    if not created_at or percent <= 0 or percent >= 100:
+        return None
+    try:
+        started = _studio_datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=_studio_timezone.utc)
+        elapsed = max(0.0, (_studio_datetime.now(_studio_timezone.utc) - started).total_seconds())
+        if elapsed < 2:
+            return None
+        remaining = elapsed * (100 - percent) / percent
+        return max(1, min(int(remaining), 7 * 24 * 3600))
+    except Exception:
+        return None
+
+
+def _studio_progress_row(
+    stage_id: str, *, status: str = "pending", current_step: int = 0,
+    total_steps: int = 1, percent: int = 0,
+    completed_items: list[str] | None = None, current_item: str = "尚未开始",
+    eta_seconds: int | None = None, source: str = "derived",
+) -> StageProgress:
+    total = max(1, int(total_steps or 1))
+    step = max(0, min(int(current_step or 0), total))
+    return {
+        "stage_id": stage_id,
+        "stage_name": _STUDIO_PROGRESS_LABELS[stage_id],
+        "status": str(status or "pending"),
+        "current_step": step,
+        "total_steps": total,
+        "percent": max(0, min(100, int(percent or 0))),
+        "completed_items": [str(x) for x in (completed_items or []) if str(x).strip()],
+        "current_item": str(current_item or "处理中"),
+        "eta_seconds": eta_seconds,
+        "source": str(source or "derived"),
+    }
+
+
+def _studio_core_stage_progress(
+    project: dict, stage_id: str, current_job: dict | None,
+) -> StageProgress:
+    completed_stages = {str(x) for x in (project.get("completed_stages") or [])}
+    confirmed = (project.get("confirmed_outputs") or {}).get(stage_id) or {}
+    state = (project.get("stage_state") or {}).get(stage_id) or {}
+    runtime = state.get("skill_runtime") or {}
+    completion = runtime.get("completion") or {}
+    artifact_registry = runtime.get("artifact_registry") or {}
+    requirement_registry = runtime.get("requirement_registry") or {}
+    required_artifacts = [str(x) for x in (completion.get("required_artifact_ids") or []) if str(x)]
+    missing_artifacts = {str(x) for x in (completion.get("missing_artifact_ids") or [])}
+    active_requirements = [str(x) for x in (completion.get("active_requirement_ids") or []) if str(x)]
+    missing_requirements = {str(x) for x in (completion.get("missing_requirement_ids") or [])}
+    completed_items = [
+        "产物 · " + aid for aid in required_artifacts
+        if aid not in missing_artifacts or bool((artifact_registry.get(aid) or {}).get("verified"))
+    ]
+    completed_items.extend(
+        "规则 · " + rid for rid in active_requirements
+        if rid not in missing_requirements or bool((requirement_registry.get(rid) or {}).get("verified"))
+    )
+    native_done = bool(completion.get("native_terminal"))
+    if native_done:
+        completed_items.append("Skill 原生流程")
+
+    if stage_id in completed_stages:
+        if not completed_items:
+            completed_items = ["阶段成果已确认"]
+        return _studio_progress_row(
+            stage_id, status="completed", current_step=len(completed_items),
+            total_steps=len(completed_items), percent=100,
+            completed_items=completed_items, current_item="阶段已完成",
+            source="confirmed_outputs" if confirmed else "completed_stages",
+        )
+
+    current_stage = str(project.get("current_stage") or "")
+    if current_stage != stage_id:
+        return _studio_progress_row(stage_id)
+
+    job = current_job if str((current_job or {}).get("stage") or "") == stage_id else {}
+    job_status = str(job.get("status") or "").lower()
+    total = len(required_artifacts) + len(active_requirements) + 1
+    done = len(completed_items)
+    if total <= 1 and not required_artifacts and not active_requirements:
+        turns = max(0, int(job.get("turn_count") or 0))
+        done = turns
+        total = max(1, turns + (0 if completion.get("ready") else 1))
+        completed_items = [f"模型步骤 {index}" for index in range(1, turns + 1)]
+    if completion.get("ready") is True:
+        done = total
+    percent = 100 if completion.get("ready") is True else int(done * 100 / max(total, 1))
+    if job_status in {"queued", "running"} and percent == 0:
+        percent = 5
+    status = "ready" if completion.get("ready") is True else (
+        "running" if job_status in {"queued", "running"} else
+        "blocked" if job_status in {"input_required", "media_required", "failed"} else
+        "waiting"
+    )
+    current_item = (
+        str(job.get("message") or "").strip()
+        or str(state.get("next_expected_action") or "").strip()
+        or str(state.get("internal_step") or "").strip()
+        or str(completion.get("reason") or "").strip()
+        or "处理中"
+    )
+    current_step = total if completion.get("ready") is True else min(total, done + 1)
+    return _studio_progress_row(
+        stage_id, status=status, current_step=current_step, total_steps=total,
+        percent=percent, completed_items=completed_items, current_item=current_item,
+        eta_seconds=_studio_progress_eta(str(job.get("created_at") or ""), percent)
+        if job_status in {"queued", "running"} else None,
+        source="job+skill_runtime",
+    )
+
+
+def _studio_stage04_progress(
+    project: dict, current_job: dict | None,
+) -> StageProgress:
+    base = _studio_core_stage_progress(project, "04", current_job)
+    if base["status"] == "completed":
+        return base
+    task = _studio_v23963_current_stage04_task(
+        str(project.get("project_id") or ""), recover_orphan=False,
+    )
+    task_status = str(task.get("status") or "").lower()
+    if task_status not in {"starting", "warming", "queued", "running", "completed", "failed"}:
+        pipeline = ((project.get("stage_state") or {}).get("04") or {}).get("studio_stage04_pipeline") or {}
+        if pipeline.get("ready") is True:
+            base.update({
+                "status": "ready", "percent": 95,
+                "current_item": "分镜已生成，等待确认进入制作",
+                "source": "stage04_pipeline",
+            })
+        return base
+    total = max(1, int(task.get("scene_total") or 1))
+    done = max(0, min(int(task.get("scene_done") or 0), total))
+    if task_status == "completed":
+        done = total
+    percent = 100 if task_status == "completed" else int(done * 100 / total)
+    if task_status in {"starting", "warming", "queued", "running"} and percent == 0:
+        percent = 5
+    return _studio_progress_row(
+        "04", status="ready" if task_status == "completed" else (
+            "failed" if task_status == "failed" else "running"
+        ),
+        current_step=total if task_status == "completed" else min(total, done + 1),
+        total_steps=total, percent=percent,
+        completed_items=[f"场景 {index}" for index in range(1, done + 1)],
+        current_item="分镜生成完成，等待确认进入制作" if task_status == "completed"
+        else str(task.get("message") or "正在处理分镜"),
+        eta_seconds=_studio_progress_eta(str(task.get("created_at") or ""), percent)
+        if task_status in {"starting", "warming", "queued", "running"} else None,
+        source="stage04_rebuild_task",
+    )
+
+
+def _studio_stage05_progress(
+    project_id: str, assets_snapshot: list[dict], candidates: list[dict],
+) -> StageProgress:
+    try:
+        continuity = story_continuity.load(project_id)
+    except Exception:
+        continuity = {}
+    shots = [
+        row for row in (continuity.get("shots") or [])
+        if not bool(row.get("provisional")) and str(row.get("shot_id") or "")
+    ]
+    shots.sort(key=lambda row: int(row.get("global_order") or row.get("sequence") or row.get("order") or 0))
+    shot_ids = {str(row.get("shot_id")) for row in shots}
+    ready_video_ids: set[str] = set()
+    assets_by_id = {str(row.get("asset_id") or ""): row for row in assets_snapshot}
+    for item in assets_snapshot:
+        if not _studio_asset_is_current(item):
+            continue
+        if str(item.get("asset_role") or "") not in {"shot_clip", "shot_video_processed"}:
+            continue
+        meta = item.get("metadata") or {}
+        source = item.get("source") or {}
+        shot_id = str(meta.get("shot_id") or source.get("shot_id") or "")
+        if shot_id in shot_ids:
+            ready_video_ids.add(shot_id)
+    def candidate_shot_id(row: dict) -> str:
+        target = assets_by_id.get(str(row.get("target_asset_id") or "")) or {}
+        return str(
+            (target.get("metadata") or {}).get("shot_id")
+            or (target.get("source") or {}).get("shot_id")
+            or ""
+        )
+
+    active_statuses = {"queued", "switching_gpu", "running", "generating"}
+    active_candidates = [
+        row for row in candidates
+        if str(row.get("status") or "").lower() in active_statuses
+        and candidate_shot_id(row) in shot_ids
+    ]
+    pending_review = [
+        row for row in candidates
+        if str(row.get("status") or "").lower() == "completed"
+        and not row.get("confirmed_asset_id")
+        and candidate_shot_id(row) in shot_ids
+    ]
+    total = max(1, len(shots))
+    done = len(ready_video_ids)
+    active = active_candidates[0] if active_candidates else {}
+    task_percent = max(0, min(100, int(active.get("progress") or 0)))
+    percent = 100 if shots and done >= len(shots) else int(
+        min(total, done + task_percent / 100) * 100 / total
+    )
+    completed_items = []
+    for index, shot in enumerate(shots, 1):
+        if str(shot.get("shot_id") or "") in ready_video_ids:
+            completed_items.append(f"镜头 {index:03d} · 视频已采用")
+    if shots and done >= len(shots):
+        status, current_item = "completed", "全部正式镜头视频已采用"
+    elif active:
+        target = assets_by_id.get(str(active.get("target_asset_id") or "")) or {}
+        target_shot = (target.get("metadata") or {}).get("shot_id") or (target.get("source") or {}).get("shot_id")
+        status = "running"
+        current_item = str(active.get("message") or "").strip() or (
+            f"正在制作镜头 {target_shot}" if target_shot else "正在制作镜头素材"
+        )
+    elif pending_review:
+        status, current_item = "waiting", f"{len(pending_review)} 个制作候选等待采用"
+    elif shots:
+        status, current_item = "waiting", f"等待制作剩余 {len(shots) - done} 个镜头视频"
+    else:
+        status, current_item = "pending", "等待正式分镜"
+    return _studio_progress_row(
+        "05", status=status, current_step=total if percent == 100 else min(total, done + 1),
+        total_steps=total, percent=percent, completed_items=completed_items,
+        current_item=current_item,
+        eta_seconds=_studio_progress_eta(str(active.get("created_at") or ""), percent)
+        if active else None,
+        source="production_assets+candidates",
+    )
+
+
+def _studio_stage06_progress(
+    assets_snapshot: list[dict], stage05: StageProgress,
+) -> StageProgress:
+    finals = [
+        row for row in assets_snapshot
+        if _studio_asset_is_current(row) and str(row.get("asset_role") or "") == "final_cut"
+    ]
+    if finals:
+        latest = sorted(finals, key=lambda row: str(row.get("updated_at") or ""))[-1]
+        return _studio_progress_row(
+            "06", status="completed", current_step=1, total_steps=1, percent=100,
+            completed_items=[str(latest.get("name") or "最终成片")],
+            current_item="成片已生成", source="final_cut_asset",
+        )
+    ready = stage05["percent"] == 100
+    return _studio_progress_row(
+        "06", status="ready" if ready else "pending", current_step=1 if ready else 0,
+        total_steps=1, percent=0, completed_items=[],
+        current_item="等待生成成片" if ready else "等待制作完成",
+        source="final_cut_asset",
+    )
+
+
+def _studio_stage_progress_snapshot(
+    project: dict, current_job: dict | None,
+    assets_snapshot: list[dict], candidates: list[dict],
+) -> dict:
+    stages: list[StageProgress] = [
+        _studio_core_stage_progress(project, stage_id, current_job)
+        for stage_id in ("01", "02", "03")
+    ]
+    stages.append(_studio_stage04_progress(project, current_job))
+    stage05 = _studio_stage05_progress(str(project.get("project_id") or ""), assets_snapshot, candidates)
+    stages.append(stage05)
+    stage06 = _studio_stage06_progress(assets_snapshot, stage05)
+    stages.append(stage06)
+    if str(project.get("status") or "") == "active":
+        current_stage = str(project.get("current_stage") or "01")
+    elif stage06["status"] == "completed" or stage05["status"] == "completed":
+        current_stage = "06"
+    else:
+        current_stage = "05"
+    return {
+        "schema_version": "stage-progress-v1",
+        "current_stage": current_stage,
+        "stages": stages,
+    }
+
+
+def _studio_stage_progress_fallback(project: dict) -> dict:
+    completed = {str(x) for x in (project.get("completed_stages") or [])}
+    current_stage = str(project.get("current_stage") or "01")
+    if str(project.get("status") or "") != "active":
+        current_stage = "05"
+    stages = []
+    for stage_id in ("01", "02", "03", "04", "05", "06"):
+        is_completed = stage_id in completed
+        is_current = stage_id == current_stage
+        stages.append(_studio_progress_row(
+            stage_id,
+            status="completed" if is_completed else ("running" if is_current else "pending"),
+            current_step=1 if is_completed or is_current else 0,
+            total_steps=1,
+            percent=100 if is_completed else 0,
+            completed_items=["阶段已完成"] if is_completed else [],
+            current_item="阶段已完成" if is_completed else ("处理中" if is_current else "尚未开始"),
+            source="fallback",
+        ))
+    return {
+        "schema_version": "stage-progress-v1",
+        "current_stage": current_stage,
+        "stages": stages,
+    }
+
+
 @app.get("/api/studio/projects")
 async def studio_projects() -> list[dict]:
     rows = director.list_projects()
@@ -5515,6 +5846,7 @@ async def studio_project_snapshot(project_id: str) -> dict:
             pass
         graph = director.production.ensure_project(project_id, str(project.get("title") or ""))
         candidates = _wb_sync_candidates(project_id)
+        assets_snapshot = director.production.list_assets(project_id)
         try:
             face_caps = await facefusion.capabilities()
         except Exception as exc:
@@ -5534,6 +5866,13 @@ async def studio_project_snapshot(project_id: str) -> dict:
         ):
             current_job = None
         try:
+            stage_progress = _studio_stage_progress_snapshot(
+                project, current_job, assets_snapshot, candidates,
+            )
+        except Exception:
+            logger.exception("StageProgress display mapping failed: %s", project_id)
+            stage_progress = _studio_stage_progress_fallback(project)
+        try:
             _studio_schedule_continuity(project_id)
             continuity_snapshot = story_continuity.compact_snapshot(project_id)
         except Exception as exc:
@@ -5548,11 +5887,12 @@ async def studio_project_snapshot(project_id: str) -> dict:
             }
         return {
             "project": project,
-            "assets": director.production.list_assets(project_id),
+            "assets": assets_snapshot,
             "entities": director.production.list_entities(project_id),
             "relations": list(graph.get("relations") or []),
             "candidates": candidates,
             "active_job": current_job,
+            "stage_progress": stage_progress,
             "video_edit_job": _studio_latest_video_edit_job(project_id),
             "facefusion_capabilities": face_caps,
             "last_result": last_result,

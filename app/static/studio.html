@@ -483,7 +483,7 @@ function renderNextAction(){
     title.textContent=`${phase}已生成`;
     desc.textContent=job.message||`检查当前${phase}结果；没问题就确认进入${nextName}。有修改再展开额外要求。`;
     wrap.classList.add('hidden');toggle.classList.remove('hidden');manualInputOpen=false;
-    btn.textContent=`确认并进入${nextName}`;primaryActionMode='approve';primaryRequiresInput=false;syncPrimaryInputState();return;
+    btn.textContent=`确认并进入${nextName}`;primaryActionMode=stage==='04'?'approve':'confirm';primaryRequiresInput=false;syncPrimaryInputState();return;
   }
 
   if(job&&job.status==='input_required'){

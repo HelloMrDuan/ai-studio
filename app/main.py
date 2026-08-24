@@ -5569,15 +5569,19 @@ async def studio_run_stage(project_id: str, payload: dict) -> dict:
         project = director.get_project(project_id)
         if project.get("status") != "active":
             raise ValueError("核心 Skill 阶段已经完成，可继续制作画面、视频和成片")
-        if str(project.get("current_stage") or "") == "04":
-            raw = str(payload.get("input") or "").strip()
-            normalized = _studio_re.sub(
-                r"[\s，。！？!?、；;：:（）()【】\[\]<>《》“”‘’]+", "", raw
-            ).lower()
-            if normalized not in {
-                "通过", "确认", "继续", "下一步", "确认通过",
-                "通过继续", "继续下一步", "ok", "okay",
-            }:
+        stage = str(project.get("current_stage") or "")
+        raw = str(payload.get("input") or "").strip()
+        normalized = _studio_re.sub(
+            r"[\s，。！？!?、；;：:（）()【】\[\]<>《》“”‘’]+", "", raw
+        ).lower()
+        explicit_approval = normalized in {
+            "通过", "确认", "继续", "下一步", "确认通过",
+            "通过继续", "继续下一步", "ok", "okay",
+        }
+        if stage in {"02", "03"} and explicit_approval:
+            return await studio_confirm_stage(project_id)
+        if stage == "04":
+            if not explicit_approval:
                 raise RuntimeError("Stage04 generation is available only through /stage04/rebuild-production")
         active = _studio_active_job(project_id)
         if active and active.get("status") in {"queued", "running"}:
@@ -5632,7 +5636,7 @@ async def studio_confirm_stage(project_id: str) -> dict:
         completion = ((state.get("skill_runtime") or {}).get("completion") or {})
         if completion.get("ready") is not True:
             raise RuntimeError("当前阶段还没有完成，请先生成本阶段或补齐真实媒体资产：" + str(completion.get("reason") or ""))
-        if not str(state.get("handoff") or "").strip():
+        if stage not in {"02", "03"} and not str(state.get("handoff") or "").strip():
             async with gpu.use(GPUOwner.gemma):
                 await director.message(
                     project_id,

@@ -455,6 +455,7 @@ async function performPrimaryAction(){
     toast('请先填写需要补充的信息',true);$('phaseInput')?.focus();return;
   }
   if(primaryActionMode==='approve'){const el=$('phaseInput');if(el)el.value='通过';await runPhase();return}if(primaryActionMode==='run'){await runPhase();return}
+  if(primaryActionMode==='continue'){const el=$('phaseInput');if(el)el.value='';await runPhase();return}
   if(primaryActionMode==='confirm'){await confirmPhase();return}
   if(primaryActionMode==='view'){runNextViewAction();return}
 }
@@ -480,6 +481,14 @@ function renderNextAction(){
   if(job&&['review','review_attention'].includes(job.status)&&['02','03','04'].includes(stage)){
     const phase=PHASE[stage]||'当前阶段';
     const nextName=stage==='02'?'视觉':stage==='03'?'分镜':'制作';
+    const audit=state.last_handoff_audit||{};
+    const guardedReady=comp.ready===true&&state.stage_ready===true&&!!String(state.handoff||'').trim()&&audit.valid===true&&audit.provenance_verified===true&&String(audit.contract_version||'')==='verbatim_evidence_v1';
+    if(['02','03'].includes(stage)&&!guardedReady){
+      title.textContent=`${phase}尚未完成`;
+      desc.textContent=job.reason||comp.reason||`当前${phase}尚未达到可确认状态，请继续生成。`;
+      wrap.classList.add('hidden');toggle.classList.remove('hidden');manualInputOpen=false;
+      btn.textContent=`继续生成${phase}`;primaryActionMode='continue';primaryRequiresInput=false;syncPrimaryInputState();return;
+    }
     title.textContent=`${phase}已生成`;
     desc.textContent=job.message||`检查当前${phase}结果；没问题就确认进入${nextName}。有修改再展开额外要求。`;
     wrap.classList.add('hidden');toggle.classList.remove('hidden');manualInputOpen=false;

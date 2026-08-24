@@ -4926,13 +4926,13 @@ async def _studio_run_stage_job(
                 if stage in {"02", "03", "04"}:
                     if stage == "02":
                         review_message = (
-                            "角色设定已生成，请检查；确认后进入视觉。"
+                            "角色阶段尚未完成，请继续生成；完成后才能进入视觉。"
                             if not explicit_approval
                             else "已执行角色阶段确认，请检查阶段完成状态。"
                         )
                     elif stage == "03":
                         review_message = (
-                            "视觉设计包已生成，请检查；确认后进入分镜。"
+                            "视觉阶段尚未完成，请继续生成；完成后才能进入分镜。"
                             if not explicit_approval
                             else "已执行视觉阶段确认，请检查阶段完成状态。"
                         )

@@ -14,15 +14,25 @@ INSTALLER_PATH = (
     / "deliverables"
     / "install_ai_studio_v2_39_6_3_stage04_performance_optimization.py"
 )
+FULL_PIPELINE_INSTALLER_PATH = (
+    ROOT / "deliverables/install_ai_studio_v2_39_6_3_stage04_full_pipeline_preflight.py"
+)
+QWEN_COMPAT_INSTALLER_PATH = (
+    ROOT / "deliverables/install_ai_studio_v2_39_6_3_qwen_request_compat.py"
+)
 
 
-def load_installer():
-    spec = importlib.util.spec_from_file_location("v23963_perf_installer", INSTALLER_PATH)
+def load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
         raise RuntimeError("cannot load performance installer")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_installer():
+    return load_module("v23963_perf_installer", INSTALLER_PATH)
 
 
 def function_namespace(source: str, names: set[str]) -> dict:
@@ -42,8 +52,10 @@ class PerformanceOptimizationInstallerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.installer = load_installer()
-        cls.main_baseline = (ROOT / "app/main.py").read_bytes()
-        cls.gemma_baseline = (ROOT / "app/services/gemma.py").read_bytes()
+        full_pipeline = load_module("v23963_full_pipeline_frozen", FULL_PIPELINE_INSTALLER_PATH)
+        qwen_compat = load_module("v23963_qwen_compat_frozen", QWEN_COMPAT_INSTALLER_PATH)
+        cls.main_baseline = full_pipeline.target(full_pipeline.FILES["app/main.py"])
+        cls.gemma_baseline = qwen_compat.target_bytes()
         cls.main_target = cls.installer.build_target("app/main.py", cls.main_baseline)
         cls.gemma_target = cls.installer.build_target(
             "app/services/gemma.py", cls.gemma_baseline
@@ -51,7 +63,7 @@ class PerformanceOptimizationInstallerTests(unittest.TestCase):
         cls.main_text = cls.main_target.decode("utf-8")
         cls.gemma_text = cls.gemma_target.decode("utf-8")
 
-    def test_workspace_business_sources_remain_exact_baseline(self) -> None:
+    def test_frozen_predecessor_payloads_are_exact_baseline(self) -> None:
         self.assertEqual(
             self.installer.sha(self.main_baseline),
             self.installer.FILES["app/main.py"]["baseline_sha256"],

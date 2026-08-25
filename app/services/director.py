@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import difflib
 import hashlib
 import json
 import re
 import secrets
+import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -35,6 +39,11 @@ STAGE_SKILLS = {
 }
 WORKFLOW_SKILL = "chuanzhang-ai-shijie-workflow"
 ALLOWED_SOURCE_SUFFIXES = {".md", ".txt", ".json", ".yaml", ".yml"}
+
+
+_DIRECTOR_PHASE_SCOPE: ContextVar[dict[str, Any] | None] = ContextVar(
+    "director_phase_scope", default=None,
+)
 
 
 class DirectorProjectCreate(BaseModel):
@@ -100,6 +109,129 @@ class DirectorService:
         self._locks: dict[str, asyncio.Lock] = {}
         self._llm_context_window_cache: int | None = None
         self._tokenize_endpoint_available: bool | None = None
+
+    @contextmanager
+    def phase_telemetry(
+        self,
+        telemetry: dict[str, Any],
+        *,
+        request_cache: dict[str, Any] | None = None,
+    ):
+        """Collect Director LLM timings without changing request semantics."""
+        scope = {
+            "telemetry": telemetry,
+            "request_cache": request_cache if request_cache is not None else {},
+        }
+        token = _DIRECTOR_PHASE_SCOPE.set(scope)
+        try:
+            yield scope
+        finally:
+            _DIRECTOR_PHASE_SCOPE.reset(token)
+
+    @staticmethod
+    def _usage_value(usage: dict[str, Any], *names: str) -> int:
+        for name in names:
+            try:
+                value = int(usage.get(name) or 0)
+            except Exception:
+                value = 0
+            if value > 0:
+                return value
+        return 0
+
+    def _record_phase_event(
+        self,
+        *,
+        phase: str,
+        started_wall: datetime,
+        started_perf: float,
+        result: dict[str, Any] | None = None,
+        error: Exception | None = None,
+        cache_hit: bool = False,
+    ) -> None:
+        scope = _DIRECTOR_PHASE_SCOPE.get()
+        if not scope:
+            return
+        telemetry = scope.get("telemetry") or {}
+        events = telemetry.setdefault("phases", [])
+        ended_wall = datetime.now(timezone.utc)
+        metrics = dict((result or {}).get("llm_metrics") or {})
+        if not metrics and error is not None:
+            metrics = dict(getattr(error, "llm_metrics", {}) or {})
+        usage = dict(metrics.get("usage") or {})
+        attempts = 0 if cache_hit else max(1, int(metrics.get("request_attempts") or 1))
+        retries = 0 if cache_hit else max(0, int(metrics.get("request_retries") or 0))
+        event = {
+            "phase": str(phase),
+            "start_time": started_wall.isoformat(),
+            "end_time": ended_wall.isoformat(),
+            "duration_ms": round(max(0.0, (time.perf_counter() - started_perf) * 1000), 3),
+            "qwen_calls": attempts,
+            "prompt_tokens": self._usage_value(usage, "prompt_tokens", "input_tokens"),
+            "completion_tokens": self._usage_value(
+                usage, "completion_tokens", "output_tokens",
+            ),
+            "retry": retries,
+            "cache_hit": bool(cache_hit),
+        }
+        if error is not None:
+            event["error"] = f"{type(error).__name__}: {error}"[:800]
+        events.append(event)
+
+    def record_phase_cache_hit(self, phase: str) -> None:
+        now = datetime.now(timezone.utc)
+        self._record_phase_event(
+            phase=phase,
+            started_wall=now,
+            started_perf=time.perf_counter(),
+            cache_hit=True,
+        )
+
+    async def _tracked_llm_chat(
+        self,
+        *,
+        phase: str,
+        messages: list[dict[str, str]],
+        system_prompt: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> dict[str, Any]:
+        started_wall = datetime.now(timezone.utc)
+        started_perf = time.perf_counter()
+        result: dict[str, Any] | None = None
+        error: Exception | None = None
+        try:
+            result = await self.llm.chat(
+                messages=messages,
+                system_prompt=system_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            return result
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            self._record_phase_event(
+                phase=phase,
+                started_wall=started_wall,
+                started_perf=started_perf,
+                result=result,
+                error=error,
+            )
+
+    @staticmethod
+    def finalize_phase_telemetry(telemetry: dict[str, Any]) -> dict[str, Any]:
+        phases = list(telemetry.get("phases") or [])
+        telemetry["summary"] = {
+            "qwen_calls": sum(int(row.get("qwen_calls") or 0) for row in phases),
+            "prompt_tokens": sum(int(row.get("prompt_tokens") or 0) for row in phases),
+            "completion_tokens": sum(int(row.get("completion_tokens") or 0) for row in phases),
+            "retry": sum(int(row.get("retry") or 0) for row in phases),
+            "cache_hits": sum(1 for row in phases if row.get("cache_hit") is True),
+            "duration_ms": round(sum(float(row.get("duration_ms") or 0) for row in phases), 3),
+        }
+        return telemetry
 
     def _lock(self, project_id: str) -> asyncio.Lock:
         lock = self._locks.get(project_id)
@@ -599,6 +731,8 @@ class DirectorService:
         user_text: str,
         stage_state: dict[str, Any],
         route_reason: str,
+        cache_base_key: str = "",
+        cache_bucket: dict[str, Any] | None = None,
     ) -> tuple[list[str], dict[str, Any]]:
         preamble, sections = self._markdown_section_catalog(
             content
@@ -618,6 +752,25 @@ class DirectorService:
             }
             for item in sections
         ]
+        selection_key = ""
+        if cache_base_key and cache_bucket is not None:
+            selection_key = self._stage02_phase_cache_key(
+                cache_base_key,
+                "reference_section_selector",
+                {
+                    "file": relative,
+                    "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    "native_target": native_target,
+                    "route_reason": route_reason,
+                },
+            )
+            cached = (cache_bucket.get("section_selections") or {}).get(selection_key)
+            if isinstance(cached, dict):
+                cached_pieces = cached.get("pieces")
+                cached_info = cached.get("info")
+                if isinstance(cached_pieces, list) and isinstance(cached_info, dict):
+                    self.record_phase_cache_hit("reference_section_selector")
+                    return copy.deepcopy(cached_pieces), copy.deepcopy(cached_info)
 
         system_prompt = """你是 Agent Skill 引用章节选择器，不执行用户任务。
 生产 SKILL.md 已经选择了当前 reference 文件；你只需从该 reference 的 Markdown 章节目录中选出本轮原生目标真正需要的最少章节。
@@ -695,24 +848,38 @@ REFERENCE_FILE={relative}
         if not selected:
             # Empty selection is allowed only when the routed file
             # turns out not to be needed for this exact native target.
-            return [], {
+            answer = ([], {
                 "file": relative,
                 "mode": "section_selected",
                 "selected_section_ids": [],
                 "reason": _clean_text(parsed.get("reason")),
                 "preamble_chars": len(preamble),
-            }
+            })
+            if selection_key and cache_bucket is not None:
+                selections = cache_bucket.setdefault("section_selections", {})
+                self._bounded_cache_put(
+                    selections, selection_key,
+                    {"pieces": answer[0], "info": answer[1]}, 64,
+                )
+            return answer
 
         if preamble:
             selected.insert(0, preamble)
 
-        return selected, {
+        answer = (selected, {
             "file": relative,
             "mode": "section_selected",
             "selected_section_ids": normalized,
             "reason": _clean_text(parsed.get("reason")),
             "preamble_chars": len(preamble),
-        }
+        })
+        if selection_key and cache_bucket is not None:
+            selections = cache_bucket.setdefault("section_selections", {})
+            self._bounded_cache_put(
+                selections, selection_key,
+                {"pieces": answer[0], "info": answer[1]}, 64,
+            )
+        return answer
 
     async def _build_reference_context(
         self,
@@ -725,6 +892,8 @@ REFERENCE_FILE={relative}
         stage_state: dict[str, Any],
         route_reason: str,
         max_chars: int,
+        cache_base_key: str = "",
+        cache_bucket: dict[str, Any] | None = None,
     ) -> tuple[list[str], dict[str, Any]]:
         raw_files: list[tuple[str, str]] = []
         raw_total = 0
@@ -769,6 +938,8 @@ REFERENCE_FILE={relative}
                         user_text=user_text,
                         stage_state=stage_state,
                         route_reason=route_reason,
+                        cache_base_key=cache_base_key,
+                        cache_bucket=cache_bucket,
                     )
                 )
 
@@ -812,6 +983,73 @@ REFERENCE_FILE={relative}
         return hashlib.sha256(
             skill_md.encode("utf-8")
         ).hexdigest()
+
+    def _stage02_execution_cache(
+        self,
+        *,
+        project: dict[str, Any],
+        stage_state: dict[str, Any],
+        skill_name: str,
+        skill_md: str,
+        user_text: str,
+    ) -> tuple[str, dict[str, Any]]:
+        """Return a versioned deterministic Stage02 cache bucket."""
+        confirmed = (project.get("confirmed_outputs") or {}).get("01") or {}
+        handoff_version = hashlib.sha256(json.dumps(
+            {
+                "handoff": _clean_text(confirmed.get("handoff")),
+                "confirmed_at": _clean_text(confirmed.get("confirmed_at")),
+                "production_asset_ids": confirmed.get("production_asset_ids") or [],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        base_key = hashlib.sha256(json.dumps(
+            {
+                "stage_id": "02",
+                "project_id": _clean_text(project.get("project_id")),
+                "handoff_version": handoff_version,
+                "skill_version": self._skill_source_sha256(skill_md),
+                "input_digest": hashlib.sha256(
+                    _clean_text(user_text).encode("utf-8")
+                ).hexdigest(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        root = stage_state.setdefault("stage02_deterministic_cache", {
+            "schema_version": "stage02-cache-v1",
+            "entries": {},
+        })
+        if root.get("schema_version") != "stage02-cache-v1":
+            root = {"schema_version": "stage02-cache-v1", "entries": {}}
+            stage_state["stage02_deterministic_cache"] = root
+        entries = root.setdefault("entries", {})
+        bucket = entries.setdefault(base_key, {
+            "created_at": _utcnow(),
+            "reference_routes": {},
+            "section_selections": {},
+        })
+        while len(entries) > 12:
+            entries.pop(next(iter(entries)))
+        return base_key, bucket
+
+    @staticmethod
+    def _stage02_phase_cache_key(base_key: str, phase: str, value: object) -> str:
+        return hashlib.sha256(json.dumps(
+            {"base_key": base_key, "phase": phase, "value": value},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _bounded_cache_put(cache: dict[str, Any], key: str, value: Any, limit: int) -> None:
+        cache[key] = copy.deepcopy(value)
+        while len(cache) > limit:
+            cache.pop(next(iter(cache)))
 
     def _skill_contract_path(
         self,
@@ -967,11 +1205,14 @@ REFERENCE_FILE={relative}
             _clean_text(current.get("schema_version")) == "skill_contract_v2"
             and _clean_text(current.get("source_sha256")) == source_hash
         ):
+            self.record_phase_cache_hit("skill_contract_compile")
             return current
         cached = self._load_skill_contract_cache(
             skill_name=skill_name,
             skill_md=skill_md,
         )
+        if cached:
+            self.record_phase_cache_hit("skill_contract_compile")
         contract = cached or await self._compile_skill_contract(
             skill_name=skill_name,
             skill_md=skill_md,
@@ -1277,6 +1518,27 @@ REFERENCE_FILE={relative}
         max_tokens: int,
         contract: str,
     ) -> tuple[dict[str, Any], dict[str, Any], bool]:
+        request_signature = hashlib.sha256(json.dumps(
+            {
+                "phase": phase,
+                "messages": messages,
+                "system_prompt": system_prompt,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "contract": contract,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+        scope = _DIRECTOR_PHASE_SCOPE.get()
+        request_cache = scope.get("request_cache") if scope else {}
+        if not isinstance(request_cache, dict):
+            request_cache = {}
+        if request_signature in request_cache:
+            self.record_phase_cache_hit(phase)
+            return copy.deepcopy(request_cache[request_signature])
+
         initial_budget = await self._llm_call_budget(
             phase=phase,
             system_prompt=system_prompt,
@@ -1287,7 +1549,8 @@ REFERENCE_FILE={relative}
                 max(80, int(max_tokens)),
             ),
         )
-        result = await self.llm.chat(
+        result = await self._tracked_llm_chat(
+            phase=phase,
             messages=messages,
             system_prompt=system_prompt,
             temperature=temperature,
@@ -1298,7 +1561,9 @@ REFERENCE_FILE={relative}
         raw = _clean_text(result.get("content"))
         try:
             parsed = _extract_json_object(raw)
-            return result, parsed, False
+            answer = (result, parsed, False)
+            request_cache[request_signature] = copy.deepcopy(answer)
+            return answer
         except Exception as first_error:
             repair_system = """你是严格 JSON 结构修复器，不执行原任务。
 你的唯一工作是把 RAW_OUTPUT 修复为满足 JSON_CONTRACT 的一个合法 JSON 对象。
@@ -1341,7 +1606,8 @@ REFERENCE_FILE={relative}
                 requested_output_tokens=repair_requested,
                 minimum_output_tokens=160,
             )
-            repair_result = await self.llm.chat(
+            repair_result = await self._tracked_llm_chat(
+                phase=f"{phase}_json_repair",
                 messages=repair_messages,
                 system_prompt=repair_system,
                 temperature=0.0,
@@ -1372,7 +1638,9 @@ REFERENCE_FILE={relative}
             merged["structured_json_repair_model"] = (
                 repair_result.get("model")
             )
-            return merged, parsed, True
+            answer = (merged, parsed, True)
+            request_cache[request_signature] = copy.deepcopy(answer)
+            return answer
 
 
     async def _audit_native_plan(
@@ -1640,6 +1908,7 @@ REFERENCE_FILE={relative}
             and existing.get("source_sha256") == source_sha256
             and existing.get("mode") == "dynamic"
         ):
+            self.record_phase_cache_hit("native_plan")
             return existing
 
         # Sequential cache is only navigation metadata. Revalidate softly;
@@ -1658,6 +1927,7 @@ REFERENCE_FILE={relative}
                 existing["steps"] = checked.get("steps") or []
                 existing["source_sha256"] = source_sha256
                 if existing["steps"]:
+                    self.record_phase_cache_hit("native_plan")
                     return existing
             except Exception:
                 pass
@@ -1912,6 +2182,7 @@ action 只能是：
                 "provenance_verified": bool(
                     audit.get("provenance_verified")
                 ),
+                "stage_scope": copy.deepcopy(confirmed.get("stage_scope") or {}),
             })
 
         # IMPORTANT:
@@ -2588,9 +2859,29 @@ action 只能是：
         user_text: str,
         control_event: dict[str, Any] | None = None,
         native_target: dict[str, Any] | None = None,
+        cache_base_key: str = "",
+        cache_bucket: dict[str, Any] | None = None,
     ) -> tuple[list[str], str]:
         allowed = self._available_files(skill_name)
         allowed_text = "\n".join(f"- {item}" for item in allowed) or "- <none>"
+        route_cache = (cache_bucket or {}).get("reference_routes") or {}
+        route_key = ""
+        if cache_base_key and cache_bucket is not None:
+            route_key = self._stage02_phase_cache_key(
+                cache_base_key,
+                "reference_router",
+                {
+                    "allowed": allowed,
+                    "control_event": control_event or {"action": "other"},
+                    "native_target": native_target or {"kind": "skill_driven"},
+                },
+            )
+            cached = route_cache.get(route_key)
+            if isinstance(cached, dict):
+                files = cached.get("required_files") or []
+                if isinstance(files, list) and all(item in set(allowed) for item in files):
+                    self.record_phase_cache_hit("reference_router")
+                    return [str(item) for item in files], _clean_text(cached.get("reason"))
 
         system_prompt = """你是 Agent Skill 引用路由器，不负责回答用户任务。
 必须以当前 SKILL.md 原文为唯一业务路由依据，不得凭关键词表或自行发明规则。
@@ -2653,7 +2944,16 @@ required_files 可以为空，最多 8 个。"""
             if rel not in normalized:
                 normalized.append(rel)
 
-        return normalized, _clean_text(parsed.get("reason"))
+        reason = _clean_text(parsed.get("reason"))
+        if route_key and cache_bucket is not None:
+            route_cache = cache_bucket.setdefault("reference_routes", {})
+            self._bounded_cache_put(
+                route_cache,
+                route_key,
+                {"required_files": normalized, "reason": reason},
+                24,
+            )
+        return normalized, reason
 
     def _build_execution_user_prompt(
         self,
@@ -2818,6 +3118,16 @@ The CURRENT STAGE HISTORY below is generated history, not proof that any externa
             stage_state.setdefault("native_plan", {})
             stage_state.setdefault("skill_contract", {})
             stage_state.setdefault("skill_runtime", empty_runtime_state())
+            stage02_cache_base = ""
+            stage02_cache_bucket: dict[str, Any] | None = None
+            if stage == "02":
+                stage02_cache_base, stage02_cache_bucket = self._stage02_execution_cache(
+                    project=project,
+                    stage_state=stage_state,
+                    skill_name=skill_name,
+                    skill_md=skill_md,
+                    user_text=user_text,
+                )
             skill_contract = await self._ensure_skill_contract(
                 skill_name=skill_name,
                 skill_md=skill_md,
@@ -2852,6 +3162,8 @@ The CURRENT STAGE HISTORY below is generated history, not proof that any externa
                 user_text=user_text,
                 control_event=control_event,
                 native_target=native_target,
+                cache_base_key=stage02_cache_base,
+                cache_bucket=stage02_cache_bucket,
             )
             actual_input_manifest = self._actual_input_manifest(
                 project=project,
@@ -2918,6 +3230,8 @@ NATIVE_TARGET.kind=step 时完成当前原生步骤本身；complete_stage 时�
                     stage_state=stage_state,
                     route_reason=route_reason,
                     max_chars=ref_chars,
+                    cache_base_key=stage02_cache_base,
+                    cache_bucket=stage02_cache_bucket,
                 )
                 source_blocks = [f"### SKILL.md\n{skill_md}", *reference_blocks]
                 user_prompt = f"""=== SOURCE FILES ===
@@ -3073,6 +3387,8 @@ Execute the current production Skill directly. Do not add platform-specific revi
                                 stage_state=stage_state,
                                 route_reason=route_reason,
                                 max_chars=emergency_ref_chars,
+                                cache_base_key=stage02_cache_base,
+                                cache_bucket=stage02_cache_bucket,
                             )
                         except Exception:
                             emergency_refs = []
@@ -3274,7 +3590,8 @@ Execute the current production Skill directly. Do not add platform-specific revi
                     "请提高模型 context window。"
                 )
 
-            execution_result = await self.llm.chat(
+            execution_result = await self._tracked_llm_chat(
+                phase="director_orchestrator_content",
                 messages=[{"role":"user","content":user_prompt}],
                 system_prompt=system_prompt,
                 temperature=0.50,
@@ -3657,6 +3974,8 @@ Execute the current production Skill directly. Do not add platform-specific revi
                 "completion": completion,
                 "production_asset_ids": production_asset_ids,
                 "production_stage_status": self.production.stage_status(project_id, stage),
+                "stage_scope": copy.deepcopy(state.get("stage02_scope") or {})
+                if stage == "02" else {},
                 "confirmed_at": _utcnow(),
             }
             if stage not in project["completed_stages"]:

@@ -8,8 +8,10 @@ from unittest import TestCase, mock
 ROOT = Path(__file__).resolve().parents[1]
 STAGE_IDS = ["01", "02", "03", "04", "05", "06"]
 REQUIRED_FIELDS = {
-    "stage_id", "stage_name", "status", "current_step", "total_steps",
-    "percent", "completed_items", "current_item", "eta_seconds", "source",
+    "stage", "stage_id", "stage_name", "status", "current_step",
+    "current_step_name", "total_steps", "completed_steps", "percent",
+    "completed_items", "current_action", "current_item", "eta", "eta_seconds",
+    "waiting_confirm", "source",
 }
 
 
@@ -64,11 +66,31 @@ class StageProgressDisplayTests(TestCase):
             result = self.main._studio_stage_progress_snapshot(
                 self.project("02"), job, [], [],
             )
-        self.assertEqual(result["schema_version"], "stage-progress-v1")
+        self.assertEqual(result["schema_version"], "stage-progress-v2")
         self.assertEqual(result["current_stage"], "02")
         self.assertEqual([x["stage_id"] for x in result["stages"]], STAGE_IDS)
         self.assertTrue(all(set(x) == REQUIRED_FIELDS for x in result["stages"]))
         self.assertEqual(result["stages"][1]["current_item"], "正在生成角色")
+
+    def test_stage02_separates_current_and_completed_step_semantics(self) -> None:
+        project = self.project("02")
+        job = {
+            "stage": "02", "status": "running", "message": "执行角色合同与引用计划",
+            "created_at": "2026-08-24T00:00:00+00:00",
+            "stage02_progress": {
+                "total_steps": 5,
+                "completed_steps": 2,
+                "current_step": 3,
+                "current_step_name": "执行角色合同与引用计划",
+                "percent": 40,
+                "status": "running",
+            },
+        }
+        row = self.main._studio_core_stage_progress(project, "02", job)
+        self.assertEqual(row["current_step"], 3)
+        self.assertEqual(row["completed_steps"], 2)
+        self.assertEqual(row["total_steps"], 5)
+        self.assertEqual(row["percent"], 40)
 
     def test_stage04_completed_rebuild_is_ready_until_stage_confirmation(self) -> None:
         task = {
@@ -120,7 +142,7 @@ class StageProgressDisplayTests(TestCase):
         studio = (ROOT / "app/static/studio.html").read_text(encoding="utf-8")
         self.assertEqual(index, studio)
         for label in (
-            "当前步骤", "完成百分比", "已完成列表", "当前执行项", "预计剩余时间",
+            "当前执行", "已完成", "完成百分比", "已完成列表", "当前执行项", "预计剩余时间",
         ):
             self.assertIn(label, index)
         self.assertIn("formatStageEta", index)

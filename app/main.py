@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 from contextlib import nullcontext
@@ -50,15 +51,21 @@ _llm_activation_lock = asyncio.Lock()
 
 
 class StageProgress(TypedDict):
+    stage: str
     stage_id: str
     stage_name: str
     status: str
     current_step: int
+    current_step_name: str
     total_steps: int
+    completed_steps: int
     percent: int
     completed_items: list[str]
+    current_action: str
     current_item: str
+    eta: int | None
     eta_seconds: int | None
+    waiting_confirm: bool
     source: str
 
 
@@ -3173,7 +3180,212 @@ def _studio_contract_missing_media(result: dict) -> list[dict]:
     return found
 
 
-async def _studio_character_role_mode(project_id: str) -> dict:
+_STUDIO_STAGE02_SCOPE = {
+    "schema_version": "stage02-scope-v1",
+    "canonical_fields": [
+        "identity", "personality", "relationships", "motivation",
+        "continuity_rules",
+    ],
+    "stage03_consumer_fields": [
+        "appearance_details", "costume_design", "color_palette",
+        "visual_style", "image_prompt", "visual_parameters",
+    ],
+    "policy": "preserve_existing_visual_data_and_mark_for_stage03",
+}
+
+
+def _studio_stage02_cache_key(project_id: str, user_input: str) -> str:
+    project = director.get_project(project_id)
+    confirmed = (project.get("confirmed_outputs") or {}).get("01") or {}
+    handoff_version = hashlib.sha256(_studio_json.dumps(
+        {
+            "handoff": str(confirmed.get("handoff") or ""),
+            "confirmed_at": str(confirmed.get("confirmed_at") or ""),
+            "production_asset_ids": confirmed.get("production_asset_ids") or [],
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    skill_md = director._skill_md(_STUDIO_STAGE_SKILLS["02"])
+    payload = {
+        "stage_id": "02",
+        "project_id": project_id,
+        "handoff_version": handoff_version,
+        "skill_version": hashlib.sha256(skill_md.encode("utf-8")).hexdigest(),
+        "input_digest": hashlib.sha256(
+            str(user_input or "").strip().encode("utf-8")
+        ).hexdigest(),
+    }
+    return hashlib.sha256(_studio_json.dumps(
+        payload, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+
+
+def _studio_stage02_execution_plan(project_id: str, user_input: str) -> dict:
+    """Choose reuse, scoped completion, or first production deterministically."""
+    project = director.get_project(project_id)
+    state = (project.get("stage_state") or {}).get("02") or {}
+    runtime = state.get("skill_runtime") or {}
+    completion = runtime.get("completion") or {}
+    contract = state.get("skill_contract") or {}
+    required_ids = [
+        str(value) for value in (completion.get("required_artifact_ids") or [])
+        if str(value).strip()
+    ]
+    declared_missing_artifacts = [
+        str(value) for value in (completion.get("missing_artifact_ids") or [])
+        if str(value).strip()
+    ]
+    missing_requirements = [
+        str(value) for value in (completion.get("missing_requirement_ids") or [])
+        if str(value).strip()
+    ]
+    readiness = (
+        director.production.contract_asset_readiness(project_id, "02", contract)
+        if contract else {}
+    )
+    missing_artifacts = list(dict.fromkeys([
+        *declared_missing_artifacts,
+        *(
+            artifact_id for artifact_id in required_ids
+            if not readiness.get(artifact_id)
+        ),
+    ]))
+    contract_ready = bool(contract) and (
+        all(bool(readiness.get(artifact_id)) for artifact_id in required_ids)
+        if required_ids else completion.get("ready") is True
+    )
+
+    text_contract_ids = {
+        str(spec.get("artifact_id") or "")
+        for group in (contract.get("output_groups") or [])
+        for spec in (group.get("artifacts") or [])
+        if str(spec.get("asset_type") or "TEXT").upper()
+        in {"TEXT", "STRUCTURED_DATA", "FILE"}
+        and str(spec.get("artifact_id") or "")
+    }
+    bible_asset_ids = [
+        asset_id
+        for artifact_id in text_contract_ids
+        for asset_id in (readiness.get(artifact_id) or [])
+    ]
+    if not bible_asset_ids:
+        bible_asset_ids = [
+            str(asset.get("asset_id") or "")
+            for asset in director.production.list_assets(
+                project_id, stage="02", active_only=True,
+            )
+            if str(asset.get("asset_role") or "") == "director_turn_output"
+            and str(asset.get("status") or "").lower() == "ready"
+            and str(asset.get("dependency_state") or "").lower() != "stale"
+        ]
+    valid_character_bible = bool([value for value in bible_asset_ids if value])
+    normalized = _studio_re.sub(
+        r"[\s，。！？!?、；;：:（）()【】\[\]<>《》“”‘’]+", "",
+        str(user_input or "").strip(),
+    ).lower()
+    substantive_revision = bool(normalized) and normalized not in {
+        "继续", "继续生成角色", "生成角色", "重试", "retry",
+    }
+    ready = (
+        completion.get("ready") is True
+        and bool(state.get("stage_ready"))
+        and contract_ready
+        and valid_character_bible
+    )
+    if ready and not substantive_revision:
+        mode = "reuse_complete"
+    elif valid_character_bible and (missing_artifacts or missing_requirements):
+        mode = "scoped_completion"
+    else:
+        mode = "full_generation"
+    return {
+        "schema_version": "stage02-execution-plan-v1",
+        "mode": mode,
+        "cache_key": _studio_stage02_cache_key(project_id, user_input),
+        "valid_character_bible": valid_character_bible,
+        "character_bible_asset_ids": bible_asset_ids,
+        "contract_artifact_ready": contract_ready,
+        "stage_ready": bool(state.get("stage_ready")),
+        "missing_artifact_ids": missing_artifacts,
+        "missing_requirement_ids": missing_requirements,
+        "substantive_revision": substantive_revision,
+        "stage02_scope": _STUDIO_STAGE02_SCOPE,
+    }
+
+
+def _studio_stage02_new_performance(job: dict) -> dict:
+    return {
+        "schema_version": "stage02-performance-v1",
+        "started_at": str(job.get("created_at") or _studio_now()),
+        "ended_at": "",
+        "phases": [],
+        "summary": {},
+        "progress": {
+            "total_steps": 5,
+            "completed_steps": 0,
+            "current_step": 1,
+            "current_step_name": "检查已有角色成果",
+            "percent": 0,
+            "status": "running",
+        },
+    }
+
+
+def _studio_stage02_set_progress(
+    job: dict,
+    *,
+    completed_steps: int,
+    current_step: int,
+    current_step_name: str,
+    status: str = "running",
+) -> dict:
+    metadata = job.setdefault("metadata", {})
+    perf = metadata.setdefault("stage02_performance", _studio_stage02_new_performance(job))
+    total = 5
+    completed = max(0, min(int(completed_steps), total))
+    current = max(0, min(int(current_step), total))
+    perf["progress"] = {
+        "total_steps": total,
+        "completed_steps": completed,
+        "current_step": current,
+        "current_step_name": str(current_step_name),
+        "percent": int(completed * 100 / total),
+        "status": str(status),
+    }
+    job["stage02_progress"] = dict(perf["progress"])
+    return perf
+
+
+def _studio_stage02_finalize_performance(
+    project_id: str, job: dict, *, status: str,
+) -> dict:
+    perf = (job.get("metadata") or {}).get("stage02_performance") or {}
+    perf["ended_at"] = _studio_now()
+    director.finalize_phase_telemetry(perf)
+    progress = perf.get("progress") or {}
+    progress["status"] = status
+    if status in {"waiting_confirm", "completed", "reused"}:
+        progress.update({
+            "completed_steps": 5,
+            "current_step": 5,
+            "current_step_name": "等待确认进入视觉",
+            "percent": 100,
+        })
+    job["stage02_progress"] = dict(progress)
+    project = director.get_project(project_id)
+    state = project.setdefault("stage_state", {}).setdefault("02", {})
+    state["stage02_scope"] = _studio_json.loads(_studio_json.dumps(_STUDIO_STAGE02_SCOPE))
+    runtime = state.setdefault("skill_runtime", {})
+    runtime["stage02_performance"] = _studio_json.loads(_studio_json.dumps(perf))
+    director._save_project(project)
+    return perf
+
+
+async def _studio_character_role_mode(
+    project_id: str, *, cache_key: str = "",
+) -> dict:
     """Resolve whether Stage02 truly needs an identity reference image.
 
     This is semantic routing with a fixed schema.  It does not use character-name
@@ -3182,6 +3394,25 @@ async def _studio_character_role_mode(project_id: str) -> dict:
     facts explicitly require preserving/matching a specific person's identity.
     """
     project = director.get_project(project_id)
+    stage_state = project.setdefault("stage_state", {}).setdefault("02", {})
+    cache_root = stage_state.setdefault("stage02_deterministic_cache", {
+        "schema_version": "stage02-cache-v1",
+        "role_classification": {},
+    })
+    role_cache = cache_root.setdefault("role_classification", {})
+    cache_key = cache_key or _studio_stage02_cache_key(project_id, "")
+    cached = role_cache.get(cache_key)
+    if isinstance(cached, dict) and cached.get("schema_version") == "character_role_mode_v1":
+        director.record_phase_cache_hit("studio_stage02_character_role_mode")
+        return {**cached, "cache_hit": True}
+
+    def cache_result(result: dict) -> dict:
+        role_cache[cache_key] = _studio_json.loads(_studio_json.dumps(result))
+        while len(role_cache) > 24:
+            role_cache.pop(next(iter(role_cache)))
+        director._save_project(project)
+        return {**result, "cache_hit": False}
+
     confirmed = (project.get("confirmed_outputs") or {}).get("01") or {}
     handoff = str(confirmed.get("handoff") or "").strip()
 
@@ -3250,7 +3481,7 @@ async def _studio_character_role_mode(project_id: str) -> dict:
             source_kind = "unknown"
         identity_required = _as_bool(parsed.get("identity_preservation_required"))
         reference_required = _as_bool(parsed.get("reference_image_required")) and identity_required
-        return {
+        return cache_result({
             "schema_version": "character_role_mode_v1",
             "character_source": source_kind,
             "identity_preservation_required": identity_required,
@@ -3258,7 +3489,7 @@ async def _studio_character_role_mode(project_id: str) -> dict:
             "reference_image_optional": not reference_required,
             "reason": str(parsed.get("reason") or "").strip(),
             "decision_mode": "structured_semantic",
-        }
+        })
     except Exception as exc:
         # The safe product fallback is optional reference media.  Requiring a
         # photo by default is precisely the failure this resolver prevents.
@@ -3271,6 +3502,7 @@ async def _studio_character_role_mode(project_id: str) -> dict:
             "reason": "角色模式解析暂不可用；参考图按可选增强处理，不阻断角色设计",
             "decision_mode": "optional_reference_fallback",
             "resolver_error": type(exc).__name__,
+            "cache_hit": False,
         }
 
 async def _studio_progress_decision(
@@ -4764,6 +4996,10 @@ async def _studio_run_stage_job(
     explicit_approval = False
     stage = ""
     character_mode: dict = {}
+    stage02_plan = ((job.get("metadata") or {}).get("stage02_execution_plan") or {})
+    stage02_perf = ((job.get("metadata") or {}).get("stage02_performance") or {})
+    stage02_request_cache: dict = {}
+    stage02_perf_finalized = False
     try:
         project = director.get_project(project_id)
         if project.get("status") != "active":
@@ -4796,13 +5032,25 @@ async def _studio_run_stage_job(
             return
 
         if stage == "02":
+            stage02_perf = _studio_stage02_set_progress(
+                job,
+                completed_steps=1,
+                current_step=2,
+                current_step_name="判断角色生产模式",
+            )
             # Stage02 now has its own character-design Skill.  The semantic
             # identity classifier is only a UI/product hint and must never be
             # allowed to block the real production call if llama.cpp has a
             # transient error.
             try:
-                async with gpu.use(GPUOwner.gemma):
-                    character_mode = await _studio_character_role_mode(project_id)
+                with director.phase_telemetry(
+                    stage02_perf, request_cache=stage02_request_cache,
+                ):
+                    async with gpu.use(GPUOwner.gemma):
+                        character_mode = await _studio_character_role_mode(
+                            project_id,
+                            cache_key=str(stage02_plan.get("cache_key") or ""),
+                        )
             except Exception as classifier_exc:
                 character_mode = {
                     "schema_version": "character_role_mode_v1",
@@ -4815,6 +5063,12 @@ async def _studio_run_stage_job(
                     "classifier_error": repr(classifier_exc)[:800],
                 }
             job["character_mode"] = character_mode
+            _studio_stage02_set_progress(
+                job,
+                completed_steps=2,
+                current_step=3,
+                current_step_name="准备合同、计划与引用",
+            )
             job["message"] = (
                 "正在生成角色；人物身份参考图为必要输入"
                 if character_mode.get("reference_image_required")
@@ -4838,7 +5092,20 @@ async def _studio_run_stage_job(
 直接依据已经确认的剧本、角色实体和连续性事实执行 ai-studio-character-design。
 若项目事实未明确要求保持某个现实人物身份，则参考图不得成为阻断条件。
 """
-            if not text or explicit_approval:
+            if stage02_plan.get("mode") == "scoped_completion":
+                scoped = _studio_json.dumps({
+                    "missing_artifact_ids": stage02_plan.get("missing_artifact_ids") or [],
+                    "missing_requirement_ids": stage02_plan.get("missing_requirement_ids") or [],
+                    "reuse_character_bible_asset_ids": stage02_plan.get("character_bible_asset_ids") or [],
+                }, ensure_ascii=False)
+                text = mode_instruction + f"""
+
+STAGE02_SCOPED_COMPLETION={scoped}
+仅补齐上述缺失合同字段/要求。必须复用已有 Character Bible 与已验证字段；
+不得重新生成、覆盖或删除已经有效的身份、性格、关系、动机及连续性内容。
+已有视觉数据保留原值，并作为 Stage03 消费字段，不在本轮扩写视觉设计。
+"""
+            elif not text or explicit_approval:
                 text = mode_instruction + "\n继续当前角色设计阶段。"
             else:
                 text = mode_instruction + "\n\nUSER_SUPPLEMENT:\n" + text
@@ -4887,8 +5154,19 @@ async def _studio_run_stage_job(
                 _studio_save_job(job)
                 break
 
-            async with gpu.use(GPUOwner.gemma):
-                result = await director.message(project_id, text)
+            if stage == "02":
+                _studio_stage02_set_progress(
+                    job,
+                    completed_steps=2,
+                    current_step=3,
+                    current_step_name="执行角色合同与引用计划",
+                )
+                _studio_save_job(job)
+            with director.phase_telemetry(
+                stage02_perf, request_cache=stage02_request_cache,
+            ) if stage == "02" else nullcontext():
+                async with gpu.use(GPUOwner.gemma):
+                    result = await director.message(project_id, text)
                 decision = None
                 state = result.get("control") or {}
                 completion = (result.get("skill_runtime") or {}).get("completion") or {}
@@ -4909,6 +5187,13 @@ async def _studio_run_stage_job(
                 job["turn_count"] = len(turns)
                 job["last_content"] = content
                 job["updated_at"] = _studio_now()
+                if stage == "02":
+                    _studio_stage02_set_progress(
+                        job,
+                        completed_steps=4,
+                        current_step=5,
+                        current_step_name="校验角色成果与合同资产",
+                    )
                 _studio_save_job(job)
 
                 if bool(completion.get("ready")) or bool(state.get("stage_ready")):
@@ -4919,6 +5204,11 @@ async def _studio_run_stage_job(
                         "reason": str(completion.get("reason") or ""),
                         "updated_at": _studio_now(),
                     })
+                    if stage == "02":
+                        _studio_stage02_finalize_performance(
+                            project_id, job, status="waiting_confirm",
+                        )
+                        stage02_perf_finalized = True
                     _studio_save_job(job)
                     break
 
@@ -4930,6 +5220,11 @@ async def _studio_run_stage_job(
                             "missing_media": media_missing,
                             "updated_at": _studio_now(),
                         })
+                        if stage == "02":
+                            _studio_stage02_finalize_performance(
+                                project_id, job, status="waiting_input",
+                            )
+                            stage02_perf_finalized = True
                         _studio_save_job(job)
                         break
 
@@ -4962,6 +5257,11 @@ async def _studio_run_stage_job(
                         "reason": str(completion.get("reason") or ""),
                         "updated_at": _studio_now(),
                     })
+                    if stage == "02":
+                        _studio_stage02_finalize_performance(
+                            project_id, job, status="review",
+                        )
+                        stage02_perf_finalized = True
                     _studio_save_job(job)
                     break
 
@@ -5051,6 +5351,14 @@ async def _studio_run_stage_job(
             "error": repr(exc),
             "updated_at": _studio_now(),
         })
+        if stage == "02" and not stage02_perf_finalized:
+            try:
+                _studio_stage02_finalize_performance(
+                    project_id, job, status="failed",
+                )
+                stage02_perf_finalized = True
+            except Exception as perf_exc:
+                job["stage02_performance_error"] = repr(perf_exc)
         _studio_save_job(job)
     finally:
         _STUDIO_TASKS.pop(job_id, None)
@@ -5462,21 +5770,36 @@ def _studio_progress_eta(created_at: str, percent: int) -> int | None:
 def _studio_progress_row(
     stage_id: str, *, status: str = "pending", current_step: int = 0,
     total_steps: int = 1, percent: int = 0,
+    completed_steps: int | None = None, current_step_name: str = "",
     completed_items: list[str] | None = None, current_item: str = "尚未开始",
-    eta_seconds: int | None = None, source: str = "derived",
+    current_action: str = "", eta_seconds: int | None = None,
+    waiting_confirm: bool = False, source: str = "derived",
 ) -> StageProgress:
     total = max(1, int(total_steps or 1))
+    items = [str(x) for x in (completed_items or []) if str(x).strip()]
+    completed = max(0, min(
+        int(completed_steps if completed_steps is not None else len(items)), total,
+    ))
     step = max(0, min(int(current_step or 0), total))
+    if str(status) in {"running", "waiting", "review", "blocked"} and completed < total:
+        step = max(step, min(total, completed + 1))
+    action = str(current_action or current_item or "处理中")
     return {
+        "stage": stage_id,
         "stage_id": stage_id,
         "stage_name": _STUDIO_PROGRESS_LABELS[stage_id],
         "status": str(status or "pending"),
         "current_step": step,
+        "current_step_name": str(current_step_name or action),
         "total_steps": total,
+        "completed_steps": completed,
         "percent": max(0, min(100, int(percent or 0))),
-        "completed_items": [str(x) for x in (completed_items or []) if str(x).strip()],
-        "current_item": str(current_item or "处理中"),
+        "completed_items": items,
+        "current_action": action,
+        "current_item": action,
+        "eta": eta_seconds,
         "eta_seconds": eta_seconds,
+        "waiting_confirm": bool(waiting_confirm),
         "source": str(source or "derived"),
     }
 
@@ -5523,6 +5846,39 @@ def _studio_core_stage_progress(
 
     job = current_job if str((current_job or {}).get("stage") or "") == stage_id else {}
     job_status = str(job.get("status") or "").lower()
+    if stage_id == "02":
+        stage02_progress = (
+            job.get("stage02_progress")
+            or ((runtime.get("stage02_performance") or {}).get("progress"))
+            or {}
+        )
+        if stage02_progress:
+            ready = completion.get("ready") is True
+            total = max(1, int(stage02_progress.get("total_steps") or 5))
+            completed = max(0, min(
+                int(stage02_progress.get("completed_steps") or 0), total,
+            ))
+            step = max(0, min(int(stage02_progress.get("current_step") or 0), total))
+            status = "waiting_confirm" if ready else str(
+                stage02_progress.get("status") or job_status or "waiting"
+            )
+            if ready:
+                completed, step = total, total
+            return _studio_progress_row(
+                stage_id,
+                status=status,
+                current_step=step,
+                current_step_name=str(stage02_progress.get("current_step_name") or "处理中"),
+                total_steps=total,
+                completed_steps=completed,
+                percent=100 if ready else int(stage02_progress.get("percent") or 0),
+                completed_items=[f"步骤 {index}" for index in range(1, completed + 1)],
+                current_action=str(job.get("message") or stage02_progress.get("current_step_name") or "处理中"),
+                eta_seconds=_studio_progress_eta(str(job.get("created_at") or ""), int(stage02_progress.get("percent") or 0))
+                if job_status in {"queued", "running"} else None,
+                waiting_confirm=ready,
+                source="stage02_job+skill_runtime",
+            )
     total = len(required_artifacts) + len(active_requirements) + 1
     done = len(completed_items)
     if total <= 1 and not required_artifacts and not active_requirements:
@@ -5535,7 +5891,7 @@ def _studio_core_stage_progress(
     percent = 100 if completion.get("ready") is True else int(done * 100 / max(total, 1))
     if job_status in {"queued", "running"} and percent == 0:
         percent = 5
-    status = "ready" if completion.get("ready") is True else (
+    status = "waiting_confirm" if completion.get("ready") is True else (
         "running" if job_status in {"queued", "running"} else
         "blocked" if job_status in {"input_required", "media_required", "failed"} else
         "waiting"
@@ -5553,6 +5909,7 @@ def _studio_core_stage_progress(
         percent=percent, completed_items=completed_items, current_item=current_item,
         eta_seconds=_studio_progress_eta(str(job.get("created_at") or ""), percent)
         if job_status in {"queued", "running"} else None,
+        waiting_confirm=completion.get("ready") is True,
         source="job+skill_runtime",
     )
 
@@ -5722,7 +6079,7 @@ def _studio_stage_progress_snapshot(
     else:
         current_stage = "05"
     return {
-        "schema_version": "stage-progress-v1",
+        "schema_version": "stage-progress-v2",
         "current_stage": current_stage,
         "stages": stages,
     }
@@ -5748,7 +6105,7 @@ def _studio_stage_progress_fallback(project: dict) -> dict:
             source="fallback",
         ))
     return {
-        "schema_version": "stage-progress-v1",
+        "schema_version": "stage-progress-v2",
         "current_stage": current_stage,
         "stages": stages,
     }
@@ -5926,6 +6283,10 @@ async def studio_run_stage(project_id: str, payload: dict) -> dict:
         active = _studio_active_job(project_id)
         if active and active.get("status") in {"queued", "running"}:
             raise RuntimeError("当前阶段已有后台任务正在执行")
+        stage02_plan = (
+            _studio_stage02_execution_plan(project_id, raw)
+            if stage == "02" else {}
+        )
         max_turns = max(1, min(24, int(payload.get("max_turns") or 16)))
         job_id = "stjob_" + _studio_secrets.token_hex(10)
         job = {
@@ -5936,9 +6297,41 @@ async def studio_run_stage(project_id: str, payload: dict) -> dict:
             "turn_count": 0,
             "turns": [],
             "message": "等待执行",
+            "metadata": {
+                "stage02_execution_plan": stage02_plan,
+            } if stage == "02" else {},
             "created_at": _studio_now(),
             "updated_at": _studio_now(),
         }
+        if stage == "02":
+            perf = _studio_stage02_set_progress(
+                job,
+                completed_steps=1,
+                current_step=2,
+                current_step_name="判断角色生产模式",
+            )
+            if stage02_plan.get("mode") == "reuse_complete":
+                now = _studio_now()
+                perf["phases"].append({
+                    "phase": "stage02_idempotent_reuse",
+                    "start_time": now,
+                    "end_time": now,
+                    "duration_ms": 0.0,
+                    "qwen_calls": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "retry": 0,
+                    "cache_hit": True,
+                })
+                job.update({
+                    "status": "review",
+                    "message": "角色成果与合同资产已就绪，已复用现有 Character Bible；未调用 Qwen。",
+                    "idempotent_reuse": True,
+                    "updated_at": _studio_now(),
+                })
+                _studio_stage02_finalize_performance(project_id, job, status="reused")
+                _studio_save_job(job)
+                return {"job": job, "background": False, "reused": True}
         _studio_save_job(job)
         task = _studio_asyncio.create_task(_studio_run_stage_job(
             job_id=job_id,

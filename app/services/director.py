@@ -37,6 +37,8 @@ STAGE_SKILLS = {
     "03": 'ai-studio-visual-design',
     "04": "chuanzhang-fenjing-biaoqing",
 }
+
+NATIVE_PLAN_SCHEMA_VERSION = "native_plan_v2_single_step"
 WORKFLOW_SKILL = "chuanzhang-ai-shijie-workflow"
 ALLOWED_SOURCE_SUFFIXES = {".md", ".txt", ".json", ".yaml", ".yml"}
 
@@ -1376,6 +1378,7 @@ REFERENCE_FILE={relative}
         source_sha256 = self._skill_source_sha256(skill_md)
         if mode == "dynamic":
             return {
+                "schema_version": NATIVE_PLAN_SCHEMA_VERSION,
                 "mode": "dynamic",
                 "steps": [],
                 "current_index": -1,
@@ -1386,9 +1389,9 @@ REFERENCE_FILE={relative}
         raw_steps = plan.get("steps")
         if not isinstance(raw_steps, list):
             raise ValueError("native_plan.steps 必须是数组")
-        if not 2 <= len(raw_steps) <= 24:
+        if not 1 <= len(raw_steps) <= 24:
             raise ValueError(
-                "sequential native_plan 步骤数必须在 2-24 之间"
+                "sequential native_plan 步骤数必须在 1-24 之间"
             )
 
         def markdown_label_candidates(
@@ -1501,6 +1504,7 @@ REFERENCE_FILE={relative}
             cursor = position + len(name)
 
         return {
+            "schema_version": NATIVE_PLAN_SCHEMA_VERSION,
             "mode": "sequential",
             "steps": steps,
             "current_index": -1,
@@ -1719,6 +1723,7 @@ REFERENCE_FILE={relative}
 
         def dynamic(reason: str) -> dict[str, Any]:
             return {
+                "schema_version": NATIVE_PLAN_SCHEMA_VERSION,
                 "mode": "dynamic",
                 "steps": [],
                 "current_index": -1,
@@ -1733,7 +1738,7 @@ REFERENCE_FILE={relative}
         system_prompt = """你是 Agent Skill 的轻量步骤导航解析器，不执行创作任务。
 
 目标：
-- 只有当当前 SKILL.md 明确存在“有限、连续、需要逐步推进”的正式步骤时，才返回 sequential。
+- 当当前 SKILL.md 明确存在一个或多个有限正式 production step 时，返回 sequential；明确的单步计划也是 sequential。
 - 如果 SKILL.md 更像方法说明、规则集合、字段顺序、输出模板、条件分支或动态工作流，返回 dynamic。
 
 要求：
@@ -1902,11 +1907,14 @@ REFERENCE_FILE={relative}
         source_sha256 = self._skill_source_sha256(skill_md)
         existing = stage_state.get("native_plan")
 
-        # Dynamic cache from the same Skill source is safe to reuse directly.
+        # Only cache plans produced by the current validator contract.  Older
+        # validators rejected legitimate one-step Skills and persisted them as
+        # dynamic forever, so those plans must be rebuilt once.
         if (
             isinstance(existing, dict)
             and existing.get("source_sha256") == source_sha256
             and existing.get("mode") == "dynamic"
+            and existing.get("schema_version") == NATIVE_PLAN_SCHEMA_VERSION
         ):
             self.record_phase_cache_hit("native_plan")
             return existing
@@ -1917,6 +1925,7 @@ REFERENCE_FILE={relative}
             isinstance(existing, dict)
             and existing.get("source_sha256") == source_sha256
             and existing.get("mode") == "sequential"
+            and existing.get("schema_version") == NATIVE_PLAN_SCHEMA_VERSION
         ):
             try:
                 checked = self._validate_native_plan(
@@ -1945,6 +1954,7 @@ REFERENCE_FILE={relative}
             )
         except Exception as exc:
             plan = {
+                "schema_version": NATIVE_PLAN_SCHEMA_VERSION,
                 "mode": "dynamic",
                 "steps": [],
                 "current_index": -1,
@@ -1961,6 +1971,7 @@ REFERENCE_FILE={relative}
 
         if plan.get("mode") not in {"sequential", "dynamic"}:
             plan = {
+                "schema_version": NATIVE_PLAN_SCHEMA_VERSION,
                 "mode": "dynamic",
                 "steps": [],
                 "current_index": -1,
@@ -2031,6 +2042,67 @@ REFERENCE_FILE={relative}
             "index": -1,
             "name": "",
         }
+
+    @staticmethod
+    def _resume_verified_single_step(
+        *, plan: dict[str, Any], stage_state: dict[str, Any],
+    ) -> bool:
+        """Resume a persisted one-step Skill from its verified final artifact.
+
+        This does not mark the stage complete.  It only restores the native
+        cursor that an older plan validator failed to persist, and only when
+        the sole production step has a verified, materialized contract receipt.
+        The following explicit internal advance still has to reach
+        ``complete_stage`` and pass the normal handoff/audit closure.
+        """
+        steps = list(plan.get("steps") or [])
+        if (
+            plan.get("mode") != "sequential"
+            or len(steps) != 1
+            or int(plan.get("current_index", -1)) >= 0
+            or _clean_text(stage_state.get("internal_step"))
+        ):
+            return False
+
+        runtime = stage_state.get("skill_runtime") or {}
+        completion = runtime.get("completion") or {}
+        required = [
+            _clean_text(value)
+            for value in completion.get("required_artifact_ids") or []
+            if _clean_text(value)
+        ]
+        if (
+            not required
+            or completion.get("missing_artifact_ids")
+            or completion.get("missing_requirement_ids")
+        ):
+            return False
+
+        registry = runtime.get("artifact_registry") or {}
+        materialized = completion.get("materialized_asset_ids") or {}
+        for artifact_id in required:
+            receipt = registry.get(artifact_id) or {}
+            asset_ids = [
+                _clean_text(value)
+                for value in (
+                    materialized.get(artifact_id)
+                    or receipt.get("production_asset_ids")
+                    or []
+                )
+                if _clean_text(value)
+            ]
+            if not bool(receipt.get("verified")) or not asset_ids:
+                return False
+
+        plan["current_index"] = 0
+        stage_state["internal_step"] = steps[0]
+        stage_state["native_resume"] = {
+            "mode": "verified_single_step_artifact",
+            "step": steps[0],
+            "required_artifact_ids": required,
+            "restored_at": _utcnow(),
+        }
+        return True
 
     async def _classify_control_action(
         self,
@@ -3092,6 +3164,8 @@ The CURRENT STAGE HISTORY below is generated history, not proof that any externa
         self,
         project_id: str,
         user_text: str,
+        *,
+        native_control_action: str = "",
     ) -> dict[str, Any]:
         """Execute the current production Skill without business guard/judge layers."""
         async with self._lock(project_id):
@@ -3133,14 +3207,6 @@ The CURRENT STAGE HISTORY below is generated history, not proof that any externa
                 skill_md=skill_md,
                 stage_state=stage_state,
             )
-            previous_step = _clean_text(stage_state.get("internal_step"))
-
-            control_event = await self._classify_control_action(
-                skill_name=skill_name,
-                skill_md=skill_md,
-                stage_state=stage_state,
-                user_text=user_text,
-            )
             native_plan = await self._ensure_native_plan(
                 skill_name=skill_name,
                 skill_md=skill_md,
@@ -3149,6 +3215,47 @@ The CURRENT STAGE HISTORY below is generated history, not proof that any externa
                 stage_state=stage_state,
                 user_text=user_text,
             )
+            self._resume_verified_single_step(
+                plan=native_plan,
+                stage_state=stage_state,
+            )
+            previous_step = _clean_text(stage_state.get("internal_step"))
+
+            internal_action = _clean_text(native_control_action).lower()
+            if internal_action:
+                if internal_action != "advance":
+                    raise ValueError(
+                        "native_control_action 仅允许 advance"
+                    )
+                if stage not in {"02", "03"}:
+                    raise ValueError(
+                        "native_control_action 仅用于 Stage02/03 后台原生步骤推进"
+                    )
+                if native_plan.get("mode") != "sequential":
+                    raise RuntimeError(
+                        "后台原生步骤无法推进：缺少可验证的 sequential 当前步骤"
+                    )
+                if not previous_step:
+                    control_event = {
+                        "action": "other",
+                        "confidence": 1.0,
+                        "reason": "尚无已执行 native step；先执行计划第一步",
+                        "source": "studio_internal_native_driver_deferred",
+                    }
+                else:
+                    control_event = {
+                        "action": "advance",
+                        "confidence": 1.0,
+                        "reason": "同一后台 job 按已验证 native plan 推进下一原生步骤",
+                        "source": "studio_internal_native_driver",
+                    }
+            else:
+                control_event = await self._classify_control_action(
+                    skill_name=skill_name,
+                    skill_md=skill_md,
+                    stage_state=stage_state,
+                    user_text=user_text,
+                )
             native_target = self._native_target(
                 plan=native_plan,
                 previous_step=previous_step,

@@ -3405,6 +3405,34 @@ def _studio_handoff_audit_ready(audit: dict) -> bool:
     )
 
 
+def _studio_verified_native_resume_candidate(project: dict, stage: str) -> bool:
+    """Whether persisted contract evidence can resume a one-step native plan."""
+    state = (project.get("stage_state") or {}).get(stage) or {}
+    runtime = state.get("skill_runtime") or {}
+    completion = runtime.get("completion") or {}
+    required = [
+        str(value) for value in completion.get("required_artifact_ids") or []
+        if str(value).strip()
+    ]
+    if (
+        completion.get("native_terminal") is True
+        or not required
+        or completion.get("missing_artifact_ids")
+        or completion.get("missing_requirement_ids")
+    ):
+        return False
+    registry = runtime.get("artifact_registry") or {}
+    materialized = completion.get("materialized_asset_ids") or {}
+    return all(
+        bool((registry.get(artifact_id) or {}).get("verified"))
+        and bool(
+            materialized.get(artifact_id)
+            or (registry.get(artifact_id) or {}).get("production_asset_ids")
+        )
+        for artifact_id in required
+    )
+
+
 def _studio_stage_closure_snapshot(project_id: str, stage: str) -> dict:
     """Refresh and describe the real Director closure state without model calls."""
     director.refresh_production_completion(project_id)
@@ -3424,10 +3452,57 @@ def _studio_stage_closure_snapshot(project_id: str, stage: str) -> dict:
     audit = state.get("last_handoff_audit") or {}
     completion_ready = completion.get("ready") is True
     stage_ready = state.get("stage_ready") is True
+    native_terminal = completion.get("native_terminal") is True
+    native_progress = completion.get("native_progress") or {}
+    audit_valid = audit.get("valid") is True
+    provenance_valid = bool(
+        audit.get("provenance_verified") is True
+        and str(audit.get("contract_version") or "") == "verbatim_evidence_v1"
+    )
+    contract_assets_ready = not missing_assets and not missing_requirements
     handoff_state = "valid" if handoff else "missing"
     audit_state = "valid" if _studio_handoff_audit_ready(audit) else (
         "pending" if not completion_ready else "invalid"
     )
+    registry = runtime.get("artifact_registry") or {}
+    requirement_registry = runtime.get("requirement_registry") or {}
+    completion_revision_payload = {
+        "native_progress": native_progress,
+        "artifact_receipts": {
+            str(key): {
+                "verified": bool((value or {}).get("verified")),
+                "evidence_sha256": str((value or {}).get("evidence_sha256") or ""),
+                "content_sha256": str((value or {}).get("content_sha256") or ""),
+                "production_asset_ids": sorted(
+                    str(item) for item in (value or {}).get("production_asset_ids") or []
+                    if str(item).strip()
+                ),
+            }
+            for key, value in registry.items()
+        },
+        "requirement_receipts": {
+            str(key): {
+                "verified": bool((value or {}).get("verified")),
+                "evidence_sha256": str((value or {}).get("evidence_sha256") or ""),
+            }
+            for key, value in requirement_registry.items()
+        },
+    }
+    completion_revision = hashlib.sha256(_studio_json.dumps(
+        completion_revision_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    closure_conditions = {
+        "skill_native_completion": native_terminal,
+        "completion_ready": completion_ready,
+        "stage_ready": stage_ready,
+        "required_contract_assets_ready": contract_assets_ready,
+        "handoff_present": bool(handoff),
+        "handoff_audit_valid": audit_valid,
+        "provenance_valid": provenance_valid,
+    }
     fingerprint_payload = {
         "missing_requirements": missing_requirements,
         "missing_assets": missing_assets,
@@ -3435,6 +3510,8 @@ def _studio_stage_closure_snapshot(project_id: str, stage: str) -> dict:
         "stage_ready": stage_ready,
         "handoff_state": handoff_state,
         "audit_state": audit_state,
+        "native_progress": native_progress,
+        "completion_revision": completion_revision,
     }
     fingerprint = hashlib.sha256(_studio_json.dumps(
         fingerprint_payload,
@@ -3453,17 +3530,24 @@ def _studio_stage_closure_snapshot(project_id: str, stage: str) -> dict:
         for asset_id in (values or [])
         if str(asset_id).strip()
     })
-    terminal_ready = bool(
-        completion_ready and stage_ready and handoff and audit_state == "valid"
-    )
+    terminal_ready = all(closure_conditions.values())
     unresolved = [
         *[f"requirement:{value}" for value in missing_requirements],
         *[f"artifact:{value}" for value in missing_assets],
     ]
+    native_issue = str(native_progress.get("issue") or "").strip()
+    if not native_terminal:
+        unresolved.append(native_issue or "native_completion:unknown")
+    if native_terminal and not completion_ready:
+        unresolved.append("completion:ready=false")
+    if completion_ready and not stage_ready:
+        unresolved.append("stage_ready:false")
     if completion_ready and not handoff:
         unresolved.append("handoff:missing")
-    if completion_ready and audit_state != "valid":
+    if completion_ready and not audit_valid:
         unresolved.append(f"handoff_audit:{audit_state}")
+    if completion_ready and audit_valid and not provenance_valid:
+        unresolved.append("handoff_provenance:invalid")
     if not unresolved and not terminal_ready:
         unresolved.append(str(completion.get("reason") or "stage closure incomplete"))
     return {
@@ -3474,6 +3558,9 @@ def _studio_stage_closure_snapshot(project_id: str, stage: str) -> dict:
         "unresolved": unresolved,
         "completion_reason": str(completion.get("reason") or ""),
         "next_expected_action": str(state.get("next_expected_action") or ""),
+        "native_progress": native_progress,
+        "completion_revision": completion_revision,
+        "closure_conditions": closure_conditions,
     }
 
 
@@ -3490,6 +3577,9 @@ def _studio_scoped_closure_prompt(
         "missing_artifact_ids": snapshot.get("missing_assets") or [],
         "missing_requirement_ids": snapshot.get("missing_requirements") or [],
         "ready_artifact_ids": snapshot.get("ready_artifact_ids") or [],
+        "native_step_id": (snapshot.get("native_progress") or {}).get("next_step") or "",
+        "native_progress": snapshot.get("native_progress") or {},
+        "completion_revision": snapshot.get("completion_revision") or "",
         "handoff_state": snapshot.get("handoff_state"),
         "audit_state": snapshot.get("audit_state"),
     }
@@ -5304,8 +5394,16 @@ STAGE02_SCOPED_COMPLETION={scoped}
             with director.phase_telemetry(
                 stage02_perf, request_cache=stage02_request_cache,
             ) if stage == "02" else nullcontext():
+                native_control_action = "advance" if (
+                    turn_index > 0
+                    or _studio_verified_native_resume_candidate(current, stage)
+                ) else ""
                 async with gpu.use(GPUOwner.gemma):
-                    result = await director.message(project_id, text)
+                    result = await director.message(
+                        project_id,
+                        text,
+                        native_control_action=native_control_action,
+                    )
                 decision = None
                 state = result.get("control") or {}
                 completion = (result.get("skill_runtime") or {}).get("completion") or {}

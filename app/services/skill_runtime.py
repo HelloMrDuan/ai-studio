@@ -432,6 +432,54 @@ def completion_status(
     else:
         native_terminal = bool(payload.get("stage_complete_claim"))
 
+    native_steps = [
+        _clean(value) for value in native_plan.get("steps") or []
+        if _clean(value)
+    ]
+    try:
+        current_index = int(native_plan.get("current_index", -1))
+    except Exception:
+        current_index = -1
+    try:
+        target_index = int(native_target.get("index", -1))
+    except Exception:
+        target_index = -1
+    observed_index = max(
+        current_index,
+        target_index if target_kind == "step" else -1,
+    )
+    completed_native_steps = max(
+        0, min(len(native_steps), observed_index + 1),
+    )
+    next_native_step = ""
+    awaiting_native_approval = False
+    native_issue = ""
+    if not native_terminal:
+        if plan_mode == "sequential" and native_steps:
+            if completed_native_steps < len(native_steps):
+                next_native_step = native_steps[completed_native_steps]
+                native_issue = f"native_step:{next_native_step}"
+            else:
+                awaiting_native_approval = True
+                native_issue = f"native_approval:{native_steps[-1]}"
+        else:
+            native_issue = (
+                "native_completion_claim:false;"
+                f"target={target_kind or 'missing'};"
+                f"plan_mode={plan_mode or 'missing'}"
+            )
+    native_progress = {
+        "plan_mode": plan_mode or "missing",
+        "total_steps": len(native_steps),
+        "completed_steps": completed_native_steps,
+        "current_index": current_index,
+        "target_kind": target_kind or "missing",
+        "target_index": target_index,
+        "next_step": next_native_step,
+        "awaiting_approval": awaiting_native_approval,
+        "issue": native_issue,
+    }
+
     if mode == "artifact_gate" and groups and not selected:
         ready = False
         reason = "Skill 定义了多个输出形态，但当前尚未选择适用输出形态"
@@ -443,7 +491,19 @@ def completion_status(
         reason = "当前 Skill 仍有已激活规则尚未在用户可见输出中落实"
     elif not native_terminal:
         ready = False
-        reason = "当前 Skill 尚未到达其原生完成点"
+        if next_native_step:
+            reason = (
+                "Skill内部步骤未完成："
+                f"{completed_native_steps}/{len(native_steps)}；"
+                f"尚未完成：{next_native_step}"
+            )
+        elif awaiting_native_approval:
+            reason = (
+                "Skill生产步骤已完成，尚缺原生完成批准："
+                f"{native_steps[-1]}"
+            )
+        else:
+            reason = "Skill动态完成声明未产生：" + native_issue
     else:
         ready = True
         reason = "Skill 原生流程与已声明产物均已满足"
@@ -458,6 +518,7 @@ def completion_status(
         "active_requirement_ids": active_requirements,
         "missing_requirement_ids": missing_requirements,
         "native_terminal": native_terminal,
+        "native_progress": native_progress,
         "reason": reason,
     }
 

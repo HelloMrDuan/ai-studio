@@ -92,6 +92,27 @@ class StageProgressDisplayTests(TestCase):
         self.assertEqual(row["total_steps"], 5)
         self.assertEqual(row["percent"], 40)
 
+    def test_stage02_completion_without_handoff_audit_is_not_waiting_confirm(self) -> None:
+        project = self.project("02")
+        state = project["stage_state"]["02"]
+        state["stage_ready"] = True
+        state["skill_runtime"]["completion"]["ready"] = True
+        state["handoff"] = ""
+        state["last_handoff_audit"] = {"valid": False}
+        job = {
+            "stage": "02", "status": "failed",
+            "failure_kind": "stage_closure_no_progress",
+            "stage02_progress": {
+                "total_steps": 5, "completed_steps": 4, "current_step": 5,
+                "current_step_name": "合同校验 / 阶段闭合", "percent": 80,
+                "status": "failed",
+            },
+        }
+        row = self.main._studio_core_stage_progress(project, "02", job)
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["percent"], 80)
+        self.assertFalse(row["waiting_confirm"])
+
     def test_stage04_completed_rebuild_is_ready_until_stage_confirmation(self) -> None:
         task = {
             "status": "completed", "scene_done": 4, "scene_total": 4,
@@ -147,6 +168,8 @@ class StageProgressDisplayTests(TestCase):
             self.assertIn(label, index)
         self.assertIn("formatStageEta", index)
         self.assertIn("return'处理中'", index)
+        self.assertIn("角色阶段未能自动闭合", index)
+        self.assertIn("重试失败步骤", index)
 
     def test_fallback_keeps_six_stage_display_available(self) -> None:
         result = self.main._studio_stage_progress_fallback(self.project("03"))

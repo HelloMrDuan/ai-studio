@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import importlib
 from contextlib import asynccontextmanager, contextmanager
@@ -12,14 +13,17 @@ from unittest import IsolatedAsyncioTestCase, TestCase, mock
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _completion(*, ready: bool, missing: list[str] | None = None) -> dict:
+def _completion(
+    *, ready: bool, missing: list[str] | None = None,
+    missing_requirements: list[str] | None = None,
+) -> dict:
     missing = list(missing or [])
     return {
         "ready": ready,
         "required_artifact_ids": ["CHARACTER_BIBLE", "CHARACTER_CONTINUITY"],
         "missing_artifact_ids": missing,
         "active_requirement_ids": [],
-        "missing_requirement_ids": [],
+        "missing_requirement_ids": list(missing_requirements or []),
     }
 
 
@@ -40,6 +44,12 @@ def _project(*, stage: str = "02", ready: bool = False, missing: list[str] | Non
         "stage_state": {
             stage: {
                 "stage_ready": ready,
+                "handoff": "角色阶段有效交接" if ready else "",
+                "last_handoff_audit": {
+                    "valid": ready,
+                    "provenance_verified": ready,
+                    "contract_version": "verbatim_evidence_v1" if ready else "",
+                },
                 "skill_contract": {
                     "output_groups": [{
                         "artifacts": [
@@ -69,6 +79,31 @@ class Stage02RuntimeTestBase:
 
 
 class Stage02ExecutionPlanTests(Stage02RuntimeTestBase, IsolatedAsyncioTestCase):
+    @staticmethod
+    def closure(
+        fingerprint: str, *, terminal: bool,
+        missing_assets: list[str] | None = None,
+        missing_requirements: list[str] | None = None,
+        ready_artifact_ids: list[str] | None = None,
+    ) -> dict:
+        completion_ready = terminal
+        return {
+            "fingerprint": fingerprint,
+            "terminal_ready": terminal,
+            "missing_assets": list(missing_assets or []),
+            "missing_requirements": list(missing_requirements or []),
+            "completion_ready": completion_ready,
+            "stage_ready": terminal,
+            "handoff_state": "valid" if terminal else "missing",
+            "audit_state": "valid" if terminal else "pending",
+            "ready_artifact_ids": list(ready_artifact_ids or []),
+            "unresolved": [] if terminal else [
+                *[f"artifact:{value}" for value in (missing_assets or [])],
+                *[f"requirement:{value}" for value in (missing_requirements or [])],
+            ],
+            "completion_reason": "ready" if terminal else "仍有缺失项",
+        }
+
     async def test_ready_character_bible_reuses_without_qwen_or_background_task(self) -> None:
         project = _project(ready=True)
         readiness = {
@@ -109,19 +144,127 @@ class Stage02ExecutionPlanTests(Stage02RuntimeTestBase, IsolatedAsyncioTestCase)
         self.assertEqual(plan["character_bible_asset_ids"], ["asset-bible"])
         self.assertEqual(plan["missing_artifact_ids"], ["CHARACTER_CONTINUITY"])
 
-    async def test_scoped_completion_calls_producer_once_and_names_only_missing_fields(self) -> None:
-        project = _project(ready=False, missing=["CHARACTER_CONTINUITY"])
+    def test_ready_assets_without_valid_handoff_are_not_idempotent_terminal(self) -> None:
+        project = _project(ready=True)
+        project["stage_state"]["02"]["handoff"] = ""
+        readiness = {
+            "CHARACTER_BIBLE": ["asset-bible"],
+            "CHARACTER_CONTINUITY": ["asset-continuity"],
+        }
+        with mock.patch.object(self.main.director, "get_project", return_value=project), \
+             mock.patch.object(self.main.director, "_skill_md", return_value="stage02 skill v1"), \
+             mock.patch.object(self.main.director.production, "contract_asset_readiness", return_value=readiness), \
+             mock.patch.object(self.main.director.production, "list_assets", return_value=[]):
+            plan = self.main._studio_stage02_execution_plan(project["project_id"], "继续生成角色")
+        self.assertEqual(plan["mode"], "scoped_completion")
+        self.assertFalse(plan["handoff_ready"])
+
+    async def test_one_job_runs_20_to_100_and_scopes_the_second_round(self) -> None:
+        project = _project(ready=False)
         plan = {
-            "mode": "scoped_completion",
+            "mode": "full_generation",
             "cache_key": "cache-key",
-            "missing_artifact_ids": ["CHARACTER_CONTINUITY"],
+            "missing_artifact_ids": [],
             "missing_requirement_ids": [],
-            "character_bible_asset_ids": ["asset-bible"],
+            "character_bible_asset_ids": [],
         }
         job = {
             "job_id": "job-1", "project_id": project["project_id"], "stage": "02",
             "status": "queued", "turns": [], "created_at": "2026-08-25T00:00:00+00:00",
             "metadata": {"stage02_execution_plan": plan},
+        }
+        self.main._studio_stage02_set_progress(
+            job, completed_steps=1, current_step=2,
+            current_step_name="判断角色生产模式",
+        )
+        persisted = dict(job)
+        saved = [copy.deepcopy(job)]
+
+        @asynccontextmanager
+        async def gpu_use(_owner):
+            yield
+
+        @contextmanager
+        def phase_telemetry(_telemetry, request_cache=None):
+            yield {"request_cache": request_cache}
+
+        async def role_mode(_project_id, *, cache_key=""):
+            return {"reference_image_required": False, "cache_hit": True}
+
+        producer_results = [
+            {
+                "content": "Character Bible 已生成",
+                "control": {"stage_ready": False},
+                "control_event": {"action": "other"},
+                "skill_runtime": {"completion": _completion(
+                    ready=False, missing_requirements=["CONTINUITY_RULES"],
+                )},
+            },
+            {
+                "content": "仅补齐连续性规则并完成 handoff",
+                "control": {"stage_ready": True},
+                "control_event": {"action": "advance"},
+                "skill_runtime": {"completion": _completion(ready=True)},
+            },
+        ]
+        closure_results = [
+            self.closure(
+                "fp-1", terminal=False,
+                missing_requirements=["CONTINUITY_RULES"],
+                ready_artifact_ids=["asset-bible"],
+            ),
+            self.closure("fp-2", terminal=True, ready_artifact_ids=["asset-bible"]),
+        ]
+
+        def save_job(value):
+            persisted.update(value)
+            saved.append(copy.deepcopy(value))
+
+        with mock.patch.object(self.main, "_studio_load_job", side_effect=lambda _job_id: persisted), \
+             mock.patch.object(self.main, "_studio_save_job", side_effect=save_job), \
+             mock.patch.object(self.main.director, "get_project", return_value=project), \
+             mock.patch.object(self.main, "_studio_character_role_mode", side_effect=role_mode), \
+             mock.patch.object(self.main.gpu, "use", side_effect=gpu_use), \
+             mock.patch.object(self.main.director, "phase_telemetry", side_effect=phase_telemetry), \
+             mock.patch.object(self.main, "_studio_stage_closure_snapshot", side_effect=closure_results), \
+             mock.patch.object(self.main.director, "message", new_callable=mock.AsyncMock, side_effect=producer_results) as producer, \
+             mock.patch.object(self.main.director, "_save_project"):
+            await self.main._studio_run_stage_job(
+                job_id="job-1", project_id=project["project_id"], user_input="继续生成角色", max_turns=16,
+            )
+
+        self.assertEqual(producer.await_count, 2)
+        prompt = producer.await_args_list[1].args[1]
+        self.assertIn("STAGE02_SCOPED_COMPLETION", prompt)
+        self.assertIn("CONTINUITY_RULES", prompt)
+        self.assertIn("asset-bible", prompt)
+        self.assertIn("禁止重新生成、覆盖或删除", prompt)
+        self.assertEqual(persisted["status"], "waiting_confirm")
+        self.assertEqual(persisted["stage02_progress"]["completed_steps"], 5)
+        self.assertEqual(persisted["stage02_progress"]["percent"], 100)
+        percentages = [
+            int((row.get("stage02_progress") or {}).get("percent") or -1)
+            for row in saved
+        ]
+        for expected in (20, 40, 60, 80, 100):
+            self.assertIn(expected, percentages)
+        eighty_rows = [
+            row for row in saved
+            if (row.get("stage02_progress") or {}).get("percent") == 80
+        ]
+        self.assertTrue(eighty_rows)
+        self.assertTrue(all(row["status"] == "running" for row in eighty_rows))
+
+    async def test_two_identical_closure_rounds_stop_without_third_qwen_call(self) -> None:
+        project = _project(ready=False, missing=["CHARACTER_CONTINUITY"])
+        job = {
+            "job_id": "job-stalled", "project_id": project["project_id"], "stage": "02",
+            "status": "queued", "turns": [], "created_at": "2026-08-25T00:00:00+00:00",
+            "metadata": {"stage02_execution_plan": {
+                "mode": "scoped_completion", "cache_key": "cache-key",
+                "missing_artifact_ids": ["CHARACTER_CONTINUITY"],
+                "missing_requirement_ids": [], "character_bible_asset_ids": ["asset-bible"],
+            }},
         }
         persisted = dict(job)
 
@@ -136,30 +279,38 @@ class Stage02ExecutionPlanTests(Stage02RuntimeTestBase, IsolatedAsyncioTestCase)
         async def role_mode(_project_id, *, cache_key=""):
             return {"reference_image_required": False, "cache_hit": True}
 
-        producer_result = {
-            "content": "仅补齐连续性规则",
+        stalled_result = {
+            "content": "未能补齐",
             "control": {"stage_ready": False},
             "control_event": {"action": "other"},
-            "skill_runtime": {"completion": _completion(ready=False, missing=["CHARACTER_CONTINUITY"])},
+            "skill_runtime": {"completion": _completion(
+                ready=False, missing=["CHARACTER_CONTINUITY"],
+            )},
         }
-        with mock.patch.object(self.main, "_studio_load_job", side_effect=lambda _job_id: persisted), \
+        stalled_closure = self.closure(
+            "same-fingerprint", terminal=False,
+            missing_assets=["CHARACTER_CONTINUITY"],
+            ready_artifact_ids=["asset-bible"],
+        )
+        with mock.patch.object(self.main, "_studio_load_job", return_value=persisted), \
              mock.patch.object(self.main, "_studio_save_job", side_effect=lambda value: persisted.update(value)), \
              mock.patch.object(self.main.director, "get_project", return_value=project), \
              mock.patch.object(self.main, "_studio_character_role_mode", side_effect=role_mode), \
              mock.patch.object(self.main.gpu, "use", side_effect=gpu_use), \
              mock.patch.object(self.main.director, "phase_telemetry", side_effect=phase_telemetry), \
-             mock.patch.object(self.main.director, "message", new_callable=mock.AsyncMock, return_value=producer_result) as producer, \
+             mock.patch.object(self.main, "_studio_stage_closure_snapshot", side_effect=[stalled_closure, stalled_closure]), \
+             mock.patch.object(self.main.director, "message", new_callable=mock.AsyncMock, return_value=stalled_result) as producer, \
              mock.patch.object(self.main.director, "_save_project"):
             await self.main._studio_run_stage_job(
-                job_id="job-1", project_id=project["project_id"], user_input="继续生成角色", max_turns=16,
+                job_id="job-stalled", project_id=project["project_id"],
+                user_input="继续生成角色", max_turns=16,
             )
 
-        producer.assert_awaited_once()
-        prompt = producer.await_args.args[1]
-        self.assertIn("STAGE02_SCOPED_COMPLETION", prompt)
-        self.assertIn("CHARACTER_CONTINUITY", prompt)
-        self.assertIn("asset-bible", prompt)
-        self.assertIn("不得重新生成、覆盖或删除", prompt)
+        self.assertEqual(producer.await_count, 2)
+        self.assertEqual(persisted["status"], "failed")
+        self.assertEqual(persisted["failure_kind"], "stage_closure_no_progress")
+        self.assertIn("CHARACTER_CONTINUITY", persisted["reason"])
+        self.assertEqual(persisted["closure_round"], 2)
 
     async def test_stage02_and_stage03_confirm_do_not_call_qwen(self) -> None:
         for stage, next_stage in (("02", "03"), ("03", "04")):
@@ -190,6 +341,50 @@ class Stage02ExecutionPlanTests(Stage02RuntimeTestBase, IsolatedAsyncioTestCase)
             result = await self.main.studio_run_stage(project["project_id"], {"input": "生成视觉"})
         self.assertTrue(result["background"])
         stage02_plan.assert_not_called()
+
+    async def test_stage03_worker_also_runs_until_waiting_confirm(self) -> None:
+        project = _project(stage="03", ready=False)
+        job = {
+            "job_id": "job-stage03", "project_id": project["project_id"], "stage": "03",
+            "status": "queued", "turns": [], "created_at": "2026-08-25T00:00:00+00:00",
+            "metadata": {},
+        }
+        persisted = dict(job)
+
+        @asynccontextmanager
+        async def gpu_use(_owner):
+            yield
+
+        results = [
+            {
+                "content": "视觉主方案",
+                "control": {"stage_ready": False}, "control_event": {"action": "other"},
+                "skill_runtime": {"completion": _completion(ready=False, missing=["VISUAL_PACKAGE"])},
+            },
+            {
+                "content": "视觉方案闭合",
+                "control": {"stage_ready": True}, "control_event": {"action": "advance"},
+                "skill_runtime": {"completion": _completion(ready=True)},
+            },
+        ]
+        closures = [
+            self.closure("visual-1", terminal=False, missing_assets=["VISUAL_PACKAGE"]),
+            self.closure("visual-2", terminal=True),
+        ]
+        with mock.patch.object(self.main, "_studio_load_job", return_value=persisted), \
+             mock.patch.object(self.main, "_studio_save_job", side_effect=lambda value: persisted.update(value)), \
+             mock.patch.object(self.main.director, "get_project", return_value=project), \
+             mock.patch.object(self.main.gpu, "use", side_effect=gpu_use), \
+             mock.patch.object(self.main, "_studio_stage_closure_snapshot", side_effect=closures), \
+             mock.patch.object(self.main.director, "message", new_callable=mock.AsyncMock, side_effect=results) as producer:
+            await self.main._studio_run_stage_job(
+                job_id="job-stage03", project_id=project["project_id"],
+                user_input="生成视觉", max_turns=16,
+            )
+
+        self.assertEqual(producer.await_count, 2)
+        self.assertEqual(persisted["status"], "waiting_confirm")
+        self.assertIn("STAGE03_SCOPED_COMPLETION", producer.await_args_list[1].args[1])
 
 
 class DirectorStage02CacheAndTelemetryTests(Stage02RuntimeTestBase, IsolatedAsyncioTestCase):

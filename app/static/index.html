@@ -524,6 +524,12 @@ function renderNextAction(){
   }
 
   if(job&&job.status==='failed'){
+    if(stage==='02'&&String(job.failure_kind||'').startsWith('stage_closure_')){
+      title.textContent='角色阶段未能自动闭合';
+      desc.textContent=job.reason||job.error||'角色阶段仍有未闭合项。';
+      wrap.classList.add('hidden');toggle.classList.add('hidden');manualInputOpen=false;
+      btn.textContent='重试失败步骤';primaryActionMode='run';primaryRequiresInput=false;syncPrimaryInputState();return;
+    }
     title.textContent=`重新生成${PHASE[stage]||'当前内容'}`;
     desc.textContent=job.error||job.message||'上次执行失败。可以直接重试，也可以先补充要求。';
     btn.textContent='重新生成';primaryActionMode='run';syncPrimaryInputState();return;
@@ -631,7 +637,8 @@ function renderJob(){
     $('jobBox').innerHTML=`<div class="job"><b>${esc(j.message||'正在处理…')}</b>${j.turn_count?`<div class="meta">已自动推进 ${esc(j.turn_count)} 步</div>`:''}</div>`;return;
   }
   if(j.status==='failed'){
-    $('jobBox').innerHTML=`<div class="job failed"><b>上次执行失败</b>${j.error?`<div class="meta">${esc(j.error)}</div>`:''}</div>`;return;
+    const closure=String(j.failure_kind||'').startsWith('stage_closure_');
+    $('jobBox').innerHTML=`<div class="job failed"><b>${closure?'角色阶段未能自动闭合':'上次执行失败'}</b>${j.error?`<div class="meta">${esc(j.error)}</div>`:''}</div>`;return;
   }
   $('jobBox').innerHTML='';
 }

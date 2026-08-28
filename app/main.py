@@ -3288,15 +3288,24 @@ def _studio_stage02_execution_plan(project_id: str, user_input: str) -> dict:
     substantive_revision = bool(normalized) and normalized not in {
         "继续", "继续生成角色", "生成角色", "重试", "retry",
     }
+    handoff_ready = bool(str(state.get("handoff") or "").strip())
+    handoff_audit_ready = _studio_handoff_audit_ready(
+        state.get("last_handoff_audit") or {},
+    )
     ready = (
         completion.get("ready") is True
         and bool(state.get("stage_ready"))
         and contract_ready
         and valid_character_bible
+        and handoff_ready
+        and handoff_audit_ready
     )
     if ready and not substantive_revision:
         mode = "reuse_complete"
-    elif valid_character_bible and (missing_artifacts or missing_requirements):
+    elif valid_character_bible and (
+        missing_artifacts or missing_requirements
+        or not handoff_ready or not handoff_audit_ready
+    ):
         mode = "scoped_completion"
     else:
         mode = "full_generation"
@@ -3308,6 +3317,8 @@ def _studio_stage02_execution_plan(project_id: str, user_input: str) -> dict:
         "character_bible_asset_ids": bible_asset_ids,
         "contract_artifact_ready": contract_ready,
         "stage_ready": bool(state.get("stage_ready")),
+        "handoff_ready": handoff_ready,
+        "handoff_audit_ready": handoff_audit_ready,
         "missing_artifact_ids": missing_artifacts,
         "missing_requirement_ids": missing_requirements,
         "substantive_revision": substantive_revision,
@@ -3381,6 +3392,124 @@ def _studio_stage02_finalize_performance(
     runtime["stage02_performance"] = _studio_json.loads(_studio_json.dumps(perf))
     director._save_project(project)
     return perf
+
+
+_STUDIO_DIRECTOR_INTERNAL_ROUND_LIMIT = 6
+
+
+def _studio_handoff_audit_ready(audit: dict) -> bool:
+    return bool(
+        audit.get("valid") is True
+        and audit.get("provenance_verified") is True
+        and str(audit.get("contract_version") or "") == "verbatim_evidence_v1"
+    )
+
+
+def _studio_stage_closure_snapshot(project_id: str, stage: str) -> dict:
+    """Refresh and describe the real Director closure state without model calls."""
+    director.refresh_production_completion(project_id)
+    project = director.get_project(project_id)
+    state = (project.get("stage_state") or {}).get(stage) or {}
+    runtime = state.get("skill_runtime") or {}
+    completion = runtime.get("completion") or {}
+    missing_requirements = sorted({
+        str(value) for value in (completion.get("missing_requirement_ids") or [])
+        if str(value).strip()
+    })
+    missing_assets = sorted({
+        str(value) for value in (completion.get("missing_artifact_ids") or [])
+        if str(value).strip()
+    })
+    handoff = str(state.get("handoff") or "").strip()
+    audit = state.get("last_handoff_audit") or {}
+    completion_ready = completion.get("ready") is True
+    stage_ready = state.get("stage_ready") is True
+    handoff_state = "valid" if handoff else "missing"
+    audit_state = "valid" if _studio_handoff_audit_ready(audit) else (
+        "pending" if not completion_ready else "invalid"
+    )
+    fingerprint_payload = {
+        "missing_requirements": missing_requirements,
+        "missing_assets": missing_assets,
+        "completion_ready": completion_ready,
+        "stage_ready": stage_ready,
+        "handoff_state": handoff_state,
+        "audit_state": audit_state,
+    }
+    fingerprint = hashlib.sha256(_studio_json.dumps(
+        fingerprint_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")).hexdigest()
+    ready_artifact_ids = sorted({
+        str(asset_id)
+        for values in (
+            director.production.contract_asset_readiness(
+                project_id, stage, state.get("skill_contract") or {},
+            ).values()
+            if state.get("skill_contract") else []
+        )
+        for asset_id in (values or [])
+        if str(asset_id).strip()
+    })
+    terminal_ready = bool(
+        completion_ready and stage_ready and handoff and audit_state == "valid"
+    )
+    unresolved = [
+        *[f"requirement:{value}" for value in missing_requirements],
+        *[f"artifact:{value}" for value in missing_assets],
+    ]
+    if completion_ready and not handoff:
+        unresolved.append("handoff:missing")
+    if completion_ready and audit_state != "valid":
+        unresolved.append(f"handoff_audit:{audit_state}")
+    if not unresolved and not terminal_ready:
+        unresolved.append(str(completion.get("reason") or "stage closure incomplete"))
+    return {
+        **fingerprint_payload,
+        "fingerprint": fingerprint,
+        "terminal_ready": terminal_ready,
+        "ready_artifact_ids": ready_artifact_ids,
+        "unresolved": unresolved,
+        "completion_reason": str(completion.get("reason") or ""),
+        "next_expected_action": str(state.get("next_expected_action") or ""),
+    }
+
+
+def _studio_stage_closure_failure_message(stage: str, snapshot: dict) -> str:
+    label = _STUDIO_STAGE_LABELS.get(stage, stage)
+    unresolved = ", ".join(snapshot.get("unresolved") or []) or "unknown"
+    return f"{label}阶段无法自动闭合：仍缺 {unresolved}"
+
+
+def _studio_scoped_closure_prompt(
+    *, stage: str, character_mode: dict, snapshot: dict,
+) -> str:
+    scope = {
+        "missing_artifact_ids": snapshot.get("missing_assets") or [],
+        "missing_requirement_ids": snapshot.get("missing_requirements") or [],
+        "ready_artifact_ids": snapshot.get("ready_artifact_ids") or [],
+        "handoff_state": snapshot.get("handoff_state"),
+        "audit_state": snapshot.get("audit_state"),
+    }
+    scope_json = _studio_json.dumps(scope, ensure_ascii=False, sort_keys=True)
+    if stage == "02":
+        mode_json = _studio_json.dumps(character_mode or {}, ensure_ascii=False)
+        return f"""通过当前已经完成的角色内部步骤，继续同一 Stage02 job 的阶段收口。
+STAGE02_PRODUCT_ROUTE={mode_json}
+STAGE02_SCOPED_COMPLETION={scope_json}
+
+只处理 missing_artifact_ids、missing_requirement_ids 或尚未闭合的 handoff/audit。
+ready_artifact_ids 对应的 Character Bible 和合同产物已经有效，禁止重新生成、覆盖或删除。
+复用已有身份、性格、关系、动机、连续性内容；已有视觉数据保持原值，留给 Stage03 消费。
+完成后必须重新输出本轮真实 contract receipts，并按当前 Skill 原顺序完成 handoff closure。"""
+    return f"""通过当前已经完成的视觉内部步骤，继续同一 Stage03 job 的阶段收口。
+STAGE03_SCOPED_COMPLETION={scope_json}
+
+只处理仍缺失的合同产物、要求或尚未闭合的 handoff/audit。
+ready_artifact_ids 对应的正式产物已经有效，禁止重新生成、覆盖或删除。
+严格沿用当前视觉 Skill 和 Director 状态机顺序完成剩余步骤。"""
 
 
 async def _studio_character_role_mode(
@@ -5139,14 +5268,21 @@ STAGE02_SCOPED_COMPLETION={scoped}
 
         turns: list[dict] = list(job.get("turns") or [])
 
-        # Stage02 is deliberately click-bounded: one model production call per
-        # user action.  This prevents a character bible from being appended to
-        # history repeatedly by an automatic loop.  The first click produces
-        # the bible; an explicit approval click closes the one-step stage.
-        turn_limit = 1 if stage in {"02", "03", "04"} else max_turns
+        # Director-managed Stage02/03 must close inside one background job.
+        # Stage04 returned above and remains owned by its dedicated rebuild
+        # runtime. Stage01 already used its bounded multi-turn execution.
+        turn_limit = (
+            _STUDIO_DIRECTOR_INTERNAL_ROUND_LIMIT
+            if stage in {"02", "03"} else max_turns
+        )
 
         last_fingerprint = ""
         repeated = 0
+        last_closure_fingerprint = ""
+        closure_history = job.setdefault("metadata", {}).setdefault(
+            "closure_history", [],
+        )
+        job["internal_round_limit"] = turn_limit
         for turn_index in range(turn_limit):
             current = director.get_project(project_id)
             if str(current.get("current_stage") or "") != stage:
@@ -5157,9 +5293,12 @@ STAGE02_SCOPED_COMPLETION={scoped}
             if stage == "02":
                 _studio_stage02_set_progress(
                     job,
-                    completed_steps=2,
-                    current_step=3,
-                    current_step_name="执行角色合同与引用计划",
+                    completed_steps=3 if turn_index == 0 else 4,
+                    current_step=4 if turn_index == 0 else 5,
+                    current_step_name=(
+                        "生成角色成果"
+                        if turn_index == 0 else "仅补缺失项并继续阶段闭合"
+                    ),
                 )
                 _studio_save_job(job)
             with director.phase_telemetry(
@@ -5192,14 +5331,42 @@ STAGE02_SCOPED_COMPLETION={scoped}
                         job,
                         completed_steps=4,
                         current_step=5,
-                        current_step_name="校验角色成果与合同资产",
+                        current_step_name="合同校验 / 阶段闭合",
                     )
+                    job["message"] = "正在执行合同校验 / 阶段闭合；后台任务仍会自动继续。"
                 _studio_save_job(job)
 
-                if bool(completion.get("ready")) or bool(state.get("stage_ready")):
+                closure_snapshot = (
+                    _studio_stage_closure_snapshot(project_id, stage)
+                    if stage in {"02", "03"} else {}
+                )
+                if closure_snapshot:
+                    closure_history.append({
+                        "round": turn_index + 1,
+                        "fingerprint": closure_snapshot["fingerprint"],
+                        "state": {
+                            key: closure_snapshot[key]
+                            for key in (
+                                "missing_requirements", "missing_assets",
+                                "completion_ready", "stage_ready",
+                                "handoff_state", "audit_state",
+                            )
+                        },
+                        "created_at": _studio_now(),
+                    })
+                    job["closure_round"] = turn_index + 1
+                    job["closure_state"] = closure_history[-1]["state"]
+                    _studio_save_job(job)
+
+                stage_terminal = (
+                    closure_snapshot.get("terminal_ready") is True
+                    if closure_snapshot else
+                    bool(completion.get("ready")) or bool(state.get("stage_ready"))
+                )
+                if stage_terminal:
                     ready_hit = True
                     job.update({
-                        "status": "review",
+                        "status": "waiting_confirm" if stage in {"02", "03"} else "review",
                         "message": "本阶段已生成完成，请检查结果后确认进入下一阶段。",
                         "reason": str(completion.get("reason") or ""),
                         "updated_at": _studio_now(),
@@ -5215,9 +5382,13 @@ STAGE02_SCOPED_COMPLETION={scoped}
                 if media_missing:
                     if not (stage == "02" and character_mode.get("reference_image_required") is False):
                         job.update({
-                            "status": "media_required",
+                            "status": "input_required",
                             "message": "当前 Skill 需要真实媒体资产后才能完成。请到当前作品制作区补充必要媒体。",
                             "missing_media": media_missing,
+                            "reason": ", ".join(
+                                str(row.get("artifact_id") or row.get("name") or "media")
+                                for row in media_missing
+                            ),
                             "updated_at": _studio_now(),
                         })
                         if stage == "02":
@@ -5228,42 +5399,71 @@ STAGE02_SCOPED_COMPLETION={scoped}
                         _studio_save_job(job)
                         break
 
-                # Stage02/03 are explicit review stages. One user action may
-                # perform at most one production call. After the artifact is
-                # produced, the UI offers one approval action instead of
-                # invoking the same producer again.
-                if stage in {"02", "03", "04"}:
-                    if stage == "02":
-                        review_message = (
-                            "角色阶段尚未完成，请继续生成；完成后才能进入视觉。"
-                            if not explicit_approval
-                            else "已执行角色阶段确认，请检查阶段完成状态。"
+                if stage in {"02", "03"}:
+                    fingerprint = str(closure_snapshot.get("fingerprint") or "")
+                    if fingerprint and fingerprint == last_closure_fingerprint:
+                        failure_message = _studio_stage_closure_failure_message(
+                            stage, closure_snapshot,
                         )
-                    elif stage == "03":
-                        review_message = (
-                            "视觉阶段尚未完成，请继续生成；完成后才能进入分镜。"
-                            if not explicit_approval
-                            else "已执行视觉阶段确认，请检查阶段完成状态。"
+                        job.update({
+                            "status": "failed",
+                            "failure_kind": "stage_closure_no_progress",
+                            "message": failure_message,
+                            "reason": failure_message,
+                            "error": failure_message,
+                            "missing_closure": closure_snapshot.get("unresolved") or [],
+                            "updated_at": _studio_now(),
+                        })
+                        if stage == "02":
+                            _studio_stage02_finalize_performance(
+                                project_id, job, status="failed",
+                            )
+                            stage02_perf_finalized = True
+                        _studio_save_job(job)
+                        break
+                    last_closure_fingerprint = fingerprint
+
+                    if turn_index + 1 >= turn_limit:
+                        failure_message = _studio_stage_closure_failure_message(
+                            stage, closure_snapshot,
                         )
-                    else:
-                        review_message = (
-                            "完整分镜已生成，请检查；确认后进入制作。"
-                            if not explicit_approval
-                            else "已执行分镜阶段确认，请检查核心创作完成状态。"
-                        )
+                        job.update({
+                            "status": "failed",
+                            "failure_kind": "stage_closure_round_budget",
+                            "safety_budget_guard": True,
+                            "message": failure_message,
+                            "reason": failure_message,
+                            "error": (
+                                f"{failure_message}；已达到内部闭合上限 {turn_limit} 轮"
+                            ),
+                            "missing_closure": closure_snapshot.get("unresolved") or [],
+                            "updated_at": _studio_now(),
+                        })
+                        if stage == "02":
+                            _studio_stage02_finalize_performance(
+                                project_id, job, status="failed",
+                            )
+                            stage02_perf_finalized = True
+                        _studio_save_job(job)
+                        break
+
+                    text = _studio_scoped_closure_prompt(
+                        stage=stage,
+                        character_mode=character_mode,
+                        snapshot=closure_snapshot,
+                    )
                     job.update({
-                        "status": "review",
-                        "message": review_message,
-                        "reason": str(completion.get("reason") or ""),
+                        "status": "running",
+                        "message": (
+                            "角色成果已生成，正在自动补齐缺失项并完成阶段闭合。"
+                            if stage == "02" else
+                            "视觉成果正在自动补齐缺失项并完成阶段闭合。"
+                        ),
+                        "reason": str(closure_snapshot.get("completion_reason") or ""),
                         "updated_at": _studio_now(),
                     })
-                    if stage == "02":
-                        _studio_stage02_finalize_performance(
-                            project_id, job, status="review",
-                        )
-                        stage02_perf_finalized = True
                     _studio_save_job(job)
-                    break
+                    continue
 
                 if explicit_approval:
                     decision = {
@@ -5812,6 +6012,17 @@ def _studio_core_stage_progress(
     state = (project.get("stage_state") or {}).get(stage_id) or {}
     runtime = state.get("skill_runtime") or {}
     completion = runtime.get("completion") or {}
+    guarded_completion_ready = bool(
+        completion.get("ready") is True
+        and (
+            stage_id not in {"01", "02", "03"}
+            or (
+                state.get("stage_ready") is True
+                and bool(str(state.get("handoff") or "").strip())
+                and _studio_handoff_audit_ready(state.get("last_handoff_audit") or {})
+            )
+        )
+    )
     artifact_registry = runtime.get("artifact_registry") or {}
     requirement_registry = runtime.get("requirement_registry") or {}
     required_artifacts = [str(x) for x in (completion.get("required_artifact_ids") or []) if str(x)]
@@ -5853,7 +6064,7 @@ def _studio_core_stage_progress(
             or {}
         )
         if stage02_progress:
-            ready = completion.get("ready") is True
+            ready = guarded_completion_ready
             total = max(1, int(stage02_progress.get("total_steps") or 5))
             completed = max(0, min(
                 int(stage02_progress.get("completed_steps") or 0), total,
@@ -5886,12 +6097,12 @@ def _studio_core_stage_progress(
         done = turns
         total = max(1, turns + (0 if completion.get("ready") else 1))
         completed_items = [f"模型步骤 {index}" for index in range(1, turns + 1)]
-    if completion.get("ready") is True:
+    if guarded_completion_ready:
         done = total
-    percent = 100 if completion.get("ready") is True else int(done * 100 / max(total, 1))
+    percent = 100 if guarded_completion_ready else int(done * 100 / max(total, 1))
     if job_status in {"queued", "running"} and percent == 0:
         percent = 5
-    status = "waiting_confirm" if completion.get("ready") is True else (
+    status = "waiting_confirm" if guarded_completion_ready else (
         "running" if job_status in {"queued", "running"} else
         "blocked" if job_status in {"input_required", "media_required", "failed"} else
         "waiting"
@@ -5903,13 +6114,13 @@ def _studio_core_stage_progress(
         or str(completion.get("reason") or "").strip()
         or "处理中"
     )
-    current_step = total if completion.get("ready") is True else min(total, done + 1)
+    current_step = total if guarded_completion_ready else min(total, done + 1)
     return _studio_progress_row(
         stage_id, status=status, current_step=current_step, total_steps=total,
         percent=percent, completed_items=completed_items, current_item=current_item,
         eta_seconds=_studio_progress_eta(str(job.get("created_at") or ""), percent)
         if job_status in {"queued", "running"} else None,
-        waiting_confirm=completion.get("ready") is True,
+        waiting_confirm=guarded_completion_ready,
         source="job+skill_runtime",
     )
 

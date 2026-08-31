@@ -6223,6 +6223,42 @@ def _studio_core_stage_progress(
     )
 
 
+_STUDIO_STAGE04_FAILURE_LABELS = {
+    "no_result_duplication": "起始/代表/结束状态没有形成时间推进",
+    "causal_order": "起始/代表/结束状态没有形成时间推进",
+    "representative_state": "起始/代表/结束状态没有形成时间推进",
+    "redundant_representation": "三类提示词重复",
+    "evidence_entailment": "证据投影不满足约束",
+}
+
+
+def _studio_stage04_failure_display(task: dict) -> tuple[str, list[str], str, dict]:
+    metadata = task.get("failure_metadata")
+    metadata = dict(metadata) if isinstance(metadata, dict) else {}
+    codes = [
+        str(code or "").strip()
+        for code in (metadata.get("failed_rules") or [])
+        if str(code or "").strip()
+    ]
+    raw_error = str(task.get("error") or task.get("message") or "").strip()
+    if not codes and raw_error:
+        codes = [
+            code
+            for code in _STUDIO_STAGE04_FAILURE_LABELS
+            if code in raw_error
+        ]
+    summary: list[str] = []
+    for code in codes:
+        label = _STUDIO_STAGE04_FAILURE_LABELS.get(code)
+        if label and label not in summary:
+            summary.append(label)
+    if not summary:
+        summary.append("详细分镜未通过严格语义校验")
+    shot_id = str(metadata.get("shot_id") or "Shot 1")
+    headline = f"{shot_id} 语义校验未通过：" + "；".join(summary)
+    return headline, summary, raw_error, metadata
+
+
 def _studio_stage04_progress(
     project: dict, current_job: dict | None,
 ) -> StageProgress:
@@ -6249,7 +6285,7 @@ def _studio_stage04_progress(
     percent = 100 if task_status == "completed" else int(done * 100 / total)
     if task_status in {"starting", "warming", "queued", "running"} and percent == 0:
         percent = 5
-    return _studio_progress_row(
+    row = _studio_progress_row(
         "04", status="ready" if task_status == "completed" else (
             "failed" if task_status == "failed" else "running"
         ),
@@ -6262,6 +6298,17 @@ def _studio_stage04_progress(
         if task_status in {"starting", "warming", "queued", "running"} else None,
         source="stage04_rebuild_task",
     )
+    if task_status == "failed":
+        headline, summary, raw_error, metadata = (
+            _studio_stage04_failure_display(task)
+        )
+        row["current_item"] = "分镜生成失败"
+        row["current_action"] = headline
+        row["current_step_name"] = "分镜生成失败"
+        row["failure_summary"] = summary
+        row["error_detail"] = raw_error
+        row["failure_metadata"] = metadata
+    return row
 
 
 def _studio_stage05_progress(
@@ -14776,9 +14823,10 @@ def _studio_v2372_chunk_anchors(
             )
         )
 
-        # Generic heading/filter only. No business keywords.
-        if len(part) <= 36 and not has_terminal:
-            continue
+        # A newline is a real source boundary, not proof that a short segment
+        # is a heading. Dropping short non-terminal lines erases narrative
+        # clauses from evidence lineage. Keep every non-empty source segment;
+        # classification may still place structural headings in support.
 
         if len(part) <= 190:
             spans = [(

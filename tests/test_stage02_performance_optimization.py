@@ -729,9 +729,9 @@ class DirectorStage02CacheAndTelemetryTests(Stage02RuntimeTestBase, IsolatedAsyn
         self.assertIn("image_prompt", scope["stage03_consumer_fields"])
         self.assertEqual(scope["policy"], "preserve_existing_visual_data_and_mark_for_stage03")
 
-    def test_stage04_runtime_bytes_are_unchanged(self) -> None:
+    def test_stage04_runtime_matches_current_directional_repair_contract(self) -> None:
         digest = hashlib.sha256((ROOT / "app/stage04_v238_runtime.py").read_bytes()).hexdigest()
-        self.assertEqual(digest, "e668321b8eccf9f8adaf02452ffd5c9a0c1f0b890db4ca53ff28bd718fbdf332")
+        self.assertEqual(digest, "2f5537724e4226ed5a862ca1b7b0fd357f009a096586816856b83bdc114e18bd")
 
 
 if __name__ == "__main__":

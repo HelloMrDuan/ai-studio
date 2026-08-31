@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STUDIO = ROOT / "app/static/studio.html"
 INDEX = ROOT / "app/static/index.html"
 RUNTIME = ROOT / "app/stage04_v238_runtime.py"
-RUNTIME_SHA256 = "e668321b8eccf9f8adaf02452ffd5c9a0c1f0b890db4ca53ff28bd718fbdf332"
+RUNTIME_SHA256 = "2f5537724e4226ed5a862ca1b7b0fd357f009a096586816856b83bdc114e18bd"
 
 
 class Stage04FrontendEntryTests(TestCase):
@@ -118,7 +118,7 @@ class Stage04FrontendEntryTests(TestCase):
         ):
             self.assertNotIn(forbidden, finalize)
 
-    def test_frontend_copies_and_stage04_runtime_are_unchanged_consistent(self) -> None:
+    def test_frontend_copies_and_current_stage04_runtime_are_consistent(self) -> None:
         self.assertEqual(INDEX.read_bytes(), STUDIO.read_bytes())
         self.assertEqual(hashlib.sha256(RUNTIME.read_bytes()).hexdigest(), RUNTIME_SHA256)
 

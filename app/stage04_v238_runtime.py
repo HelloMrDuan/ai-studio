@@ -25,6 +25,30 @@ _SHOT_STATE_FIELDS = (
     "video_end_state",
 )
 
+_SHOT_TEMPORAL_STATE_FIELDS = (
+    "video_start_state",
+    "representative_state",
+    "video_end_state",
+)
+
+_SHOT_PROMPT_FIELDS = (
+    "video_start_prompt",
+    "image_prompt",
+    "video_prompt",
+)
+
+
+class Stage04RepairInvariantError(RuntimeError):
+    def __init__(self, message: str, *, metadata: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.metadata = copy.deepcopy(metadata or {})
+
+
+class Stage04ShotRepairError(RuntimeError):
+    def __init__(self, message: str, *, metadata: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.metadata = copy.deepcopy(metadata or {})
+
 _PERF_CONTEXT: contextvars.ContextVar[dict[str, Any] | None] = (
     contextvars.ContextVar("stage04_perf", default=None)
 )
@@ -2922,7 +2946,120 @@ def _covered_orders(
     }
 
 
-def _compile_prompts_from_states(
+def _semantic_text_key(value: Any) -> str:
+    text = str(value or "").casefold().strip()
+    text = re.sub(
+        r"(?:起始|开始|结束|终止|代表|核心|画面|状态|帧|start|end|representative)\s*[:：]",
+        "",
+        text,
+        flags=re.I,
+    )
+    return re.sub(r"[\W_]+", "", text, flags=re.UNICODE)
+
+
+def _prompt_semantic_key(field: str, value: Any) -> str:
+    text = str(value or "").strip()
+    if field != "video_prompt":
+        return _semantic_text_key(text)
+
+    parts = [
+        _semantic_text_key(part)
+        for part in re.split(r"\n+|(?:起始|开始|结束|终止)状态\s*[:：]", text)
+    ]
+    unique = [part for part in dict.fromkeys(parts) if part]
+    return "|".join(unique)
+
+
+def _shot_state_snapshot(row: dict[str, Any]) -> dict[str, str]:
+    return {
+        field: str(row.get(field) or "").strip()
+        for field in _SHOT_TEMPORAL_STATE_FIELDS
+    }
+
+
+def _shot_prompt_snapshot(row: dict[str, Any]) -> dict[str, str]:
+    return {
+        field: str(row.get(field) or "").strip()
+        for field in _SHOT_PROMPT_FIELDS
+    }
+
+
+def _shot_semantic_fingerprint(row: dict[str, Any]) -> str:
+    payload = {
+        "summary": _semantic_text_key(row.get("summary")),
+        "action": _semantic_text_key(row.get("action")),
+        "states": [
+            _semantic_text_key(row.get(field))
+            for field in _SHOT_TEMPORAL_STATE_FIELDS
+        ],
+        "entities": {
+            "characters": sorted(_id_list(row.get("character_entity_ids"))),
+            "props": sorted(_id_list(row.get("prop_entity_ids"))),
+        },
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _assert_temporal_state_distinction(
+    row: dict[str, Any],
+    *,
+    context: str,
+) -> None:
+    values = {
+        field: _semantic_text_key(row.get(field))
+        for field in _SHOT_TEMPORAL_STATE_FIELDS
+    }
+    if not all(values.values()):
+        return
+
+    duplicates = [
+        (left, right)
+        for left, right in (
+            ("video_start_state", "representative_state"),
+            ("representative_state", "video_end_state"),
+            ("video_start_state", "video_end_state"),
+        )
+        if values[left] == values[right]
+    ]
+    if duplicates:
+        raise Stage04RepairInvariantError(
+            f"{context}: strict-shot-v2 三状态没有形成可区分的前向时间链；"
+            + ", ".join(f"{left}={right}" for left, right in duplicates),
+            metadata={
+                "failed_rules": [
+                    "no_result_duplication",
+                    "causal_order",
+                    "representative_state",
+                ],
+                "post_repair_states": _shot_state_snapshot(row),
+                "repair_progress": "rejected_state_collapse",
+            },
+        )
+
+
+def _assert_prompt_projection_distinction(
+    row: dict[str, Any],
+    *,
+    context: str,
+) -> None:
+    values = {
+        field: _prompt_semantic_key(field, row.get(field))
+        for field in _SHOT_PROMPT_FIELDS
+    }
+    if all(values.values()) and len(set(values.values())) == 1:
+        raise Stage04RepairInvariantError(
+            f"{context}: strict-shot-v2 三类 Prompt 语义塌缩为同一内容",
+            metadata={
+                "failed_rules": ["redundant_representation"],
+                "post_repair_prompts": _shot_prompt_snapshot(row),
+                "repair_progress": "rejected_prompt_collapse",
+            },
+        )
+
+
+def _project_prompts_from_states(
     row: dict[str, Any],
 ) -> dict[str, Any]:
     """
@@ -2978,6 +3115,12 @@ def _compile_prompts_from_states(
     )
 
     return item
+
+
+def _compile_prompts_from_states(
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    return _project_prompts_from_states(row)
 
 
 def validate_rows(
@@ -3662,6 +3805,55 @@ def _merge_shot_repair_patch(
             "V2.39.6.1: scoped Shot repair 未形成三状态闭包："
             + ", ".join(missing)
         )
+
+    try:
+        _assert_temporal_state_distinction(
+            merged,
+            context="Directional repair merge",
+        )
+        compiled = _compile_prompts_from_states(
+            merged
+        )
+        _assert_prompt_projection_distinction(
+            compiled,
+            context="Directional repair prompt projection",
+        )
+    except Stage04RepairInvariantError as exc:
+        metadata = copy.deepcopy(
+            getattr(exc, "metadata", {})
+        )
+        metadata.update({
+            "pre_repair_states":
+                _shot_state_snapshot(current),
+            "repair_patch":
+                copy.deepcopy(candidate),
+            "post_repair_states":
+                _shot_state_snapshot(merged),
+            "pre_repair_prompts":
+                _shot_prompt_snapshot(current),
+            "post_repair_prompts":
+                _shot_prompt_snapshot(_project_prompts_from_states(merged)),
+            "repair_changed_fields": [
+                field
+                for field in writable_fields
+                if current.get(field) != merged.get(field)
+            ],
+        })
+        raise Stage04RepairInvariantError(
+            str(exc),
+            metadata=metadata,
+        ) from exc
+
+    merged.update({
+        key: compiled[key]
+        for key in (
+            "image_prompt",
+            "video_start_prompt",
+            "video_prompt",
+            "prompt_compiler",
+        )
+        if key in compiled
+    })
 
     return merged
 
@@ -4560,6 +4752,91 @@ def _locked_covered_beats(
     ]
 
 
+_REPAIR_CODE_FIELDS: dict[str, tuple[str, ...]] = {
+    "evidence_entailment": (
+        "summary",
+        "action",
+        *_SHOT_TEMPORAL_STATE_FIELDS,
+    ),
+    "causal_order": _SHOT_TEMPORAL_STATE_FIELDS,
+    "no_result_duplication": _SHOT_TEMPORAL_STATE_FIELDS,
+    "redundant_representation": _SHOT_TEMPORAL_STATE_FIELDS,
+    "representative_state": _SHOT_TEMPORAL_STATE_FIELDS,
+    "state_order": _SHOT_TEMPORAL_STATE_FIELDS,
+    "state_handoff": _SHOT_TEMPORAL_STATE_FIELDS,
+    "entity_visibility": (
+        "character_entity_ids",
+        "prop_entity_ids",
+    ),
+}
+
+
+def _repair_fields_for_issues(
+    issues: list[dict[str, Any]],
+) -> tuple[str, ...]:
+    result: list[str] = []
+    for issue in issues or []:
+        if not isinstance(issue, dict):
+            continue
+        code = str(issue.get("code") or "").strip().lower()
+        for known, fields in _REPAIR_CODE_FIELDS.items():
+            if code == known or known in code:
+                for field in fields:
+                    if field not in result:
+                        result.append(field)
+
+    # An unstructured audit cannot authorize a broad rewrite. The three state
+    # fields are the smallest safe semantic scope for a directional repair.
+    if not result:
+        result.extend(_SHOT_TEMPORAL_STATE_FIELDS)
+    return tuple(result)
+
+
+def _repair_patch_contract(fields: tuple[str, ...]) -> str:
+    values: dict[str, Any] = {}
+    for field in fields:
+        values[field] = [] if field.endswith("_entity_ids") else ""
+    return json.dumps(
+        {"patch": values},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _repair_failure_metadata(
+    *,
+    shot_index: int,
+    current: dict[str, Any],
+    issues: list[dict[str, Any]],
+    candidate: dict[str, Any] | None,
+    post: dict[str, Any] | None,
+    progress: str,
+) -> dict[str, Any]:
+    candidate = candidate if isinstance(candidate, dict) else {}
+    post = post if isinstance(post, dict) else current
+    projected = _project_prompts_from_states(post)
+    return {
+        "shot_id": str(current.get("shot_id") or f"Shot {shot_index}"),
+        "beat_id": list(_orders(current.get("covered_beat_orders"))),
+        "failed_rules": list(dict.fromkeys(
+            str(issue.get("code") or "unknown")
+            for issue in issues
+            if isinstance(issue, dict)
+        )),
+        "pre_repair_states": _shot_state_snapshot(current),
+        "repair_patch": copy.deepcopy(candidate),
+        "post_repair_states": _shot_state_snapshot(post),
+        "pre_repair_prompts": _shot_prompt_snapshot(current),
+        "post_repair_prompts": _shot_prompt_snapshot(projected),
+        "repair_changed_fields": [
+            field
+            for field in candidate
+            if current.get(field) != post.get(field)
+        ],
+        "repair_progress": progress,
+    }
+
+
 async def _repair_batch(
     env: dict[str, Any],
     *,
@@ -4572,9 +4849,9 @@ async def _repair_batch(
     next_beat: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     """
-    V2.39.5: fresh semantic rewrite from the Shot's exact selected evidence.
-    The old narrative text and wide source context are deliberately excluded.
-    Beat and evidence bindings are immutable.
+    Field-scoped directional repair from the Shot's exact selected evidence.
+    Already-valid fields, Beat bindings, evidence spans, and entity bindings
+    remain immutable unless their specific audit rule failed.
     """
     if not current_rows:
         return []
@@ -4664,38 +4941,29 @@ async def _repair_batch(
             else None
         )
 
-        visual_metadata = {
-            "title":
-                current.get("title"),
-            "duration_seconds":
-                current.get("duration_seconds"),
-            "composition":
-                current.get("composition"),
-            "shot_size":
-                current.get("shot_size"),
-            "camera":
-                current.get("camera"),
-            "camera_move":
-                current.get("camera_move"),
-            "performance":
-                current.get("performance"),
-            "environment":
-                current.get("environment"),
-            "dialogue":
-                current.get("dialogue"),
-            "narration":
-                current.get("narration"),
-            "sound":
-                current.get("sound"),
-            "music":
-                current.get("music"),
+        repair_fields = _repair_fields_for_issues(
+            shot_issues
+        )
+
+        current_shot = {
+            field: copy.deepcopy(current.get(field))
+            for field in (
+                "summary",
+                "action",
+                *_SHOT_TEMPORAL_STATE_FIELDS,
+                *_SHOT_PROMPT_FIELDS,
+                "character_entity_ids",
+                "prop_entity_ids",
+                "covered_beat_orders",
+                "source_evidence_ids",
+            )
         }
 
         system_prompt = (
             "你是 strict-shot-v2 evidence-locked 修复器。"
             "当前 Shot 的 Beat 和 source evidence 已被系统锁定，不能修改。"
-            "必须从 EXACT_SELECTED_EVIDENCE 重新独立生成 Shot 的语义字段，"
-            "不得复用旧 summary/action/三状态/Prompt。"
+            "这是字段级 directional repair，不是重新生成整个 Shot。"
+            "只修改 FAILED_FIELDS；CURRENT_SHOT 中其他字段已经合法，必须保持不变。"
             "对输出中的每个独立事实命题，都必须能由至少一个 "
             "EXACT_SELECTED_EVIDENCE 直接蕴含；不能直接蕴含的命题必须删除。"
             "LOCKED_COVERED_BEATS 规定需要表达的状态变化，但不能扩大证据事实边界。"
@@ -4703,9 +4971,12 @@ async def _repair_batch(
             "必须形成同一 Shot 的前向状态链。"
             "不得提前消费 NEXT_BEAT_PREVIEW_DO_NOT_CONSUME，"
             "不得重复 PREVIOUS_ACCEPTED_SHOT 已完成的结果。"
-            "人物/道具只返回当前 Shot 真实可见且合法的 entity id，不确定留空。"
-            "只返回一个严格 JSON shot；不要返回 covered_beat_orders "
-            "和 source_evidence_ids，这两个字段由系统锁定。"
+            "若证据不足以形成三个不同的前向时间状态，不得复制证据或同一状态三次，"
+            "应将对应 patch 字段留空，让程序回到 grouping/evidence selection。"
+            "不要输出三个 Prompt；程序只从三状态确定性投影 Prompt。"
+            "人物/道具字段只有出现在 FAILED_FIELDS 时才允许返回。"
+            "只返回严格 JSON patch；不得返回 covered_beat_orders、"
+            "source_evidence_ids、span、duration 或视觉制作字段。"
         )
 
         prompt = (
@@ -4721,7 +4992,19 @@ async def _repair_batch(
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
-            + "\n\n=== AUDIT_VIOLATIONS_TO_REMOVE ===\n"
+            + "\n\n=== CURRENT_SHOT ===\n"
+            + json.dumps(
+                current_shot,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n\n=== FAILED_FIELDS ===\n"
+            + json.dumps(
+                list(repair_fields),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            + "\n\n=== FAILED_AUDIT_RULES ===\n"
             + json.dumps(
                 shot_issues,
                 ensure_ascii=False,
@@ -4745,145 +5028,124 @@ async def _repair_batch(
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
-            + "\n\n=== CURRENT_VISUAL_METADATA_ONLY ===\n"
-            + json.dumps(
-                visual_metadata,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
         )
 
-        repaired: dict[str, Any] | None = None
-        diagnostics: list[str] = []
+        try:
+            raw, parsed, _ = await _qwen(
+                env,
+                phase=(
+                    "studio_stage04_"
+                    "v2383_evidence_locked_repair_qwen32b"
+                ),
+                system_prompt=system_prompt,
+                prompt=prompt,
+                contract=_repair_patch_contract(
+                    repair_fields
+                ),
+                max_tokens=1100,
+                temperature=0.0,
+            )
+        except Exception as exc:
+            metadata = _repair_failure_metadata(
+                shot_index=shot_index,
+                current=current,
+                issues=shot_issues,
+                candidate=None,
+                post=None,
+                progress="qwen_call_failed",
+            )
+            raise Stage04ShotRepairError(
+                f"V2.39.5: Shot#{shot_index} evidence-locked repair 调用失败："
+                f"{type(exc).__name__}: {exc}",
+                metadata=metadata,
+            ) from exc
 
-        for attempt in range(2):
-            try:
-                raw, parsed, _ = await _qwen(
-                    env,
-                    phase=(
-                        "studio_stage04_"
-                        "v2383_evidence_locked_repair_qwen32b"
-                    ),
-                    system_prompt=system_prompt,
-                    prompt=(
-                        prompt
-                        + (
-                            ""
-                            if attempt == 0
-                            else (
-                                "\n\nSTRICT_EVIDENCE_RETRY："
-                                "从零重写全部语义字段。"
-                                "输出前逐个检查每个事实命题是否由 "
-                                "EXACT_SELECTED_EVIDENCE 直接蕴含；"
-                                "不能直接蕴含的内容全部删除。"
-                            )
-                        )
-                    ),
-                    contract=(
-                        '{"shot":{'
-                        '"summary":"",'
-                        '"action":"",'
-                        '"representative_state":"",'
-                        '"video_start_state":"",'
-                        '"video_end_state":"",'
-                        '"image_prompt":"",'
-                        '"video_start_prompt":"",'
-                        '"video_prompt":"",'
-                        '"character_entity_ids":[],'
-                        '"prop_entity_ids":[]'
-                        '}}'
-                    ),
-                    max_tokens=1500,
-                    temperature=0.0,
-                )
-            except Exception as exc:
-                diagnostics.append(
-                    f"attempt={attempt + 1} "
-                    + type(exc).__name__
-                    + ": "
-                    + str(exc)[:500]
-                )
-                continue
+        candidate: dict[str, Any] | None = None
+        if (
+            isinstance(parsed, dict)
+            and isinstance(parsed.get("patch"), dict)
+        ):
+            candidate = dict(parsed["patch"])
+        elif (
+            isinstance(parsed, dict)
+            and isinstance(parsed.get("shot"), dict)
+        ):
+            candidate = dict(parsed["shot"])
+        elif isinstance(parsed, dict):
+            candidate = dict(parsed)
 
-            candidate = None
+        candidate = {
+            field: copy.deepcopy(candidate[field])
+            for field in repair_fields
+            if isinstance(candidate, dict)
+            and field in candidate
+        }
 
-            if (
-                isinstance(parsed, dict)
-                and isinstance(parsed.get("shot"), dict)
-            ):
-                candidate = dict(
-                    parsed["shot"]
-                )
-            elif isinstance(parsed, dict):
-                if any(
-                    key in parsed
-                    for key in (
-                        "summary",
-                        "representative_state",
-                        "video_start_state",
-                        "video_end_state",
-                    )
-                ):
-                    candidate = dict(parsed)
-
-            if candidate is None:
-                extracted = _extract_shots(
-                    env,
-                    raw,
-                    parsed,
-                )
-                if len(extracted) == 1:
-                    candidate = dict(
-                        extracted[0]
-                    )
-
-            if not candidate:
-                diagnostics.append(
-                    f"attempt={attempt + 1} semantic_shot_not_found"
-                )
-                continue
-
-            try:
-                merged = _merge_shot_repair_patch(
-                    current,
-                    candidate,
-                    writable_fields=(
-                        "summary",
-                        "action",
-                        "representative_state",
-                        "video_start_state",
-                        "video_end_state",
-                        "image_prompt",
-                        "video_start_prompt",
-                        "video_prompt",
-                        "character_entity_ids",
-                        "prop_entity_ids",
-                    ),
-                )
-            except RuntimeError as exc:
-                diagnostics.append(
-                    f"attempt={attempt + 1} state_closure="
-                    + str(exc)[:500]
-                )
-                continue
-
-            merged[
-                "covered_beat_orders"
-            ] = locked_orders
-
-            merged[
-                "source_evidence_ids"
-            ] = locked_evidence_ids
-
-            repaired = merged
-            break
-
-        if repaired is None:
-            raise RuntimeError(
-                f"V2.39.5: Shot#{shot_index} evidence-locked 修复失败；"
-                + " | ".join(diagnostics)
+        if not candidate:
+            metadata = _repair_failure_metadata(
+                shot_index=shot_index,
+                current=current,
+                issues=shot_issues,
+                candidate=None,
+                post=None,
+                progress="needs_regrouping_or_evidence_selection",
+            )
+            raise Stage04ShotRepairError(
+                f"V2.39.5: Shot#{shot_index} directional repair 没有可用字段；"
+                "现有 evidence 不足时必须回到 grouping/evidence selection",
+                metadata=metadata,
             )
 
+        try:
+            repaired = _merge_shot_repair_patch(
+                current,
+                candidate,
+                writable_fields=repair_fields,
+            )
+        except Stage04RepairInvariantError as exc:
+            metadata = _repair_failure_metadata(
+                shot_index=shot_index,
+                current=current,
+                issues=shot_issues,
+                candidate=candidate,
+                post=(getattr(exc, "metadata", {}) or {}).get("post") or current,
+                progress="needs_regrouping_or_evidence_selection",
+            )
+            metadata.update(getattr(exc, "metadata", {}) or {})
+            metadata["repair_progress"] = (
+                "needs_regrouping_or_evidence_selection"
+            )
+            metadata["failed_rules"] = list(dict.fromkeys([
+                *metadata.get("failed_rules", []),
+                *[
+                    str(issue.get("code") or "unknown")
+                    for issue in shot_issues
+                    if isinstance(issue, dict)
+                ],
+            ]))
+            raise Stage04ShotRepairError(
+                f"V2.39.5: Shot#{shot_index} directional repair 被严格不变量拒绝：{exc}",
+                metadata=metadata,
+            ) from exc
+
+        repaired["covered_beat_orders"] = locked_orders
+        repaired["source_evidence_ids"] = locked_evidence_ids
+
+        repaired["_directional_repair_diagnostics"] = (
+            _repair_failure_metadata(
+                shot_index=shot_index,
+                current=current,
+                issues=shot_issues,
+                candidate=candidate,
+                post=repaired,
+                progress=(
+                    "semantic_fields_changed"
+                    if _shot_semantic_fingerprint(repaired)
+                    != _shot_semantic_fingerprint(current)
+                    else "no_semantic_progress"
+                ),
+            )
+        )
         result[index] = repaired
 
     return result
@@ -6081,20 +6343,39 @@ async def _produce_batch(
     )
     audit = await audit_fn(source_window=source_window, compact_beats=compact_beats, shots=rows)
 
+    repair_failure: Stage04ShotRepairError | None = None
+    last_repair_metadata: dict[str, Any] = {}
     if not _audit_ok(env, audit):
         for _ in range(2):
-            repaired_raw = await _repair_batch(
-                env,
-                current_rows=rows,
-                audit=audit,
-                source_window=source_window,
-                anchors=anchors,
-                compact_beats=compact_beats,
-                previous_shot=previous_shot,
-                next_beat=next_beat,
+            before_fingerprint = tuple(
+                _shot_semantic_fingerprint(row)
+                for row in rows
             )
+            try:
+                repaired_raw = await _repair_batch(
+                    env,
+                    current_rows=rows,
+                    audit=audit,
+                    source_window=source_window,
+                    anchors=anchors,
+                    compact_beats=compact_beats,
+                    previous_shot=previous_shot,
+                    next_beat=next_beat,
+                )
+            except Stage04ShotRepairError as exc:
+                repair_failure = exc
+                last_repair_metadata = copy.deepcopy(exc.metadata)
+                break
             if not repaired_raw:
                 break
+            for repaired_item in repaired_raw:
+                if isinstance(repaired_item, dict) and isinstance(
+                    repaired_item.get("_directional_repair_diagnostics"),
+                    dict,
+                ):
+                    last_repair_metadata = copy.deepcopy(
+                        repaired_item["_directional_repair_diagnostics"]
+                    )
             rows = validate_rows(
                 env,
                 raw_rows=repaired_raw,
@@ -6105,6 +6386,17 @@ async def _produce_batch(
                 scene_id=str(scene.get("scene_id") or ""),
                 episode_id=str(scene.get("episode_id") or ""),
             )
+            after_fingerprint = tuple(
+                _shot_semantic_fingerprint(row)
+                for row in rows
+            )
+            if after_fingerprint == before_fingerprint:
+                last_repair_metadata["repair_progress"] = "no_semantic_progress"
+                repair_failure = Stage04ShotRepairError(
+                    "Directional repair 无语义进展；拒绝重复发送相同上下文",
+                    metadata=last_repair_metadata,
+                )
+                break
             rows = await _ensure_batch_coverage(
                 env,
                 rows=rows,
@@ -6149,8 +6441,36 @@ async def _produce_batch(
                 sequential.extend(single_rows)
                 local_previous = sequential[-1]
             return sequential
-        raise RuntimeError(
-            f"场景 {scene_index}/{scene_total} Beat {int(batch[0].get('order') or 0)} 定向修复后仍未通过 strict-shot-v2 审计：{_audit_issues(audit)}"
+        issues = _issues_for_shot(audit, 1)
+        metadata = copy.deepcopy(last_repair_metadata)
+        if not metadata:
+            metadata = _repair_failure_metadata(
+                shot_index=1,
+                current=rows[0],
+                issues=issues,
+                candidate=None,
+                post=None,
+                progress="audit_failed_without_valid_patch",
+            )
+        metadata["failed_rules"] = list(dict.fromkeys([
+            *metadata.get("failed_rules", []),
+            *[
+                str(issue.get("code") or "unknown")
+                for issue in issues
+                if isinstance(issue, dict)
+            ],
+        ]))
+        metadata["audit"] = copy.deepcopy(audit)
+        detail = (
+            str(repair_failure)
+            if repair_failure is not None
+            else _audit_issues(audit)
+        )
+        raise Stage04ShotRepairError(
+            f"场景 {scene_index}/{scene_total} Beat {int(batch[0].get('order') or 0)} "
+            "定向修复后仍未通过 strict-shot-v2 审计："
+            + detail,
+            metadata=metadata,
         )
 
     # Cross-batch boundary is mandatory and independently audited.
@@ -7990,6 +8310,7 @@ async def rebuild(env: dict[str, Any], project_id: str, task_id: str) -> None:
                 _restore_transaction(transaction)
             except Exception as rollback_exc:
                 rollback_error = f"; ROLLBACK_ERROR={type(rollback_exc).__name__}: {rollback_exc}"
+        failure_metadata = getattr(exc, "metadata", None)
         task.update({
             "status": "failed",
             "message": str(exc) + rollback_error,
@@ -7997,6 +8318,8 @@ async def rebuild(env: dict[str, Any], project_id: str, task_id: str) -> None:
             "runtime_version": VERSION,
             "updated_at": env["_studio_now"](),
         })
+        if isinstance(failure_metadata, dict) and failure_metadata:
+            task["failure_metadata"] = copy.deepcopy(failure_metadata)
         _persist_rebuild_task(env, task)
     finally:
         try:

@@ -1,0 +1,64 @@
+{
+  "origin": {
+    "environment": "real AutoDL",
+    "project_id": "82d309f735e38f9643a0a387",
+    "task_id": "s04rebuild_e710767634ee14a0",
+    "scene_id": "scn_6434202074a7e95d",
+    "runtime_version": "2.39.6.3-stage04-full-pipeline-preflight"
+  },
+  "source": "一个少年在雪山寻找失落古剑，\n途中遇到守护神兽，\n最终获得认可。",
+  "original_beat": {
+    "order": 1,
+    "summary": "最终获得认可。",
+    "state_change": "{'ent_ec6a8ef8221aed0d145a': {'state': '获得认可', 'merge_with_previous': True}}",
+    "allowed_source_evidence_ids": ["E001"],
+    "source_evidence_ids": ["E001"],
+    "source_evidence": ["最终获得认可。"],
+    "source_evidence_spans": [
+      {"id": "C01E001", "start": 25, "end": 32, "text": "最终获得认可。"}
+    ]
+  },
+  "initial_shot": {
+    "scene_id": "scn_6434202074a7e95d",
+    "episode_id": "ep_cdc79344954c6de5",
+    "title": "最终获得认可",
+    "duration_seconds": 7.0,
+    "summary": "最终获得认可。",
+    "action": "获得认可",
+    "representative_state": "获得认可",
+    "video_start_state": "获得认可",
+    "video_end_state": "获得认可",
+    "image_prompt": "获得认可",
+    "video_start_prompt": "获得认可",
+    "video_prompt": "起始状态：获得认可\n结束状态：获得认可",
+    "covered_beat_orders": [1],
+    "source_evidence_ids": ["E001"],
+    "source_evidence": ["最终获得认可。"],
+    "source_evidence_spans": [
+      {"id": "E001", "start": 25, "end": 32, "text": "最终获得认可。"}
+    ],
+    "character_entity_ids": [],
+    "prop_entity_ids": []
+  },
+  "directional_repair_raw": {
+    "shot": {
+      "summary": "",
+      "action": "",
+      "representative_state": "获得认可",
+      "video_start_state": "获得认可",
+      "video_end_state": "获得认可",
+      "image_prompt": "",
+      "video_start_prompt": "",
+      "video_prompt": "",
+      "character_entity_ids": [],
+      "prop_entity_ids": []
+    }
+  },
+  "failed_rules": [
+    "evidence_entailment",
+    "no_result_duplication",
+    "causal_order",
+    "redundant_representation",
+    "representative_state"
+  ]
+}

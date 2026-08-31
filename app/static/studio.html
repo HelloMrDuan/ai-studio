@@ -395,13 +395,14 @@ function openShotTools(shotId){openTools(shotId)}
 function ensureV2361FinalControls(){const name=$('finalName');if(!name||$('finalAspect'))return;const host=name.closest('.grid2')||name.parentElement?.parentElement;if(!host)return;const wrap=document.createElement('div');wrap.className='finalV2361Controls';wrap.innerHTML=`<div class="field"><label>成片画幅</label><select id="finalAspect"><option value="16:9">16:9</option><option value="9:16">9:16</option><option value="1:1">1:1</option><option value="4:3">4:3</option><option value="3:4">3:4</option><option value="21:9">21:9</option></select></div><div class="field"><label>导出规格</label><select id="finalProfile"><option value="working">工作分辨率 · 标准化</option><option value="1080p">1080p · Lanczos 标准缩放</option><option value="4k">4K 长边 · Lanczos 标准缩放</option></select><div class="finalV2361Hint">4K 这里明确是 FFmpeg Lanczos 标准缩放，不冒充 AI 超分；⑤仍保持工作分辨率。</div></div>`;host.parentElement?.insertBefore(wrap,host.nextSibling);const sa=$('shotAspect');if(sa&&$('finalAspect'))$('finalAspect').value=sa.value||'16:9';const btn=$('assembleBtn');if(btn)btn.textContent='按当前有效血缘生成成片'}
 // ===== V2.37.1 STRICT STAGE04 UI =====
 async function v2371Get(url){const r=await fetch(url,{headers:{Accept:'application/json'}});let b={};try{b=await r.json()}catch(_){b={}}if(!r.ok)throw new Error(b.detail||b.error||`HTTP ${r.status}`);return b}
-async function rebuildStage04Contract(){
+async function rebuildStage04Production({confirmRebuild=false}={}){
  if(!current)return toast('当前没有作品',true);
- if(!confirm('将使用 Qwen3-32B 按小说正文重新建立④正式 Shot。旧 Shot 和旧制作资产不会删除，但新 Shot 会获得新的 ID，旧画面/视频不会计入新制作链。继续吗？'))return;
- const btn=$('stage04RebuildBtn');if(btn)btn.disabled=true;
+ if(confirmRebuild&&!confirm('将使用 Qwen3-32B 按小说正文重新建立④正式 Shot。旧 Shot 和旧制作资产不会删除，但新 Shot 会获得新的 ID，旧画面/视频不会计入新制作链。继续吗？'))return;
+ const btn=$('stage04RebuildBtn'),primary=$('primaryActionBtn');if(btn)btn.disabled=true;if(primary)primary.disabled=true;
  try{
   await jpost(`/api/studio/projects/${current}/stage04/rebuild-production`,{});
   toast('④严格分镜重建已提交 · Qwen3-32B');
+  await refreshAll();showView('create');$('taskFocus')?.scrollIntoView({behavior:'smooth',block:'start'});
   const pid=current;let rounds=0;
   while(rounds++<720){
    await new Promise(resolve=>setTimeout(resolve,2500));
@@ -412,15 +413,17 @@ async function rebuildStage04Contract(){
   }
   throw new Error('④严格分镜重建等待超时，请检查任务状态');
  }catch(e){toast(e.message,true)}
- finally{if(btn)btn.disabled=false}
+ finally{if(btn)btn.disabled=false;if(primary)syncPrimaryInputState()}
 }
+async function rebuildStage04Contract(){return rebuildStage04Production({confirmRebuild:true})}
 // ===== /V2.37.1 STRICT STAGE04 UI =====
 // ===== /V2.36.1 E2E SHOT CHAIN UI =====
 
 
 function formatStageEta(seconds){const value=Number(seconds||0);if(!value)return'处理中';if(value<60)return`约 ${Math.max(1,Math.round(value))} 秒`;if(value<3600)return`约 ${Math.ceil(value/60)} 分钟`;return`约 ${(value/3600).toFixed(value<7200?1:0)} 小时`}
+function stageProgressRow(stage){const bundle=snap?.stage_progress||{},rows=Array.isArray(bundle.stages)?bundle.stages:[];return rows.find(x=>String(x.stage_id||x.stage)===String(stage||bundle.current_stage))||null}
 function renderStageProgressDetail(){
- const box=$('stageProgressDetail'),bundle=snap?.stage_progress||{},rows=Array.isArray(bundle.stages)?bundle.stages:[],row=rows.find(x=>String(x.stage_id||x.stage)===String(bundle.current_stage));
+ const box=$('stageProgressDetail'),bundle=snap?.stage_progress||{},row=stageProgressRow(bundle.current_stage);
  if(!box||!row){if(box)box.classList.add('hidden');return}
  const total=Math.max(1,Number(row.total_steps||1)),current=Math.max(0,Number(row.current_step||0)),completed=Math.max(0,Number(row.completed_steps??(row.completed_items||[]).length)),percent=Math.max(0,Math.min(100,Number(row.percent||0))),done=(row.completed_items||[]).slice(-8),eta=row.status==='completed'?'已完成':formatStageEta(row.eta_seconds??row.eta);
  box.classList.remove('hidden');box.innerHTML=`<div class="stageProgressHead"><b>第 ${esc(row.stage_id||row.stage)} 阶段 · ${esc(row.stage_name)}</b><span>${percent}%</span></div><div class="stageProgressBar"><i style="width:${percent}%"></i></div><div class="stageProgressGrid"><div class="stageProgressMetric"><small>当前执行</small><strong>第 ${current}/${total} 步</strong></div><div class="stageProgressMetric"><small>已完成</small><strong>${completed}/${total} 步</strong></div><div class="stageProgressMetric"><small>完成百分比</small><strong>${percent}%</strong></div><div class="stageProgressMetric"><small>预计剩余时间</small><strong>${esc(eta)}</strong></div></div><div class="stageProgressCurrent"><b>当前执行项：</b>${esc(row.current_action||row.current_item||row.current_step_name||'处理中')}</div><div class="stageProgressDone"><b>已完成列表：</b>${done.length?done.map(item=>`<span>${esc(item)}</span>`).join(''):'<span>暂无已完成项</span>'}</div>`;
@@ -465,6 +468,7 @@ async function performPrimaryAction(){
     toast('请先填写需要补充的信息',true);$('phaseInput')?.focus();return;
   }
   if(primaryActionMode==='approve'){const el=$('phaseInput');if(el)el.value='通过';await runPhase();return}if(primaryActionMode==='run'){await runPhase();return}
+  if(primaryActionMode==='stage04_rebuild'){await rebuildStage04Production();return}
   if(primaryActionMode==='continue'){const el=$('phaseInput');if(el)el.value='';await runPhase();return}
   if(primaryActionMode==='confirm'){await confirmPhase();return}
   if(primaryActionMode==='view'){runNextViewAction();return}
@@ -488,7 +492,7 @@ function renderNextAction(){
   }
 
 
-  if(job&&['review','review_attention'].includes(job.status)&&['02','03','04'].includes(stage)){
+  if(job&&['review','review_attention'].includes(job.status)&&(['02','03'].includes(stage)||(stage==='04'&&state.studio_stage04_pipeline?.ready===true&&state.studio_stage04_pipeline?.coverage_ok===true))){
     const phase=PHASE[stage]||'当前阶段';
     const nextName=stage==='02'?'视觉':stage==='03'?'分镜':'制作';
     const audit=state.last_handoff_audit||{};
@@ -538,7 +542,14 @@ function renderNextAction(){
   // V2357_STAGE04_DETAIL_UI
   if(p.status==='active'&&stage==='04'){
     const pipe=state.studio_stage04_pipeline||{};
+    const progress=stageProgressRow('04');
     const covered=Number(pipe.covered_scene_count||0),sceneCount=Number(pipe.scene_count||0),shotCount=Number(pipe.shot_count||0);
+    if(progress?.source==='stage04_rebuild_task'&&progress.status==='running'){
+      title.textContent='正在生成详细分镜';
+      desc.textContent=progress.current_action||progress.current_item||'Stage04 正在按场景生成详细分镜。';
+      wrap.classList.add('hidden');toggle.classList.add('hidden');manualInputOpen=false;
+      btn.textContent='处理中…';primaryActionMode='busy';btn.disabled=true;return;
+    }
     if(pipe.ready===true&&pipe.coverage_ok===true){
       title.textContent='详细分镜已生成';
       desc.textContent=`已覆盖 ${covered}/${sceneCount} 个场景，共 ${shotCount} 个正式镜头。检查没问题后确认进入制作。`;
@@ -549,7 +560,7 @@ function renderNextAction(){
     desc.textContent=snap.source_profile?.longform
       ?'长章节按场景和剧情节拍分批读取原文并详细拆镜，全部场景覆盖后再合并；不会把整章压成几条粗略镜头。'
       :'按场景和剧情节拍生成可直接进入图片/视频制作的详细镜头，全部覆盖后再确认进入制作。';
-    btn.textContent='生成详细分镜';primaryActionMode='run';primaryRequiresInput=false;syncPrimaryInputState();return;
+    btn.textContent=progress?.status==='failed'?'重试生成详细分镜':'生成详细分镜';primaryActionMode='stage04_rebuild';primaryRequiresInput=false;syncPrimaryInputState();return;
   }
 
 

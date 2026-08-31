@@ -1,0 +1,27 @@
+[
+  {
+    "id": "abstract_internal_outcome",
+    "source_evidence": "他终于明白了真相。",
+    "expected_temporal_mode": "static_outcome"
+  },
+  {
+    "id": "relational_outcome",
+    "source_evidence": "众人认可了他的决定。",
+    "expected_temporal_mode": "static_outcome"
+  },
+  {
+    "id": "result_state",
+    "source_evidence": "危机解除。",
+    "expected_temporal_mode": "static_outcome"
+  },
+  {
+    "id": "status_transition_without_ceremony",
+    "source_evidence": "他成为新的首领。",
+    "expected_temporal_mode": "static_outcome"
+  },
+  {
+    "id": "observable_door_transition",
+    "source_evidence": "门缓缓打开，他走了进去。",
+    "expected_temporal_mode": "observable_transition"
+  }
+]

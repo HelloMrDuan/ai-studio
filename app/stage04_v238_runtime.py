@@ -37,6 +37,18 @@ _SHOT_PROMPT_FIELDS = (
     "video_prompt",
 )
 
+_TEMPORAL_MODES = {
+    "observable_transition",
+    "static_outcome",
+    "insufficient_visual_evidence",
+}
+
+_STATIC_PRESENTATION_FIELDS = (
+    "visual_start_frame",
+    "representative_frame",
+    "visual_end_frame",
+)
+
 
 class Stage04RepairInvariantError(RuntimeError):
     def __init__(self, message: str, *, metadata: dict[str, Any] | None = None):
@@ -2986,6 +2998,8 @@ def _shot_prompt_snapshot(row: dict[str, Any]) -> dict[str, str]:
 
 def _shot_semantic_fingerprint(row: dict[str, Any]) -> str:
     payload = {
+        "temporal_mode": str(row.get("temporal_mode") or ""),
+        "source_fact": _semantic_text_key(row.get("source_fact")),
         "summary": _semantic_text_key(row.get("summary")),
         "action": _semantic_text_key(row.get("action")),
         "states": [
@@ -2996,10 +3010,184 @@ def _shot_semantic_fingerprint(row: dict[str, Any]) -> str:
             "characters": sorted(_id_list(row.get("character_entity_ids"))),
             "props": sorted(_id_list(row.get("prop_entity_ids"))),
         },
+        "presentation": {
+            field: _semantic_text_key(row.get(field))
+            for field in (
+                "narrative_state",
+                "visual_realization",
+                *_STATIC_PRESENTATION_FIELDS,
+                "visual_motion",
+            )
+        },
     }
     return hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
+
+
+def _shot_temporal_mode(row: dict[str, Any]) -> str:
+    value = str(row.get("temporal_mode") or "").strip().lower()
+    # Backward-compatible dynamic fixtures remain strict. Static/outcome mode
+    # is never inferred from text or keywords; it must be explicit model output.
+    return value or "observable_transition"
+
+
+def _normalize_temporal_contract(
+    row: dict[str, Any],
+    *,
+    evidence_ids: list[str],
+    raw_index: int,
+) -> dict[str, Any]:
+    item = copy.deepcopy(row)
+    explicit_mode = str(item.get("temporal_mode") or "").strip().lower()
+    mode = _shot_temporal_mode(item)
+    if mode not in _TEMPORAL_MODES:
+        raise RuntimeError(
+            f"strict-shot-v2 Shot#{raw_index} temporal_mode 非法：{mode!r}"
+        )
+
+    mode_evidence_ids = _id_list(
+        item.get("temporal_mode_evidence_ids") or evidence_ids
+    )
+    if not mode_evidence_ids or not set(mode_evidence_ids).issubset(
+        set(evidence_ids)
+    ):
+        raise RuntimeError(
+            f"strict-shot-v2 Shot#{raw_index} temporal mode evidence 越权"
+        )
+    reason = str(item.get("temporal_mode_reason") or "").strip()
+    if explicit_mode and not reason:
+        raise RuntimeError(
+            f"strict-shot-v2 Shot#{raw_index} temporal_mode 缺少 evidence-based reason"
+        )
+
+    item["temporal_mode"] = mode
+    item["temporal_mode_evidence_ids"] = mode_evidence_ids
+    item["temporal_mode_reason"] = reason or (
+        "legacy dynamic contract with three explicit narrative states"
+    )
+
+    if mode == "insufficient_visual_evidence":
+        raise Stage04ShotRepairError(
+            f"Shot#{raw_index} 当前证据被分类为 insufficient_visual_evidence",
+            metadata={
+                "repair_progress": "needs_regrouping_or_evidence_selection",
+                "evidence_sufficiency": "insufficient_visual_evidence",
+                "failed_rules": ["visual_realization"],
+                "evidence_ids": mode_evidence_ids,
+                "temporal_mode": mode,
+                "temporal_mode_reason": item["temporal_mode_reason"],
+            },
+        )
+
+    if mode == "observable_transition":
+        item["source_fact"] = str(
+            item.get("source_fact") or item.get("summary") or ""
+        ).strip()
+        item["narrative_start_state"] = str(
+            item.get("narrative_start_state")
+            or item.get("video_start_state")
+            or ""
+        ).strip()
+        item["narrative_state"] = str(
+            item.get("narrative_state")
+            or item.get("representative_state")
+            or ""
+        ).strip()
+        item["narrative_end_state"] = str(
+            item.get("narrative_end_state")
+            or item.get("video_end_state")
+            or ""
+        ).strip()
+        return item
+
+    source_fact = str(item.get("source_fact") or "").strip()
+    narrative_state = str(item.get("narrative_state") or "").strip()
+    narrative_start = str(
+        item.get("narrative_start_state") or narrative_state
+    ).strip()
+    narrative_end = str(
+        item.get("narrative_end_state") or narrative_state
+    ).strip()
+    visual_realization = str(item.get("visual_realization") or "").strip()
+    visual_motion = str(item.get("visual_motion") or "").strip()
+    realization_scope = str(item.get("realization_scope") or "").strip()
+    missing = [
+        key
+        for key, value in (
+            ("source_fact", source_fact),
+            ("narrative_state", narrative_state),
+            ("visual_realization", visual_realization),
+            ("visual_motion", visual_motion),
+            ("realization_scope", realization_scope),
+            *((field, str(item.get(field) or "").strip())
+              for field in _STATIC_PRESENTATION_FIELDS),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            f"strict-shot-v2 Shot#{raw_index} static_outcome 合同不完整："
+            + ", ".join(missing)
+        )
+    if realization_scope != "presentation_only":
+        raise RuntimeError(
+            f"strict-shot-v2 Shot#{raw_index} static_outcome realization_scope "
+            "必须为 presentation_only"
+        )
+    narrative_keys = {
+        _semantic_text_key(value)
+        for value in (narrative_start, narrative_state, narrative_end)
+    }
+    if "" in narrative_keys or len(narrative_keys) != 1:
+        raise Stage04RepairInvariantError(
+            f"strict-shot-v2 Shot#{raw_index} static_outcome 不得伪造 narrative transition",
+            metadata={
+                "failed_rules": ["visual_realization"],
+                "temporal_mode": mode,
+            },
+        )
+    frame_keys = {
+        _semantic_text_key(item.get(field))
+        for field in _STATIC_PRESENTATION_FIELDS
+    }
+    if "" in frame_keys or len(frame_keys) != len(_STATIC_PRESENTATION_FIELDS):
+        raise Stage04RepairInvariantError(
+            f"strict-shot-v2 Shot#{raw_index} static_outcome 表现帧不可区分",
+            metadata={
+                "failed_rules": ["visual_realization"],
+                "temporal_mode": mode,
+            },
+        )
+    assumptions = item.get("realization_assumptions")
+    if not isinstance(assumptions, list):
+        raise RuntimeError(
+            f"strict-shot-v2 Shot#{raw_index} realization_assumptions 必须为数组"
+        )
+
+    # For static outcomes, narrative fields are a locked stable fact. Any
+    # composition/motion inference stays in presentation-only fields and can
+    # never leak into summary/action or masquerade as source evidence.
+    item.update({
+        "source_fact": source_fact,
+        "summary": source_fact,
+        "action": "",
+        "narrative_start_state": narrative_state,
+        "narrative_state": narrative_state,
+        "narrative_end_state": narrative_state,
+        "video_start_state": narrative_state,
+        "representative_state": narrative_state,
+        "video_end_state": narrative_state,
+        "visual_realization": visual_realization,
+        "visual_motion": visual_motion,
+        "realization_scope": "presentation_only",
+        "realization_assumptions": [
+            str(value).strip()
+            for value in assumptions
+            if str(value or "").strip()
+        ],
+    })
+    return item
 
 
 def _assert_temporal_state_distinction(
@@ -3007,11 +3195,24 @@ def _assert_temporal_state_distinction(
     *,
     context: str,
 ) -> None:
+    mode = _shot_temporal_mode(row)
     values = {
         field: _semantic_text_key(row.get(field))
         for field in _SHOT_TEMPORAL_STATE_FIELDS
     }
     if not all(values.values()):
+        return
+
+    if mode == "static_outcome":
+        if len(set(values.values())) != 1:
+            raise Stage04RepairInvariantError(
+                f"{context}: static_outcome narrative state 必须保持稳定",
+                metadata={
+                    "failed_rules": ["visual_realization"],
+                    "post_repair_states": _shot_state_snapshot(row),
+                    "repair_progress": "rejected_static_narrative_transition",
+                },
+            )
         return
 
     duplicates = [
@@ -3063,12 +3264,11 @@ def _project_prompts_from_states(
     row: dict[str, Any],
 ) -> dict[str, Any]:
     """
-    strict-shot-v2 deterministic prompt compiler.
+    strict-shot-v2 deterministic, temporal-mode-aware prompt compiler.
 
-    These are derived production fields, not independent narrative authority:
-      image_prompt       <- representative_state only
-      video_start_prompt <- video_start_state only
-      video_prompt       <- video_start_state -> video_end_state only
+    Observable transitions project from their three narrative states. Static
+    outcomes project from a locked stable narrative state plus the separately
+    audited presentation-only realization and frames.
 
     Existing model-authored prompt text is intentionally overwritten so it
     cannot omit fields or introduce unsupported future events / abstractions.
@@ -3076,6 +3276,35 @@ def _project_prompts_from_states(
     item = copy.deepcopy(
         row
     )
+
+    if _shot_temporal_mode(item) == "static_outcome":
+        narrative_state = str(item.get("narrative_state") or "").strip()
+        visual_realization = str(item.get("visual_realization") or "").strip()
+        visual_start = str(item.get("visual_start_frame") or "").strip()
+        representative_frame = str(item.get("representative_frame") or "").strip()
+        visual_end = str(item.get("visual_end_frame") or "").strip()
+        visual_motion = str(item.get("visual_motion") or "").strip()
+        if narrative_state and representative_frame:
+            item["image_prompt"] = (
+                "已锁定叙事状态：" + narrative_state
+                + "\n表现层代表画面：" + representative_frame
+                + ("\n视觉实现：" + visual_realization if visual_realization else "")
+            )
+        if narrative_state and visual_start:
+            item["video_start_prompt"] = (
+                "已锁定叙事状态：" + narrative_state
+                + "\n表现层起始画面：" + visual_start
+            )
+        if narrative_state and visual_start and visual_end and visual_motion:
+            item["video_prompt"] = (
+                "叙事状态保持不变：" + narrative_state
+                + "\n表现层起始画面：" + visual_start
+                + "\n表现层结束画面：" + visual_end
+                + "\n仅允许表现层运动：" + visual_motion
+                + "\n禁止新增剧情事件、因果结果、角色或道具。"
+            )
+        item["prompt_compiler"] = "strict-shot-v2-static-presentation-derived"
+        return item
 
     representative = str(
         item.get("representative_state")
@@ -3117,6 +3346,15 @@ def _project_prompts_from_states(
     return item
 
 
+def compile_prompts_for_locked_shot(row: dict[str, Any]) -> dict[str, str]:
+    """Return the deterministic Stage05 prompt projection for a locked Shot."""
+    projected = _project_prompts_from_states(row)
+    return {
+        field: str(projected.get(field) or "").strip()
+        for field in _SHOT_PROMPT_FIELDS
+    }
+
+
 def _compile_prompts_from_states(
     row: dict[str, Any],
 ) -> dict[str, Any]:
@@ -3144,7 +3382,7 @@ def validate_rows(
         evidence anchors, never widened to the whole Beat.
       - duration_seconds is real model output and must be valid; there is no
         silent 3-second default.
-      - image/video prompts are deterministic derivatives of the three states.
+      - image/video prompts are deterministic derivatives of temporal mode.
       - entity IDs are never inherited from the Beat/Scene and invalid IDs are
         rejected instead of silently erased.
     """
@@ -3271,6 +3509,12 @@ def validate_rows(
                 f"{unsupported_orders}，但没有对应直接证据"
             )
 
+        row = _normalize_temporal_contract(
+            row,
+            evidence_ids=evidence_ids,
+            raw_index=raw_index,
+        )
+
         # Three narrative states are the semantic production authority.
         state_fields = (
             "representative_state",
@@ -3294,6 +3538,11 @@ def validate_rows(
                     missing_states
                 )
             )
+
+        _assert_temporal_state_distinction(
+            row,
+            context=f"Shot#{raw_index} temporal contract",
+        )
 
         # No hidden duration default. H3 and final timing consume this value.
         if (
@@ -3437,6 +3686,15 @@ def validate_rows(
                 "text": text,
             })
 
+        mode_evidence_set = set(_id_list(
+            row.get("temporal_mode_evidence_ids")
+        ))
+        row["temporal_mode_source_spans"] = [
+            copy.deepcopy(span)
+            for span in evidence_spans
+            if str(span.get("id") or "") in mode_evidence_set
+        ]
+
         summary = str(
             row.get("summary")
             or ""
@@ -3538,6 +3796,36 @@ def validate_rows(
                 ),
             "summary":
                 summary,
+            "temporal_mode":
+                str(row.get("temporal_mode") or ""),
+            "temporal_mode_reason":
+                str(row.get("temporal_mode_reason") or ""),
+            "temporal_mode_evidence_ids":
+                list(row.get("temporal_mode_evidence_ids") or []),
+            "temporal_mode_source_spans":
+                copy.deepcopy(row.get("temporal_mode_source_spans") or []),
+            "source_fact":
+                str(row.get("source_fact") or ""),
+            "narrative_start_state":
+                str(row.get("narrative_start_state") or ""),
+            "narrative_state":
+                str(row.get("narrative_state") or ""),
+            "narrative_end_state":
+                str(row.get("narrative_end_state") or ""),
+            "visual_realization":
+                str(row.get("visual_realization") or ""),
+            "realization_scope":
+                str(row.get("realization_scope") or ""),
+            "realization_assumptions":
+                list(row.get("realization_assumptions") or []),
+            "visual_start_frame":
+                str(row.get("visual_start_frame") or ""),
+            "representative_frame":
+                str(row.get("representative_frame") or ""),
+            "visual_end_frame":
+                str(row.get("visual_end_frame") or ""),
+            "visual_motion":
+                str(row.get("visual_motion") or ""),
             "composition":
                 str(
                     row.get("composition")
@@ -4310,6 +4598,12 @@ async def _complete_targeted_shot_structure(
         "evidence_binding_source"
     ] = evidence_source
 
+    item = _normalize_temporal_contract(
+        item,
+        evidence_ids=evidence_ids,
+        raw_index=1,
+    )
+
     duration, duration_source = (
         await _plan_targeted_duration(
             env,
@@ -4386,14 +4680,17 @@ async def _generate_missing_beat_shots(
             "只为 TARGET_BEAT 生成 Shot，不得消费其他 Beat。"
             "source_evidence_ids 必须从 ALLOWED_EVIDENCE_ANCHORS 中选择，"
             "至少一个，并直接支持该 Shot。"
-            "video_start_state→representative_state→video_end_state "
-            "必须为同一 Shot 的前向因果链。"
+            "必须从 evidence 输出 temporal_mode + reason + evidence ids。"
+            "observable_transition 才要求三 narrative state 为前向因果链。"
+            "static_outcome 必须锁定同一 narrative_state，把不同画面和运动严格隔离到"
+            " presentation_only visual realization 字段，不得虚构剧情转折。"
+            "insufficient_visual_evidence 必须原样分类，不能造动作补足。"
             "不得提前消费 NEXT_BEAT_PREVIEW。"
             "如果 TARGET_BEAT 带 adjacent_projection 且 relation=forward_with_replayed_prefix，"
             "说明其证据已经裁剪为上一 Shot 完成之后的新后续；不得让 video_start_state "
             "回到 PREVIOUS_ACCEPTED_SHOT 已经完成之前的状态。"
             "人物/道具只填写当前 Shot 真实可见合法 entity id；不确定留空。"
-            "必须输出三个非空状态；三个 Prompt 由程序生成，不要求模型输出。"
+            "必须输出该 temporal_mode 对应的完整合同；三个 Prompt 由程序生成。"
             "duration_seconds 若能规划则输出；遗漏时由独立 timing planner 补全。"
             "不得依赖固定业务词表或题材类别。只返回严格 JSON。"
         )
@@ -4449,24 +4746,7 @@ async def _generate_missing_beat_shots(
                             )
                         )
                     ),
-                    contract=(
-                        '{"shots":[{'
-                        '"title":"",'
-                        '"duration_seconds":3,'
-                        '"summary":"",'
-                        '"action":"",'
-                        '"representative_state":"",'
-                        '"video_start_state":"",'
-                        '"video_end_state":"",'
-                        '"image_prompt":"",'
-                        '"video_start_prompt":"",'
-                        '"video_prompt":"",'
-                        f'"covered_beat_orders":[{order}],'
-                        '"source_evidence_ids":["C01E001"],'
-                        '"character_entity_ids":[],'
-                        '"prop_entity_ids":[]'
-                        '}]}'
-                    ),
+                    contract=_shot_generation_contract(order),
                     max_tokens=1700,
                     temperature=0.0,
                 )
@@ -4517,6 +4797,10 @@ async def _generate_missing_beat_shots(
                                 allowed_anchor_rows,
                         )
                     )
+                except Stage04ShotRepairError:
+                    # Insufficient visual evidence is a semantic routing result,
+                    # not malformed JSON. Do not resend the same prompt three times.
+                    raise
                 except Exception as exc:
                     diagnostics.append(
                         f"attempt={attempt + 1} "
@@ -4548,6 +4832,8 @@ async def _generate_missing_beat_shots(
                     scene_id=scene_id,
                     episode_id=episode_id,
                 )
+            except Stage04ShotRepairError:
+                raise
             except Exception as exc:
                 diagnostics.append(
                     f"attempt={attempt + 1} validate="
@@ -4707,6 +4993,7 @@ def _issues_for_shot(
         ("no_result_duplication", "no_result_duplication"),
         ("state_order_valid", "state_order"),
         ("entity_visibility_valid", "entity_visibility"),
+        ("visual_realization_valid", "visual_realization"),
     )
     if string_violations:
         for flag, code in flag_codes:
@@ -4823,6 +5110,7 @@ _AUDIT_CODE_ALIASES: dict[str, str] = {
     "no_future_event_preconsumption": "future_preconsumption",
     "future_preconsumption_violation": "future_preconsumption",
     "beat_coverage_violation": "beat_coverage",
+    "visual_realization_violation": "visual_realization",
 }
 
 
@@ -4869,6 +5157,7 @@ _REPAIR_CODE_FIELDS: dict[str, tuple[str, ...]] = {
     # Beat/evidence bindings are immutable in directional repair. A coverage
     # failure therefore routes to regroup/evidence selection without an LLM call.
     "beat_coverage": (),
+    "visual_realization": (),
     "entity_visibility": (
         "character_entity_ids",
         "prop_entity_ids",
@@ -5173,8 +5462,12 @@ async def _regenerate_shot_from_reselected_evidence(
         "你是 strict-shot-v2 局部 evidence regroup 后的 Shot 重生器。"
         "必须基于 RESELECTED_EVIDENCE 重新生成一个全新 Shot，不能 patch OLD_SHOT。"
         "只覆盖 TARGET_BEAT；source_evidence_ids 只能从允许列表选择。"
-        "video_start_state→representative_state→video_end_state 必须形成可由证据直接支持的"
-        "可见前向状态链；不得重复 PREVIOUS_ACCEPTED_SHOT，不得消费 NEXT_BEAT。"
+        "必须直接根据 RESELECTED_EVIDENCE 分类 temporal_mode，并返回分类 reason 和 evidence ids；"
+        "不得用题材关键词判断。observable_transition 才要求三 narrative state 形成证据支持的"
+        "可见前向状态链。static_outcome 必须保持 narrative state 稳定，并把构图、机位、光影、"
+        "环境或镜头运动隔离在 presentation_only visual realization 字段；这些表现推断不得写入"
+        " source_fact/summary/action。insufficient_visual_evidence 必须如实返回，不能虚构动作。"
+        "不得重复 PREVIOUS_ACCEPTED_SHOT，不得消费 NEXT_BEAT。"
         "必须包含完整 strict-shot-v2 字段并只返回严格 JSON。"
     )
     prompt = (
@@ -5192,15 +5485,7 @@ async def _regenerate_shot_from_reselected_evidence(
         phase="studio_stage04_regroup_shot_regeneration_qwen32b",
         system_prompt=system_prompt,
         prompt=prompt,
-        contract=(
-            '{"shots":[{"title":"","duration_seconds":3,'
-            '"summary":"","action":"","representative_state":"",'
-            '"video_start_state":"","video_end_state":"",'
-            '"image_prompt":"","video_start_prompt":"","video_prompt":"",'
-            f'"covered_beat_orders":[{target_order}],'
-            '"source_evidence_ids":["E001"],'
-            '"character_entity_ids":[],"prop_entity_ids":[]}]}'
-        ),
+        contract=_shot_generation_contract(target_order),
         max_tokens=1700,
         temperature=0.0,
     )
@@ -5746,6 +6031,8 @@ async def _boundary_audit(
         "你是 strict-shot-v2 相邻镜头边界审计器。"
         "只判断前一 Shot 结束到后一 Shot 开始是否时间前向、"
         "状态可衔接、没有重复已经完成的结果。"
+        "必须按 temporal_mode 判断：static_outcome 的 narrative state 稳定不是倒退；"
+        "但它仍不得重复前一 Shot 结果、预消费未来或改变 source_fact。"
         "不得根据题材关键词判断。"
         "必须显式返回 temporal_forward_ok、state_handoff_ok、"
         "no_result_duplication 三个 boolean 和 violations。"
@@ -5759,6 +6046,12 @@ async def _boundary_audit(
                 previous_shot.get(
                     "summary"
                 ),
+            "temporal_mode":
+                previous_shot.get("temporal_mode"),
+            "source_fact":
+                previous_shot.get("source_fact"),
+            "narrative_end_state":
+                previous_shot.get("narrative_end_state"),
             "covered_beat_orders":
                 previous_shot.get(
                     "covered_beat_orders"
@@ -5781,6 +6074,12 @@ async def _boundary_audit(
                 current_shot.get(
                     "summary"
                 ),
+            "temporal_mode":
+                current_shot.get("temporal_mode"),
+            "source_fact":
+                current_shot.get("source_fact"),
+            "narrative_start_state":
+                current_shot.get("narrative_start_state"),
             "covered_beat_orders":
                 current_shot.get(
                     "covered_beat_orders"
@@ -6260,21 +6559,66 @@ async def _repair_first_for_boundary(
 
 
 
+def _shot_generation_contract(order: int) -> str:
+    return json.dumps({
+        "shots": [{
+            "title": "",
+            "duration_seconds": 3,
+            "summary": "",
+            "action": "",
+            "temporal_mode": "observable_transition",
+            "temporal_mode_reason": "",
+            "temporal_mode_evidence_ids": ["E001"],
+            "source_fact": "",
+            "narrative_start_state": "",
+            "narrative_state": "",
+            "narrative_end_state": "",
+            "visual_realization": "",
+            "realization_scope": "presentation_only",
+            "realization_assumptions": [],
+            "visual_start_frame": "",
+            "representative_frame": "",
+            "visual_end_frame": "",
+            "visual_motion": "",
+            "representative_state": "",
+            "video_start_state": "",
+            "video_end_state": "",
+            "image_prompt": "",
+            "video_start_prompt": "",
+            "video_prompt": "",
+            "covered_beat_orders": [order],
+            "source_evidence_ids": ["E001"],
+            "character_entity_ids": [],
+            "prop_entity_ids": [],
+        }],
+    }, ensure_ascii=False, separators=(",", ":"))
+
+
 def _system_prompt() -> str:
     return (
         "你是正式短视频分镜导演，运行 Qwen3-32B，输出 strict-shot-v2。"
         "小说精确正文证据和当前 Beats 是事实最高权威。"
         "每个 Shot 必须显式 covered_beat_orders + source_evidence_ids；"
         "证据只能来自被覆盖 Beat。"
-        "video_start_state 是动作发生前/刚开始，representative_state 是当前 Shot "
-        "最有叙事信息的中间信息帧，video_end_state 是该 Shot 完成后的状态；"
-        "三者必须同一因果链且只向前。"
+        "必须直接根据所选 evidence 分类 temporal_mode，不得用题材关键词："
+        "observable_transition=证据明确支持动作前/中/后；"
+        "static_outcome=证据只支持已成立的状态/结果/关系，未描述其发生过程；"
+        "insufficient_visual_evidence=不新增剧情事实就无法视觉化。"
+        "分类必须给 temporal_mode_reason、temporal_mode_evidence_ids。"
+        "observable_transition 的 video_start_state、representative_state、video_end_state "
+        "必须同一因果链、互不相同且只向前。"
+        "static_outcome 的 source_fact/summary/narrative_state 只写证据直接支持的稳定事实，"
+        "narrative_start_state=narrative_state=narrative_end_state，不得虚构剧情动作；"
+        "构图、机位、光影、环境运动、镜头运动和不改变剧情的微小表现只能写入 "
+        "visual_realization/visual_*_frame/visual_motion，并标记 realization_scope="
+        "presentation_only、逐项记录 realization_assumptions。"
+        "presentation inference 禁止进入 source_fact、summary、action 或 source evidence。"
+        "insufficient_visual_evidence 不得生成 Shot，交由程序进行 evidence regroup。"
         "不得把 video_end_state 写成下一 Beat 的结果，不得重复前一 Shot 已完成的结果。"
         "如果 Beat 带 adjacent_projection 且 relation=forward_with_replayed_prefix，"
         "说明其证据已被系统裁剪为重复前缀之后的新后续；Shot 必须只制作这个新后续，"
         "video_start_state 不得回到上一 Shot 已经完成之前的状态。"
-        "三个 Prompt 是程序派生字段：image_prompt←representative_state，"
-        "video_start_prompt←video_start_state，video_prompt←start→end；"
+        "三个 Prompt 是程序按 temporal_mode 派生字段；"
         "模型不应把 Prompt 当成独立语义事实。"
         "人物/道具只填画面真实可见的 ALLOWED entity id；不确定必须留空，"
         "禁止 Beat/Scene 兜底。"
@@ -6308,9 +6652,12 @@ async def _generate_rows(
             (
                 "\n\nSTRICT_SCHEMA_RETRY："
                 "只返回 {\"shots\":[...]}。"
-                "每个 Shot 必须包含非空 summary、covered_beat_orders、source_evidence_ids、"
-                "representative_state、video_start_state、video_end_state、"
-                "image_prompt、video_start_prompt、video_prompt。"
+                "每个 Shot 必须包含 temporal_mode 及其 evidence/reason、非空 summary、"
+                "covered_beat_orders、source_evidence_ids、"
+                "observable_transition 必须包含三个 distinct narrative state；"
+                "static_outcome 必须包含 stable narrative_state、source_fact 和完整"
+                " presentation-only visual realization/frames/motion。"
+                "三个 Prompt 由程序按 mode 生成。"
             ),
             2600,
             0.0,
@@ -6332,24 +6679,7 @@ async def _generate_rows(
                 ),
                 system_prompt=_system_prompt(),
                 prompt=prompt + suffix,
-                contract=(
-                    '{"shots":[{'
-                    '"title":"",'
-                    '"duration_seconds":3,'
-                    '"summary":"",'
-                    '"action":"",'
-                    '"representative_state":"",'
-                    '"video_start_state":"",'
-                    '"video_end_state":"",'
-                    '"image_prompt":"",'
-                    '"video_start_prompt":"",'
-                    '"video_prompt":"",'
-                    '"covered_beat_orders":[1],'
-                    '"source_evidence_ids":["C01E001"],'
-                    '"character_entity_ids":[],'
-                    '"prop_entity_ids":[]'
-                    '}]}'
-                ),
+                contract=_shot_generation_contract(1),
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
@@ -6879,18 +7209,63 @@ async def _produce_batch(
                 "V2.39.5: single-Beat scope 缺少合法 Beat order"
             )
 
-        rows = await _generate_missing_beat_shots(
-            env,
-            missing_orders=[target_order],
-            compact_beats=compact_beats,
-            anchors=anchors,
-            previous_shot=previous_shot,
-            next_beat=next_beat,
-            allowed_chars=allowed_chars,
-            allowed_props=allowed_props,
-            scene_id=str(scene.get("scene_id") or ""),
-            episode_id=str(scene.get("episode_id") or ""),
-        )
+        try:
+            rows = await _generate_missing_beat_shots(
+                env,
+                missing_orders=[target_order],
+                compact_beats=compact_beats,
+                anchors=anchors,
+                previous_shot=previous_shot,
+                next_beat=next_beat,
+                allowed_chars=allowed_chars,
+                allowed_props=allowed_props,
+                scene_id=str(scene.get("scene_id") or ""),
+                episode_id=str(scene.get("episode_id") or ""),
+            )
+        except Stage04ShotRepairError as exc:
+            if str(exc.metadata.get("evidence_sufficiency") or "") != (
+                "insufficient_visual_evidence"
+            ):
+                raise
+            # The model has produced a valid semantic routing decision. Reuse
+            # the existing one-shot regroup/regenerate/final-audit recovery;
+            # never retry the same insufficient evidence payload.
+            rows, audit = await _recover_single_beat_after_scoped_repair(
+                env,
+                source=source,
+                target_beat=batch[0],
+                all_beats=all_beats,
+                current_compact_beats=compact_beats,
+                current_anchors=anchors,
+                previous_shot=previous_shot,
+                next_beat=next_beat,
+                allowed_chars=allowed_chars,
+                allowed_props=allowed_props,
+                scene_id=str(scene.get("scene_id") or ""),
+                episode_id=str(scene.get("episode_id") or ""),
+                audit_fn=audit_fn,
+                prior_metadata=copy.deepcopy(exc.metadata),
+            )
+            if previous_shot and rows:
+                boundary = await _boundary_audit(
+                    env,
+                    previous_shot=previous_shot,
+                    current_shot=rows[0],
+                )
+                if not boundary.get("valid"):
+                    raise Stage04ShotRepairError(
+                        "insufficient evidence regroup 后跨 Shot 边界审计失败："
+                        + _audit_issues(boundary),
+                        metadata={
+                            **copy.deepcopy(exc.metadata),
+                            "repair_progress": "regroup_boundary_audit_failed",
+                            "boundary_audit": copy.deepcopy(boundary),
+                        },
+                    )
+                rows[0]["forward_overlap_audit"] = copy.deepcopy(boundary)
+            for row in rows:
+                row["source_audit"] = copy.deepcopy(audit)
+            return rows
     else:
         raw_rows = await _generate_rows(
             env,
@@ -6900,18 +7275,51 @@ async def _produce_batch(
             batch_index=batch_index,
             batch_total=batch_total,
         )
-        rows = await _validate_initial_rows_with_recovery(
-            env,
-            raw_rows=raw_rows,
-            compact_beats=compact_beats,
-            anchors=anchors,
-            previous_shot=previous_shot,
-            next_beat=next_beat,
-            allowed_chars=allowed_chars,
-            allowed_props=allowed_props,
-            scene_id=str(scene.get("scene_id") or ""),
-            episode_id=str(scene.get("episode_id") or ""),
-        )
+        try:
+            rows = await _validate_initial_rows_with_recovery(
+                env,
+                raw_rows=raw_rows,
+                compact_beats=compact_beats,
+                anchors=anchors,
+                previous_shot=previous_shot,
+                next_beat=next_beat,
+                allowed_chars=allowed_chars,
+                allowed_props=allowed_props,
+                scene_id=str(scene.get("scene_id") or ""),
+                episode_id=str(scene.get("episode_id") or ""),
+            )
+        except Stage04ShotRepairError as exc:
+            if str(exc.metadata.get("evidence_sufficiency") or "") != (
+                "insufficient_visual_evidence"
+            ):
+                raise
+            # Recover at one-Beat scope so each insufficient classification
+            # gets exactly one adjacent-evidence regroup budget.
+            sequential: list[dict[str, Any]] = []
+            local_previous = previous_shot
+            for single in batch:
+                single_rows = await _produce_batch(
+                    env,
+                    batch=[single],
+                    all_beats=all_beats,
+                    batch_index=batch_index,
+                    batch_total=batch_total,
+                    source=source,
+                    scene=scene,
+                    scene_index=scene_index,
+                    scene_total=scene_total,
+                    previous_shot=local_previous,
+                    allowed_chars=allowed_chars,
+                    allowed_props=allowed_props,
+                    entity_rows=entity_rows,
+                    resolved_text=resolved_text,
+                    character_anchor=character_anchor,
+                    visual_anchor=visual_anchor,
+                    user_input=user_input,
+                )
+                sequential.extend(single_rows)
+                local_previous = sequential[-1]
+            return sequential
     rows = await _ensure_batch_coverage(
         env,
         rows=rows,
@@ -7240,6 +7648,30 @@ def _scene_audit_compact_shot(
                 row.get("summary")
                 or ""
             )[:420],
+        "temporal_mode":
+            str(row.get("temporal_mode") or ""),
+        "source_fact":
+            str(row.get("source_fact") or "")[:420],
+        "narrative_start_state":
+            str(row.get("narrative_start_state") or "")[:500],
+        "narrative_state":
+            str(row.get("narrative_state") or "")[:500],
+        "narrative_end_state":
+            str(row.get("narrative_end_state") or "")[:500],
+        "visual_realization":
+            str(row.get("visual_realization") or "")[:500],
+        "realization_scope":
+            str(row.get("realization_scope") or ""),
+        "realization_assumptions":
+            list(row.get("realization_assumptions") or []),
+        "visual_start_frame":
+            str(row.get("visual_start_frame") or "")[:500],
+        "representative_frame":
+            str(row.get("representative_frame") or "")[:500],
+        "visual_end_frame":
+            str(row.get("visual_end_frame") or "")[:500],
+        "visual_motion":
+            str(row.get("visual_motion") or "")[:500],
         "representative_state":
             str(
                 row.get(
@@ -7370,6 +7802,7 @@ async def _scene_global_audit(
         "no_result_duplication",
         "state_order_valid",
         "entity_visibility_valid",
+        "visual_realization_valid",
     )
 
     beat_map = {
@@ -7458,9 +7891,12 @@ async def _scene_global_audit(
             "CURRENT_WINDOW 中每个 Shot 的 source_evidence 是该 Shot 的事实最高权威。"
             "PRIOR_ACCEPTED_HISTORY 用于检查跨窗口时间连续和非相邻结果重复，"
             "不能作为 CURRENT_WINDOW 新事实来源。"
-            "必须检查七个 boolean：evidence_entailment_ok、beat_coverage_ok、"
+            "必须检查八个 boolean：evidence_entailment_ok、beat_coverage_ok、"
             "temporal_monotonic、no_future_event_preconsumption、"
-            "no_result_duplication、state_order_valid、entity_visibility_valid。"
+            "no_result_duplication、state_order_valid、entity_visibility_valid、"
+            "visual_realization_valid。observable_transition 保持动态三状态严格规则；"
+            "static_outcome 必须保持 narrative state 稳定，并严格验证 presentation-only "
+            "visual realization 不增加角色、道具、事件、结果、未来事件或关系变化。"
             "若失败，violations 每项必须带全 Scene 的 shot_index。"
             "不得依据题材关键词或固定业务类别。只输出严格 JSON。"
         )
@@ -7505,7 +7941,7 @@ async def _scene_global_audit(
                         if attempt == 0
                         else (
                             "\n\nSTRICT_SCHEMA_RETRY："
-                            "必须完整返回 valid + 七个 boolean + violations。"
+                            "必须完整返回 valid + 八个 boolean + violations。"
                         )
                     )
                 ),
@@ -7518,6 +7954,7 @@ async def _scene_global_audit(
                     '"no_result_duplication":true,'
                     '"state_order_valid":true,'
                     '"entity_visibility_valid":true,'
+                    '"visual_realization_valid":true,'
                     '"violations":[]}'
                 ),
                 max_tokens=1300,
@@ -7857,9 +8294,13 @@ async def _repair_scene_shot_from_evidence(
     system_prompt = (
         "你是 strict-shot-v2 Scene 最终 evidence-locked 修复器。"
         "当前 Shot 的 source evidence 和 covered Beat 已锁定。"
-        "只允许根据 EXACT_SELECTED_EVIDENCE 重写 summary、action、"
-        "video_start_state、representative_state、video_end_state "
-        "和当前可见 entity IDs。"
+        "必须保持 CURRENT_SHOT_LOCKED.temporal_mode。observable_transition 只允许根据"
+        " EXACT_SELECTED_EVIDENCE 重写 summary、action、video_start_state、"
+        "representative_state、video_end_state 和当前可见 entity IDs。"
+        "static_outcome 的 source_fact/summary/narrative state 已锁定，不得重写；"
+        "只允许修正 presentation-only visual_realization、realization_assumptions、"
+        "visual_start_frame、representative_frame、visual_end_frame、visual_motion，"
+        "且不得新增角色、道具、剧情事件、结果、未来事件或关系变化。"
         "PRIOR_HISTORY / NEXT_SHOT_CONTEXT 只用于消除时间倒退和结果重复，"
         "不能成为当前 Shot 新事实来源。"
         "不得修改 duration_seconds、Beat/evidence 绑定。"
@@ -7868,7 +8309,13 @@ async def _repair_scene_shot_from_evidence(
     )
 
     prompt = (
-        "=== EXACT_SELECTED_EVIDENCE ===\n"
+        "=== CURRENT_SHOT_LOCKED ===\n"
+        + json.dumps(
+            _scene_audit_compact_shot(row, shot_index, include_evidence=True),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        + "\n\n=== EXACT_SELECTED_EVIDENCE ===\n"
         + json.dumps(
             anchors,
             ensure_ascii=False,
@@ -7900,6 +8347,19 @@ async def _repair_scene_shot_from_evidence(
         )
     )
 
+    static_mode = _shot_temporal_mode(row) == "static_outcome"
+    repair_contract = (
+        '{"shot":{"visual_realization":"","realization_scope":"presentation_only",'
+        '"realization_assumptions":[],"visual_start_frame":"",'
+        '"representative_frame":"","visual_end_frame":"","visual_motion":""}}'
+        if static_mode
+        else (
+            '{"shot":{"summary":"","action":"","representative_state":"",'
+            '"video_start_state":"","video_end_state":"",'
+            '"character_entity_ids":[],"prop_entity_ids":[]}}'
+        )
+    )
+
     raw, parsed, _ = await _qwen(
         env,
         phase=(
@@ -7909,17 +8369,7 @@ async def _repair_scene_shot_from_evidence(
         system_prompt=
             system_prompt,
         prompt=prompt,
-        contract=(
-            '{"shot":{'
-            '"summary":"",'
-            '"action":"",'
-            '"representative_state":"",'
-            '"video_start_state":"",'
-            '"video_end_state":"",'
-            '"character_entity_ids":[],'
-            '"prop_entity_ids":[]'
-            '}}'
-        ),
+        contract=repair_contract,
         max_tokens=1400,
         temperature=0.0,
     )
@@ -7964,10 +8414,18 @@ async def _repair_scene_shot_from_evidence(
             f"V2.39.5: Scene repair Shot#{shot_index} 没有可恢复结构化输出"
         )
 
-    merged = _merge_shot_repair_patch(
-        row,
-        candidate,
-        writable_fields=(
+    writable_fields = (
+        (
+            "visual_realization",
+            "realization_scope",
+            "realization_assumptions",
+            "visual_start_frame",
+            "representative_frame",
+            "visual_end_frame",
+            "visual_motion",
+        )
+        if static_mode
+        else (
             "summary",
             "action",
             "representative_state",
@@ -7975,7 +8433,12 @@ async def _repair_scene_shot_from_evidence(
             "video_end_state",
             "character_entity_ids",
             "prop_entity_ids",
-        ),
+        )
+    )
+    merged = _merge_shot_repair_patch(
+        row,
+        candidate,
+        writable_fields=writable_fields,
     )
 
     merged[
@@ -8608,6 +9071,19 @@ def _commit_formal_shots(
             "source_evidence_ids": list(shot.get("source_evidence_ids") or []),
             "source_evidence": list(shot.get("source_evidence") or []),
             "source_evidence_spans": list(shot.get("source_evidence_spans") or []),
+            "temporal_mode": str(shot.get("temporal_mode") or ""),
+            "temporal_mode_reason": str(shot.get("temporal_mode_reason") or ""),
+            "temporal_mode_evidence_ids": list(
+                shot.get("temporal_mode_evidence_ids") or []
+            ),
+            "temporal_mode_source_spans": copy.deepcopy(
+                shot.get("temporal_mode_source_spans") or []
+            ),
+            "source_fact": str(shot.get("source_fact") or ""),
+            "realization_scope": str(shot.get("realization_scope") or ""),
+            "realization_assumptions": list(
+                shot.get("realization_assumptions") or []
+            ),
         }
         continuity_meta = {
             "scene_id": scene_id,
@@ -8624,6 +9100,20 @@ def _commit_formal_shots(
             "representative_state": shot.get("representative_state"),
             "video_start_state": shot.get("video_start_state"),
             "video_end_state": shot.get("video_end_state"),
+            "temporal_mode": shot.get("temporal_mode"),
+            "source_fact": shot.get("source_fact"),
+            "narrative_start_state": shot.get("narrative_start_state"),
+            "narrative_state": shot.get("narrative_state"),
+            "narrative_end_state": shot.get("narrative_end_state"),
+            "visual_realization": shot.get("visual_realization"),
+            "realization_scope": shot.get("realization_scope"),
+            "realization_assumptions": list(
+                shot.get("realization_assumptions") or []
+            ),
+            "visual_start_frame": shot.get("visual_start_frame"),
+            "representative_frame": shot.get("representative_frame"),
+            "visual_end_frame": shot.get("visual_end_frame"),
+            "visual_motion": shot.get("visual_motion"),
             "image_prompt": shot.get("image_prompt"),
             "video_start_prompt": shot.get("video_start_prompt"),
             "video_prompt": shot.get("video_prompt"),
@@ -8681,6 +9171,27 @@ def _commit_formal_shots(
             "sequence": scene_sequence * 1000 + local_order,
             "duration_seconds": shot.get("duration_seconds"),
             "summary": str(shot.get("summary") or ""),
+            "temporal_mode": str(shot.get("temporal_mode") or ""),
+            "temporal_mode_reason": str(shot.get("temporal_mode_reason") or ""),
+            "temporal_mode_evidence_ids": list(
+                shot.get("temporal_mode_evidence_ids") or []
+            ),
+            "temporal_mode_source_spans": copy.deepcopy(
+                shot.get("temporal_mode_source_spans") or []
+            ),
+            "source_fact": str(shot.get("source_fact") or ""),
+            "narrative_start_state": str(shot.get("narrative_start_state") or ""),
+            "narrative_state": str(shot.get("narrative_state") or ""),
+            "narrative_end_state": str(shot.get("narrative_end_state") or ""),
+            "visual_realization": str(shot.get("visual_realization") or ""),
+            "realization_scope": str(shot.get("realization_scope") or ""),
+            "realization_assumptions": list(
+                shot.get("realization_assumptions") or []
+            ),
+            "visual_start_frame": str(shot.get("visual_start_frame") or ""),
+            "representative_frame": str(shot.get("representative_frame") or ""),
+            "visual_end_frame": str(shot.get("visual_end_frame") or ""),
+            "visual_motion": str(shot.get("visual_motion") or ""),
             "composition": str(shot.get("composition") or ""),
             "shot_size": str(shot.get("shot_size") or ""),
             "camera": str(shot.get("camera") or ""),

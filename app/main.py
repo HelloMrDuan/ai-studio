@@ -4228,15 +4228,56 @@ def _studio_v2371_require_strict_shot(shot: dict) -> None:
     representative = str(shot.get("representative_state") or "").strip()
     video_start = str(shot.get("video_start_state") or "").strip()
     video_end = str(shot.get("video_end_state") or "").strip()
-    if str(shot.get("image_prompt") or "").strip() != representative:
-        raise ValueError("image_prompt 与 representative_state 不闭合")
-    if str(shot.get("video_start_prompt") or "").strip() != video_start:
-        raise ValueError("video_start_prompt 与 video_start_state 不闭合")
-    if str(shot.get("video_prompt") or "").strip() != f"起始状态：{video_start}\n结束状态：{video_end}":
-        raise ValueError("video_prompt 与 start→end 状态不闭合")
+    temporal_mode = str(shot.get("temporal_mode") or "observable_transition").strip()
+    if temporal_mode not in {
+        "observable_transition", "static_outcome",
+    }:
+        raise ValueError("当前镜头 temporal_mode 不可供 Stage05 制作")
+    if shot.get("temporal_mode"):
+        if not str(shot.get("temporal_mode_reason") or "").strip():
+            raise ValueError("当前镜头缺少 temporal_mode evidence reason")
+        if not list(shot.get("temporal_mode_evidence_ids") or []):
+            raise ValueError("当前镜头缺少 temporal_mode evidence binding")
+    if temporal_mode == "static_outcome":
+        static_required = (
+            "source_fact", "narrative_start_state", "narrative_state",
+            "narrative_end_state", "visual_realization", "visual_start_frame",
+            "representative_frame", "visual_end_frame", "visual_motion",
+        )
+        static_missing = [
+            key for key in static_required
+            if not str(shot.get(key) or "").strip()
+        ]
+        if static_missing:
+            raise ValueError(
+                "static_outcome 制作合同不完整：" + ", ".join(static_missing)
+            )
+        if str(shot.get("realization_scope") or "") != "presentation_only":
+            raise ValueError("static_outcome realization_scope 未锁定为 presentation_only")
+        narrative_states = {
+            str(shot.get(key) or "").strip()
+            for key in (
+                "narrative_start_state", "narrative_state", "narrative_end_state",
+            )
+        }
+        if "" in narrative_states or len(narrative_states) != 1:
+            raise ValueError("static_outcome narrative state 不稳定")
+    runtime = globals().get("_stage04_v238_runtime")
+    compiler = getattr(runtime, "compile_prompts_for_locked_shot", None)
+    if not callable(compiler):
+        raise ValueError("Stage04 mode-aware Prompt compiler 不可用")
+    compiled = compiler(shot)
+    for field in ("image_prompt", "video_start_prompt", "video_prompt"):
+        if str(shot.get(field) or "").strip() != str(compiled.get(field) or "").strip():
+            raise ValueError(f"{field} 与 temporal_mode 锁定状态不闭合")
     provenance = shot.get("source_provenance") or {}
     if not isinstance(provenance, dict) or not provenance.get("source_evidence"):
         raise ValueError("当前镜头缺少 Shot 级小说原文依据")
+    if shot.get("temporal_mode"):
+        if str(provenance.get("temporal_mode") or "") != temporal_mode:
+            raise ValueError("Stage05 source provenance 与 temporal_mode 不闭合")
+        if str(provenance.get("source_fact") or "") != str(shot.get("source_fact") or ""):
+            raise ValueError("Stage05 source provenance 与 source_fact 不闭合")
     for field in ("batch_audit", "narrative_audit", "scene_global_audit", "forward_overlap_audit"):
         audit = shot.get(field) or {}
         if not isinstance(audit, dict) or audit.get("valid") is not True:
@@ -7395,6 +7436,20 @@ def _studio_shot_contract_payload(shot: dict) -> dict:
         ),
         "title": _studio_v237_cut(shot.get("title"), 120),
         "summary": _studio_v237_cut(shot.get("summary"), 420),
+        "temporal_mode": str(shot.get("temporal_mode") or "observable_transition"),
+        "temporal_mode_reason": _studio_v237_cut(shot.get("temporal_mode_reason"), 420),
+        "temporal_mode_evidence_ids": list(shot.get("temporal_mode_evidence_ids") or []),
+        "source_fact": _studio_v237_cut(shot.get("source_fact"), 420),
+        "narrative_start_state": _studio_v237_cut(shot.get("narrative_start_state"), 680),
+        "narrative_state": _studio_v237_cut(shot.get("narrative_state"), 680),
+        "narrative_end_state": _studio_v237_cut(shot.get("narrative_end_state"), 680),
+        "visual_realization": _studio_v237_cut(shot.get("visual_realization"), 680),
+        "realization_scope": str(shot.get("realization_scope") or ""),
+        "realization_assumptions": list(shot.get("realization_assumptions") or []),
+        "visual_start_frame": _studio_v237_cut(shot.get("visual_start_frame"), 680),
+        "representative_frame": _studio_v237_cut(shot.get("representative_frame"), 680),
+        "visual_end_frame": _studio_v237_cut(shot.get("visual_end_frame"), 680),
+        "visual_motion": _studio_v237_cut(shot.get("visual_motion"), 680),
         "duration_seconds": shot.get("duration_seconds"),
         "composition": _studio_v237_cut(shot.get("composition"), 240),
         "shot_size": _studio_v237_cut(shot.get("shot_size"), 100),
@@ -17419,6 +17474,34 @@ def _studio_v2377_shot_audit_rows(
             row.get("summary"),
         "action":
             row.get("action"),
+        "temporal_mode":
+            row.get("temporal_mode"),
+        "temporal_mode_reason":
+            row.get("temporal_mode_reason"),
+        "temporal_mode_evidence_ids":
+            row.get("temporal_mode_evidence_ids"),
+        "source_fact":
+            row.get("source_fact"),
+        "narrative_start_state":
+            row.get("narrative_start_state"),
+        "narrative_state":
+            row.get("narrative_state"),
+        "narrative_end_state":
+            row.get("narrative_end_state"),
+        "visual_realization":
+            row.get("visual_realization"),
+        "realization_scope":
+            row.get("realization_scope"),
+        "realization_assumptions":
+            row.get("realization_assumptions"),
+        "visual_start_frame":
+            row.get("visual_start_frame"),
+        "representative_frame":
+            row.get("representative_frame"),
+        "visual_end_frame":
+            row.get("visual_end_frame"),
+        "visual_motion":
+            row.get("visual_motion"),
         "representative_state":
             row.get(
                 "representative_state"
@@ -17476,22 +17559,29 @@ async def _studio_v2377_complete_shot_audit_schema(
         "no_result_duplication",
         "state_order_valid",
         "entity_visibility_valid",
+        "visual_realization_valid",
     )
 
     system_prompt = (
-        "你是 strict-shot-v2 七维审计器。"
+        "你是 strict-shot-v2 mode-aware 八维审计器。"
         "前一次审计返回了不完整 schema；"
         "你必须重新独立审计，不能仅把 prior_audit 缺失字段机械补 true/false。"
         "每个 Shot 自己的 source_evidence 是叙事事实最高权威；"
         "covered Beat 只能概括这些证据；"
         "较宽 context 只能理解连续性，不能替 Shot 补充未选证据中的事件。"
-        "必须逐项检查并显式返回七个 boolean："
+        "必须逐项检查并显式返回八个 boolean："
         "evidence_entailment_ok、beat_coverage_ok、temporal_monotonic、"
         "no_future_event_preconsumption、no_result_duplication、"
-        "state_order_valid、entity_visibility_valid。"
+        "state_order_valid、entity_visibility_valid、visual_realization_valid。"
+        "observable_transition 继续严格要求三个 narrative state 证据支持、互不相同且因果向前。"
+        "static_outcome 必须要求 source_fact/summary/narrative_state 被证据直接支持，"
+        "narrative_start_state=narrative_state=narrative_end_state；不能因其稳定而判 state_order 失败。"
+        "其 visual realization/frames/motion 是 presentation-only，不得当作 source fact；"
+        "visual_realization_valid 只在它不新增角色、道具、剧情事件、因果结果、未来事件或关系变化，"
+        "且表现帧可供制作区分时为 true。insufficient_visual_evidence 不应进入 Shot audit。"
         "如果任一项为 false，violations 必须写出具体 Shot/Beat/证据和原因；"
-        "如果七项全部 true，violations 必须为空数组。"
-        "valid 必须等于七项全部 true 且 violations 为空。"
+        "如果八项全部 true，violations 必须为空数组。"
+        "valid 必须等于八项全部 true 且 violations 为空。"
         "禁止省略字段，禁止只返回 valid/reasons。只输出严格 JSON。"
     )
 
@@ -17547,8 +17637,8 @@ async def _studio_v2377_complete_shot_audit_schema(
                             if attempt == 0
                             else (
                                 "\n\nSTRICT_SCHEMA_RETRY："
-                                "必须完整返回 valid + 七个 *_ok + violations；"
-                                "不得返回 reasons 替代七个 boolean。"
+                                "必须完整返回 valid + 八个 *_ok + violations；"
+                                "不得返回 reasons 替代八个 boolean。"
                             )
                         ),
                 }],
@@ -17565,6 +17655,7 @@ async def _studio_v2377_complete_shot_audit_schema(
                     '"no_result_duplication":true,'
                     '"state_order_valid":true,'
                     '"entity_visibility_valid":true,'
+                    '"visual_realization_valid":true,'
                     '"violations":[]}'
                 ),
             )
@@ -17647,7 +17738,7 @@ async def _studio_v2377_complete_shot_audit_schema(
     return {
         "valid": False,
         "violations": [
-            "Shot 七维审计连续返回不完整 schema；"
+            "Shot 八维审计连续返回不完整 schema；"
             + " | ".join(
                 diagnostics
             )
@@ -17671,6 +17762,7 @@ async def _studio_v2371_audit_batch(
         "no_result_duplication",
         "state_order_valid",
         "entity_visibility_valid",
+        "visual_realization_valid",
     )
 
     audit_rows = (
@@ -17686,15 +17778,20 @@ async def _studio_v2371_audit_batch(
         "只能帮助理解前后关系，绝不能用来替 Shot 补一个其已选择证据中"
         "不存在的事件。"
         "必须检查："
-        "1. evidence_entailment：summary/action/三状态/三个 Prompt "
+        "1. evidence_entailment：source_fact/summary/action/narrative states "
         "均被该 Shot 自己的 source_evidence 和 covered Beat 直接支持；"
         "2. Beat 显式覆盖；"
         "3. 时间单调，不提前消费后续事件；"
         "4. 不重复播放已经完成的结果；"
-        "5. video_start→representative→video_end 因果顺序成立；"
-        "6. representative 是当前 Beat 的信息帧；"
-        "7. 角色/道具 ID 只表示该 Shot 真实涉及的实体。"
-        "必须显式返回七个 *_ok boolean 和 violations；"
+        "5. temporal_mode=observable_transition 时，video_start→representative→video_end "
+        "继续要求互不相同且因果顺序成立；temporal_mode=static_outcome 时，"
+        "narrative_start/state/end 必须相同，不能强造 narrative transition；"
+        "6. observable 的 representative 是当前 Beat 信息帧；static 的 presentation frames "
+        "必须可区分但只能改变构图、机位、光影、环境/镜头运动等表现；"
+        "7. 角色/道具 ID 只表示该 Shot 真实涉及的实体；"
+        "8. visual_realization_valid 仅在 presentation inference 不新增角色、道具、剧情事件、"
+        "因果结果、未来事件、关系变化，且没有泄漏到 source_fact/summary/action 时为 true。"
+        "必须显式返回八个 *_ok boolean 和 violations；"
         "任意一项不满足必须 valid=false，并写出具体 violations。"
         "只返回严格 JSON。"
     )
@@ -17741,6 +17838,7 @@ async def _studio_v2371_audit_batch(
                 '"no_result_duplication":true,'
                 '"state_order_valid":true,'
                 '"entity_visibility_valid":true,'
+                '"visual_realization_valid":true,'
                 '"violations":[]}'
             ),
         )

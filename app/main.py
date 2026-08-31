@@ -6270,7 +6270,7 @@ def _studio_stage04_progress(
         str(project.get("project_id") or ""), recover_orphan=False,
     )
     task_status = str(task.get("status") or "").lower()
-    if task_status not in {"starting", "warming", "queued", "running", "completed", "failed"}:
+    if task_status not in {"starting", "warming", "queued", "running", "persisting", "completed", "failed"}:
         pipeline = ((project.get("stage_state") or {}).get("04") or {}).get("studio_stage04_pipeline") or {}
         if pipeline.get("ready") is True:
             base.update({
@@ -6279,24 +6279,47 @@ def _studio_stage04_progress(
                 "source": "stage04_pipeline",
             })
         return base
-    total = max(1, int(task.get("scene_total") or 1))
-    done = max(0, min(int(task.get("scene_done") or 0), total))
+    phase_names = [
+        "Narrative analysis",
+        "Beat / evidence",
+        "Shot generation",
+        "Strict audit / repair",
+        "Regroup recovery",
+        "Persistence / finalize",
+    ]
+    phase_total = int(task.get("phase_total") or 0)
+    phase_index = int(task.get("phase_index") or 0)
+    phase_aware = phase_total > 0 and phase_index > 0
+    total = max(1, phase_total if phase_aware else int(task.get("scene_total") or 1))
+    done = max(0, min(
+        phase_index - 1 if phase_aware else int(task.get("scene_done") or 0),
+        total,
+    ))
     if task_status == "completed":
         done = total
     percent = 100 if task_status == "completed" else int(done * 100 / total)
-    if task_status in {"starting", "warming", "queued", "running"} and percent == 0:
+    if task_status in {"starting", "warming", "queued", "running", "persisting"} and percent == 0:
         percent = 5
+    completed_items = (
+        phase_names[:done]
+        if phase_aware
+        else [f"场景 {index}" for index in range(1, done + 1)]
+    )
+    current_step_name = str(task.get("phase_name") or "") if phase_aware else ""
     row = _studio_progress_row(
         "04", status="ready" if task_status == "completed" else (
             "failed" if task_status == "failed" else "running"
         ),
-        current_step=total if task_status == "completed" else min(total, done + 1),
-        total_steps=total, percent=percent,
-        completed_items=[f"场景 {index}" for index in range(1, done + 1)],
+        current_step=total if task_status == "completed" else (
+            min(total, phase_index) if phase_aware else min(total, done + 1)
+        ),
+        total_steps=total, completed_steps=done, percent=percent,
+        current_step_name=current_step_name,
+        completed_items=completed_items,
         current_item="分镜生成完成，等待确认进入制作" if task_status == "completed"
         else str(task.get("message") or "正在处理分镜"),
         eta_seconds=_studio_progress_eta(str(task.get("created_at") or ""), percent)
-        if task_status in {"starting", "warming", "queued", "running"} else None,
+        if task_status in {"starting", "warming", "queued", "running", "persisting"} else None,
         source="stage04_rebuild_task",
     )
     if task_status == "failed":

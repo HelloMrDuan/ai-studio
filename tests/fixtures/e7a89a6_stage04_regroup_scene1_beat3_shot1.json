@@ -1,0 +1,99 @@
+{
+  "origin": {
+    "task_id": "s04rebuild_dc02976824adce89",
+    "scene_id": "scene-1",
+    "runtime_version": "2.39.6.3-stage04-full-pipeline-preflight"
+  },
+  "source": "一个少年在雪山寻找失落古剑，\n途中遇到守护神兽，\n最终获得认可。",
+  "previous_beat": {
+    "order": 2,
+    "summary": "少年途中遇到守护神兽。",
+    "state_change": "少年从独自寻剑推进到与守护神兽相遇。",
+    "source_evidence": ["途中遇到守护神兽，"],
+    "source_evidence_spans": [
+      {"id": "C01E002", "start": 15, "end": 24, "text": "途中遇到守护神兽，"}
+    ],
+    "character_entity_ids": [],
+    "prop_entity_ids": []
+  },
+  "target_beat": {
+    "order": 3,
+    "summary": "少年最终获得守护神兽的认可。",
+    "state_change": "少年最终获得守护神兽的认可。",
+    "source_evidence": ["最终获得认可。"],
+    "source_evidence_spans": [
+      {"id": "C01E003", "start": 25, "end": 32, "text": "最终获得认可。"}
+    ],
+    "character_entity_ids": [],
+    "prop_entity_ids": []
+  },
+  "anchor": {
+    "id": "E001",
+    "text": "最终获得认可。",
+    "beat_order": 3,
+    "source_start": 25,
+    "source_end": 32
+  },
+  "covered_beat": {
+    "order": 3,
+    "summary": "少年最终获得守护神兽的认可。",
+    "state_change": "少年最终获得守护神兽的认可。",
+    "allowed_source_evidence_ids": ["E001"],
+    "source_evidence_ids": ["E001"],
+    "source_evidence": ["最终获得认可。"],
+    "source_evidence_spans": [
+      {"id": "E001", "start": 25, "end": 32, "text": "最终获得认可。"}
+    ],
+    "character_entity_ids": [],
+    "prop_entity_ids": []
+  },
+  "pre_repair_shot": {
+    "shot_id": "Shot 1",
+    "title": "获得认可",
+    "duration_seconds": 3,
+    "summary": "少年与守护神兽完成互动，获得认可。",
+    "action": "少年与守护神兽完成互动，获得认可。",
+    "video_start_state": "少年与守护神兽完成初次互动，准备接受最终认可。",
+    "representative_state": "少年与守护神兽完成互动，获得认可。",
+    "video_end_state": "最终获得认可。",
+    "image_prompt": "少年与守护神兽完成互动，获得认可。",
+    "video_start_prompt": "少年与守护神兽完成初次互动，准备接受最终认可。",
+    "video_prompt": "少年与守护神兽完成初次互动，准备接受最终认可。 -> 最终获得认可。",
+    "covered_beat_orders": [3],
+    "source_evidence_ids": ["E001"],
+    "source_evidence": ["最终获得认可。"],
+    "source_evidence_spans": [
+      {"id": "E001", "start": 25, "end": 32, "text": "最终获得认可。"}
+    ],
+    "character_entity_ids": [],
+    "prop_entity_ids": []
+  },
+  "audit": {
+    "valid": false,
+    "evidence_entailment_ok": false,
+    "beat_coverage_ok": true,
+    "temporal_order_ok": true,
+    "no_future_event_preconsumption": false,
+    "no_result_duplication": true,
+    "state_order_valid": true,
+    "entity_visibility_valid": true,
+    "violations": [
+      "evidence_entailment: '少年与守护神兽完成互动，获得认可。' 和 '准备接受最终认可。' 引入了 source_evidence 中不存在的事件。",
+      "no_future_event_preconsumption: '准备接受最终认可。' 提前消费了尚未发生的事件。"
+    ]
+  },
+  "repair_patch": {
+    "summary": "少年与守护神兽完成互动，获得认可。",
+    "action": "少年与守护神兽完成互动，获得认可。",
+    "video_start_state": "少年与守护神兽完成初次互动，准备接受最终认可。",
+    "representative_state": "少年与守护神兽完成互动，获得认可。",
+    "video_end_state": "最终获得认可。"
+  },
+  "post_repair_states": {
+    "video_start_state": "少年与守护神兽完成初次互动，准备接受最终认可。",
+    "representative_state": "少年与守护神兽完成互动，获得认可。",
+    "video_end_state": "最终获得认可。"
+  },
+  "repair_progress": "needs_regrouping_or_evidence_selection",
+  "regroup_decision": "previous_adjacent_evidence_expansion"
+}

@@ -4685,11 +4685,49 @@ def _issues_for_shot(
     if not isinstance(issues, list):
         return []
 
+    normalized: list[dict[str, Any]] = [
+        copy.deepcopy(issue)
+        for issue in issues
+        if isinstance(issue, dict)
+    ]
+
+    # The ACTIVE Qwen audit may return human-readable violation strings while
+    # its rule booleans remain the machine authority. Recover canonical codes
+    # from explicit false flags so repair/recovery never sees an empty rule set.
+    string_violations = [
+        str(issue).strip()
+        for issue in issues
+        if isinstance(issue, str) and str(issue).strip()
+    ]
+    flag_codes = (
+        ("evidence_entailment_ok", "evidence_entailment"),
+        ("beat_coverage_ok", "beat_coverage"),
+        ("temporal_order_ok", "state_order"),
+        ("no_future_event_preconsumption", "future_preconsumption"),
+        ("no_result_duplication", "no_result_duplication"),
+        ("state_order_valid", "state_order"),
+        ("entity_visibility_valid", "entity_visibility"),
+    )
+    if string_violations:
+        for flag, code in flag_codes:
+            if audit.get(flag) is False:
+                normalized.append({
+                    "code": code,
+                    "shot_index": shot_index,
+                    "message": " | ".join(string_violations),
+                    "source": f"audit_flag:{flag}",
+                })
+        if not normalized:
+            normalized.append({
+                "code": "unknown",
+                "shot_index": shot_index,
+                "message": " | ".join(string_violations),
+                "source": "audit_string_violation",
+            })
+
     exact: list[dict[str, Any]] = []
 
-    for issue in issues:
-        if not isinstance(issue, dict):
-            continue
+    for issue in normalized:
 
         try:
             value = int(
@@ -4709,7 +4747,7 @@ def _issues_for_shot(
 
     return [
         copy.deepcopy(issue)
-        for issue in issues
+        for issue in normalized
         if isinstance(issue, dict)
     ]
 
@@ -4926,6 +4964,365 @@ def _repair_failure_metadata(
         "evidence_sufficiency": evidence_sufficiency,
         "regroup_reason": regroup_reason,
     }
+
+
+_SHOT_RECOVERY_BUDGET = {
+    "scoped_repair": 1,
+    "evidence_regroup": 1,
+    "shot_regeneration": 1,
+    "final_strict_audit": 1,
+}
+
+
+def _stage04_progress(
+    env: dict[str, Any],
+    phase_index: int,
+    phase_name: str,
+    message: str,
+) -> None:
+    callback = env.get("_studio_stage04_progress_update")
+    if callable(callback):
+        callback(
+            phase_index=phase_index,
+            phase_total=6,
+            phase_name=phase_name,
+            message=message,
+        )
+
+
+def _evidence_fingerprint(
+    *,
+    compact_beats: list[dict[str, Any]],
+    anchors: list[dict[str, Any]],
+) -> str:
+    beat_rows = []
+    for beat in compact_beats or []:
+        if not isinstance(beat, dict):
+            continue
+        beat_rows.append({
+            "beat_id": int(beat.get("order") or 0),
+            "lineage_beat_orders": list(_orders(
+                beat.get("lineage_beat_orders") or [beat.get("order")]
+            )),
+            "evidence_ids": list(_id_list(
+                beat.get("allowed_source_evidence_ids")
+                or beat.get("source_evidence_ids")
+            )),
+            "source_spans": copy.deepcopy(
+                beat.get("source_evidence_spans") or []
+            ),
+            "source_evidence_hash": hashlib.sha256(
+                json.dumps(
+                    beat.get("source_evidence") or [],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        })
+    anchor_rows = [
+        {
+            "anchor_id": str(anchor.get("id") or ""),
+            "beat_order": int(anchor.get("beat_order") or 0),
+            "source_start": int(anchor.get("source_start") or 0),
+            "source_end": int(anchor.get("source_end") or 0),
+            "text_hash": hashlib.sha256(
+                str(anchor.get("text") or "").encode("utf-8")
+            ).hexdigest(),
+        }
+        for anchor in anchors or []
+        if isinstance(anchor, dict)
+    ]
+    return hashlib.sha256(
+        json.dumps(
+            {"beats": beat_rows, "anchors": anchor_rows},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _reselect_adjacent_evidence(
+    env: dict[str, Any],
+    *,
+    source: str,
+    target_beat: dict[str, Any],
+    all_beats: list[dict[str, Any]],
+    current_compact_beats: list[dict[str, Any]],
+    current_anchors: list[dict[str, Any]],
+) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    target_order = int(target_beat.get("order") or 0)
+    previous_beat = next((
+        beat for beat in all_beats
+        if isinstance(beat, dict)
+        and int(beat.get("order") or 0) == target_order - 1
+    ), None)
+    before = _evidence_fingerprint(
+        compact_beats=current_compact_beats,
+        anchors=current_anchors,
+    )
+    metadata = {
+        "recovery_budget": copy.deepcopy(_SHOT_RECOVERY_BUDGET),
+        "recovery_usage": {
+            "scoped_repair": 1,
+            "evidence_regroup": 1,
+            "shot_regeneration": 0,
+            "final_strict_audit": 0,
+        },
+        "evidence_fingerprint_before": before,
+        "recovery_scope": {
+            "target_beat_order": target_order,
+            "adjacent_beat_order": target_order - 1,
+            "mode": "previous_adjacent_evidence_expansion",
+        },
+    }
+    if previous_beat is None:
+        metadata.update({
+            "repair_progress": "evidence_regroup_no_progress",
+            "regroup_reason": "no previous adjacent Beat is available",
+            "evidence_fingerprint_after": before,
+        })
+        raise Stage04ShotRepairError(
+            f"Beat {target_order} evidence regroup 无可用前向相邻证据",
+            metadata=metadata,
+        )
+
+    evidence_builder = env.get("_studio_v2371e_batch_evidence")
+    if not callable(evidence_builder):
+        raise RuntimeError("V2.39.5: Beat→Shot evidence builder 不可用")
+    source_window, recovered_anchors, mapping = evidence_builder(
+        source=source,
+        batch=[previous_beat, target_beat],
+        max_context_chars=1900,
+    )
+    expanded_ids = list(dict.fromkeys([
+        *(mapping.get(target_order - 1) or []),
+        *(mapping.get(target_order) or []),
+    ]))
+    target_compact = copy.deepcopy(next((
+        beat for beat in current_compact_beats
+        if int(beat.get("order") or 0) == target_order
+    ), _compact_beats([target_beat], mapping)[0]))
+    target_compact.update({
+        "allowed_source_evidence_ids": expanded_ids,
+        "source_evidence_ids": expanded_ids,
+        "source_evidence": [
+            str(anchor.get("text") or "")
+            for anchor in recovered_anchors
+            if str(anchor.get("id") or "") in expanded_ids
+        ],
+        "source_evidence_spans": [
+            {
+                "id": str(anchor.get("id") or ""),
+                "start": int(anchor.get("source_start") or 0),
+                "end": int(anchor.get("source_end") or 0),
+                "text": str(anchor.get("text") or ""),
+            }
+            for anchor in recovered_anchors
+            if str(anchor.get("id") or "") in expanded_ids
+        ],
+        "lineage_beat_orders": [target_order - 1, target_order],
+        "evidence_recovery": "previous_adjacent_evidence_expansion",
+    })
+    recovered_compact = [target_compact]
+    after = _evidence_fingerprint(
+        compact_beats=recovered_compact,
+        anchors=recovered_anchors,
+    )
+    metadata["evidence_fingerprint_after"] = after
+    metadata["reselected_evidence_ids"] = expanded_ids
+    old_ids = set(_id_list(
+        current_compact_beats[0].get("allowed_source_evidence_ids")
+        if current_compact_beats else []
+    ))
+    if after == before or not (set(expanded_ids) - old_ids):
+        metadata.update({
+            "repair_progress": "evidence_regroup_no_progress",
+            "regroup_reason": "adjacent evidence fingerprint did not change",
+        })
+        raise Stage04ShotRepairError(
+            f"Beat {target_order} evidence_regroup_no_progress",
+            metadata=metadata,
+        )
+    return source_window, recovered_anchors, recovered_compact, metadata
+
+
+async def _regenerate_shot_from_reselected_evidence(
+    env: dict[str, Any],
+    *,
+    target_order: int,
+    compact_beat: dict[str, Any],
+    anchors: list[dict[str, Any]],
+    previous_shot: dict[str, Any] | None,
+    next_beat: dict[str, Any] | None,
+    allowed_chars: set[str],
+    allowed_props: set[str],
+    scene_id: str,
+    episode_id: str,
+) -> list[dict[str, Any]]:
+    allowed_ids = set(_id_list(
+        compact_beat.get("allowed_source_evidence_ids")
+    ))
+    allowed_anchors = [
+        copy.deepcopy(anchor)
+        for anchor in anchors
+        if str(anchor.get("id") or "") in allowed_ids
+    ]
+    system_prompt = (
+        "你是 strict-shot-v2 局部 evidence regroup 后的 Shot 重生器。"
+        "必须基于 RESELECTED_EVIDENCE 重新生成一个全新 Shot，不能 patch OLD_SHOT。"
+        "只覆盖 TARGET_BEAT；source_evidence_ids 只能从允许列表选择。"
+        "video_start_state→representative_state→video_end_state 必须形成可由证据直接支持的"
+        "可见前向状态链；不得重复 PREVIOUS_ACCEPTED_SHOT，不得消费 NEXT_BEAT。"
+        "必须包含完整 strict-shot-v2 字段并只返回严格 JSON。"
+    )
+    prompt = (
+        "=== TARGET_BEAT_WITH_RESELECTED_EVIDENCE ===\n"
+        + json.dumps(compact_beat, ensure_ascii=False, separators=(",", ":"))
+        + "\n\n=== RESELECTED_EVIDENCE ===\n"
+        + json.dumps(allowed_anchors, ensure_ascii=False, separators=(",", ":"))
+        + "\n\n=== PREVIOUS_ACCEPTED_SHOT ===\n"
+        + json.dumps(previous_shot or {}, ensure_ascii=False, separators=(",", ":"))
+        + "\n\n=== NEXT_BEAT_PREVIEW_DO_NOT_CONSUME ===\n"
+        + json.dumps(next_beat or {}, ensure_ascii=False, separators=(",", ":"))
+    )
+    raw, parsed, _ = await _qwen(
+        env,
+        phase="studio_stage04_regroup_shot_regeneration_qwen32b",
+        system_prompt=system_prompt,
+        prompt=prompt,
+        contract=(
+            '{"shots":[{"title":"","duration_seconds":3,'
+            '"summary":"","action":"","representative_state":"",'
+            '"video_start_state":"","video_end_state":"",'
+            '"image_prompt":"","video_start_prompt":"","video_prompt":"",'
+            f'"covered_beat_orders":[{target_order}],'
+            '"source_evidence_ids":["E001"],'
+            '"character_entity_ids":[],"prop_entity_ids":[]}]}'
+        ),
+        max_tokens=1700,
+        temperature=0.0,
+    )
+    candidates = _extract_shots(env, raw, parsed)
+    if not candidates:
+        raise RuntimeError("regroup Shot regeneration 未返回 Shot")
+    return validate_rows(
+        env,
+        raw_rows=candidates,
+        compact_beats=[compact_beat],
+        allowed_chars=allowed_chars,
+        allowed_props=allowed_props,
+        anchors=allowed_anchors,
+        scene_id=scene_id,
+        episode_id=episode_id,
+    )
+
+
+async def _recover_single_beat_after_scoped_repair(
+    env: dict[str, Any],
+    *,
+    source: str,
+    target_beat: dict[str, Any],
+    all_beats: list[dict[str, Any]],
+    current_compact_beats: list[dict[str, Any]],
+    current_anchors: list[dict[str, Any]],
+    previous_shot: dict[str, Any] | None,
+    next_beat: dict[str, Any] | None,
+    allowed_chars: set[str],
+    allowed_props: set[str],
+    scene_id: str,
+    episode_id: str,
+    audit_fn: Any,
+    prior_metadata: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    target_order = int(target_beat.get("order") or 0)
+    _stage04_progress(
+        env, 5, "Regroup recovery", "正在重新选择镜头证据"
+    )
+    try:
+        source_window, anchors, compact_beats, recovery = (
+            _reselect_adjacent_evidence(
+                env,
+                source=source,
+                target_beat=target_beat,
+                all_beats=all_beats,
+                current_compact_beats=current_compact_beats,
+                current_anchors=current_anchors,
+            )
+        )
+    except Stage04ShotRepairError as exc:
+        recovery = copy.deepcopy(exc.metadata)
+        recovery["prior_repair"] = copy.deepcopy(prior_metadata)
+        for key in (
+            "shot_id",
+            "beat_id",
+            "failed_rules",
+            "raw_violations",
+            "source_evidence",
+            "covered_beat",
+            "evidence_ids",
+            "source_spans",
+        ):
+            if key not in recovery and key in prior_metadata:
+                recovery[key] = copy.deepcopy(prior_metadata[key])
+        raise Stage04ShotRepairError(
+            str(exc),
+            metadata=recovery,
+        ) from exc
+    recovery["prior_repair"] = copy.deepcopy(prior_metadata)
+    for key in (
+        "shot_id",
+        "beat_id",
+        "failed_rules",
+        "raw_violations",
+    ):
+        if key in prior_metadata:
+            recovery[key] = copy.deepcopy(prior_metadata[key])
+    recovery["recovery_usage"]["shot_regeneration"] = 1
+    try:
+        regenerated = await _regenerate_shot_from_reselected_evidence(
+            env,
+            target_order=target_order,
+            compact_beat=compact_beats[0],
+            anchors=anchors,
+            previous_shot=previous_shot,
+            next_beat=next_beat,
+            allowed_chars=allowed_chars,
+            allowed_props=allowed_props,
+            scene_id=scene_id,
+            episode_id=episode_id,
+        )
+    except Exception as exc:
+        recovery.update({
+            "repair_progress": "shot_regeneration_failed",
+            "regroup_reason": f"{type(exc).__name__}: {exc}",
+        })
+        raise Stage04ShotRepairError(
+            f"Beat {target_order} 使用新 evidence 重生 Shot 失败：{exc}",
+            metadata=recovery,
+        ) from exc
+    recovery["recovery_usage"]["final_strict_audit"] = 1
+    final_audit = await audit_fn(
+        source_window=source_window,
+        compact_beats=compact_beats,
+        shots=regenerated,
+    )
+    recovery["final_audit"] = copy.deepcopy(final_audit)
+    if not _audit_ok(env, final_audit):
+        recovery.update({
+            "repair_progress": "regenerated_shot_failed_strict_audit",
+            "regroup_reason": "regenerated Shot did not pass strict-shot-v2",
+        })
+        raise Stage04ShotRepairError(
+            f"Beat {target_order} 新 evidence Shot 仍未通过 strict-shot-v2："
+            + _audit_issues(final_audit),
+            metadata=recovery,
+        )
+    recovery["repair_progress"] = "regenerated_shot_passed_strict_audit"
+    for row in regenerated:
+        row["_regroup_recovery_diagnostics"] = copy.deepcopy(recovery)
+    return regenerated, final_audit
 
 
 async def _repair_batch(
@@ -6527,6 +6924,9 @@ async def _produce_batch(
         scene_id=str(scene.get("scene_id") or ""),
         episode_id=str(scene.get("episode_id") or ""),
     )
+    _stage04_progress(
+        env, 4, "Strict audit / repair", "正在执行严格分镜审计与定向修复"
+    )
     audit = await audit_fn(source_window=source_window, compact_beats=compact_beats, shots=rows)
 
     repair_failure: Stage04ShotRepairError | None = None
@@ -6650,40 +7050,66 @@ async def _produce_batch(
                 sequential.extend(single_rows)
                 local_previous = sequential[-1]
             return sequential
-        issues = _issues_for_shot(audit, 1)
-        metadata = copy.deepcopy(last_repair_metadata)
-        if not metadata:
-            metadata = _repair_failure_metadata(
-                shot_index=1,
-                current=rows[0],
-                issues=issues,
-                candidate=None,
-                post=None,
-                progress="audit_failed_without_valid_patch",
-                exact_evidence=_locked_evidence_rows(rows[0], anchors),
-                covered_beats=_locked_covered_beats(rows[0], compact_beats),
-                regroup_reason="strict audit failed without a valid scoped patch",
+        recovery_progress = str(
+            last_repair_metadata.get("repair_progress") or ""
+        )
+        if repair_failure is not None and recovery_progress in {
+            "needs_regrouping_or_evidence_selection",
+            "no_semantic_progress",
+        }:
+            rows, audit = await _recover_single_beat_after_scoped_repair(
+                env,
+                source=source,
+                target_beat=batch[0],
+                all_beats=all_beats,
+                current_compact_beats=compact_beats,
+                current_anchors=anchors,
+                previous_shot=previous_shot,
+                next_beat=next_beat,
+                allowed_chars=allowed_chars,
+                allowed_props=allowed_props,
+                scene_id=str(scene.get("scene_id") or ""),
+                episode_id=str(scene.get("episode_id") or ""),
+                audit_fn=audit_fn,
+                prior_metadata=last_repair_metadata,
             )
-        metadata["failed_rules"] = list(dict.fromkeys([
-            *metadata.get("failed_rules", []),
-            *[
-                _canonical_audit_code(issue)
-                for issue in issues
-                if isinstance(issue, dict)
-            ],
-        ]))
-        metadata["audit"] = copy.deepcopy(audit)
-        detail = (
-            str(repair_failure)
-            if repair_failure is not None
-            else _audit_issues(audit)
-        )
-        raise Stage04ShotRepairError(
-            f"场景 {scene_index}/{scene_total} Beat {int(batch[0].get('order') or 0)} "
-            "定向修复后仍未通过 strict-shot-v2 审计："
-            + detail,
-            metadata=metadata,
-        )
+        if _audit_ok(env, audit):
+            repair_failure = None
+        else:
+            issues = _issues_for_shot(audit, 1)
+            metadata = copy.deepcopy(last_repair_metadata)
+            if not metadata:
+                metadata = _repair_failure_metadata(
+                    shot_index=1,
+                    current=rows[0],
+                    issues=issues,
+                    candidate=None,
+                    post=None,
+                    progress="audit_failed_without_valid_patch",
+                    exact_evidence=_locked_evidence_rows(rows[0], anchors),
+                    covered_beats=_locked_covered_beats(rows[0], compact_beats),
+                    regroup_reason="strict audit failed without a valid scoped patch",
+                )
+            metadata["failed_rules"] = list(dict.fromkeys([
+                *metadata.get("failed_rules", []),
+                *[
+                    _canonical_audit_code(issue)
+                    for issue in issues
+                    if isinstance(issue, dict)
+                ],
+            ]))
+            metadata["audit"] = copy.deepcopy(audit)
+            detail = (
+                str(repair_failure)
+                if repair_failure is not None
+                else _audit_issues(audit)
+            )
+            raise Stage04ShotRepairError(
+                f"场景 {scene_index}/{scene_total} Beat {int(batch[0].get('order') or 0)} "
+                "定向修复及受控 evidence recovery 后仍未通过 strict-shot-v2 审计："
+                + detail,
+                metadata=metadata,
+            )
 
     # Cross-batch boundary is mandatory and independently audited.
     if previous_shot and rows:
@@ -7671,6 +8097,10 @@ async def scene_shots(
         )
     )
 
+    _stage04_progress(
+        env, 2, "Beat / evidence", "Narrative Beat 已确认，正在绑定镜头证据"
+    )
+
     if not beats:
         raise RuntimeError(
             f"场景 {scene_index}/{scene_total} "
@@ -7750,6 +8180,12 @@ async def scene_shots(
             else None
         )
 
+        _stage04_progress(
+            env,
+            3,
+            "Shot generation",
+            f"正在生成详细分镜批次 {batch_index + 1}/{len(batches)}",
+        )
         batch_started = time.perf_counter()
         try:
             rows = await _produce_batch(
@@ -8333,6 +8769,19 @@ async def rebuild(env: dict[str, Any], project_id: str, task_id: str) -> None:
         all_shots: list[dict[str, Any]] = []
         scene_stats: list[dict[str, Any]] = []
 
+        def progress_update(**values: Any) -> None:
+            task.update({
+                "status": "running",
+                "phase_index": int(values.get("phase_index") or 1),
+                "phase_total": int(values.get("phase_total") or 6),
+                "phase_name": str(values.get("phase_name") or "Stage04"),
+                "message": str(values.get("message") or "正在处理分镜"),
+                "updated_at": env["_studio_now"](),
+            })
+            _persist_rebuild_task(env, task)
+
+        env["_studio_stage04_progress_update"] = progress_update
+
         for index, scene in enumerate(scenes, 1):
             scene_started = time.perf_counter()
             profile["_current_scene_index"] = index
@@ -8345,6 +8794,12 @@ async def rebuild(env: dict[str, Any], project_id: str, task_id: str) -> None:
                 "updated_at": env["_studio_now"](),
             })
             _persist_rebuild_task(env, task)
+            _stage04_progress(
+                env,
+                1,
+                "Narrative analysis",
+                f"正在分析场景叙事 {index}/{len(scenes)}",
+            )
             try:
                 rows = await scene_shots(
                     env,
@@ -8391,6 +8846,9 @@ async def rebuild(env: dict[str, Any], project_id: str, task_id: str) -> None:
             raise RuntimeError("V2.39.5: 严格详细分镜为空")
 
         # Nothing persistent has been mutated before this point.
+        _stage04_progress(
+            env, 6, "Persistence / finalize", "严格校验通过，正在原子写入正式分镜"
+        )
         task.update({
             "status": "persisting",
             "message": "Stage04 validation complete; atomically switching canonical data",
@@ -8538,6 +8996,7 @@ async def rebuild(env: dict[str, Any], project_id: str, task_id: str) -> None:
             if workspace_guard_entered and workspace_guard is not None:
                 await workspace_guard.__aexit__(None, None, None)
         finally:
+            env.pop("_studio_stage04_progress_update", None)
             profile.pop("_workspace_guard_active", None)
             profile.pop("_current_scene_index", None)
             final_profile = _perf_finalize(

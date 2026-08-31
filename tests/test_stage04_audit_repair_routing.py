@@ -283,7 +283,7 @@ class AuditViolationRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(audit_calls, 2)
         self.assertEqual(
             captured.exception.metadata["repair_progress"],
-            "needs_regrouping_or_evidence_selection",
+            "evidence_regroup_no_progress",
         )
 
 

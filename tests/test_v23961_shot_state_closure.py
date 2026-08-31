@@ -147,23 +147,26 @@ class ShotStateClosureTests(unittest.IsolatedAsyncioTestCase):
             }
             return parsed, parsed, {}
 
-        repaired = await runtime._repair_batch(
-            {"_studio_v2371a_qwen_call": qwen_call},
-            current_rows=[current],
-            audit={
-                "valid": False,
-                "violations": [{"shot_index": 1, "type": "evidence"}],
-            },
-            source_window="",
-            anchors=[_anchor()],
-            compact_beats=[_beat()],
-            previous_shot=None,
-            next_beat=None,
-        )
+        with self.assertRaises(runtime.Stage04ShotRepairError) as captured:
+            await runtime._repair_batch(
+                {"_studio_v2371a_qwen_call": qwen_call},
+                current_rows=[current],
+                audit={
+                    "valid": False,
+                    "violations": [{"shot_index": 1, "type": "evidence"}],
+                },
+                source_window="",
+                anchors=[_anchor()],
+                compact_beats=[_beat()],
+                previous_shot=None,
+                next_beat=None,
+            )
 
+        self.assertEqual(captured.exception.metadata["pre_repair_states"], original_states)
+        self.assertEqual(captured.exception.metadata["post_repair_states"], original_states)
         self.assertEqual(
-            {field: repaired[0][field] for field in runtime._SHOT_STATE_FIELDS},
-            original_states,
+            captured.exception.metadata["repair_progress"],
+            "needs_regrouping_or_evidence_selection",
         )
 
     async def test_partial_field_repair_closes_only_missing_state(self):
@@ -252,23 +255,27 @@ class ShotStateClosureTests(unittest.IsolatedAsyncioTestCase):
             }
             return parsed, parsed, {}
 
-        repaired = await runtime._repair_batch(
-            {"_studio_v2371a_qwen_call": qwen_call},
-            current_rows=[first, second],
-            audit={
-                "valid": False,
-                "violations": [{"shot_index": 1, "type": "evidence"}],
-            },
-            source_window="",
-            anchors=[_anchor()],
-            compact_beats=[_beat()],
-            previous_shot=None,
-            next_beat=None,
-        )
+        with self.assertRaises(runtime.Stage04ShotRepairError) as captured:
+            await runtime._repair_batch(
+                {"_studio_v2371a_qwen_call": qwen_call},
+                current_rows=[first, second],
+                audit={
+                    "valid": False,
+                    "violations": [{"shot_index": 1, "type": "evidence"}],
+                },
+                source_window="",
+                anchors=[_anchor()],
+                compact_beats=[_beat()],
+                previous_shot=None,
+                next_beat=None,
+            )
 
         self.assertEqual(calls, 1)
-        self.assertEqual(repaired[1], second)
-        self.assertFalse(runtime._missing_shot_state_fields(repaired[0]))
+        self.assertEqual(second["summary"], "第二个已验收 Shot")
+        self.assertEqual(
+            captured.exception.metadata["repair_progress"],
+            "needs_regrouping_or_evidence_selection",
+        )
 
 
 class ShotStateStaticRegressionTests(unittest.TestCase):

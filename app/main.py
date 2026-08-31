@@ -6226,6 +6226,7 @@ def _studio_core_stage_progress(
 _STUDIO_STAGE04_FAILURE_LABELS = {
     "no_result_duplication": "起始/代表/结束状态没有形成时间推进",
     "causal_order": "起始/代表/结束状态没有形成时间推进",
+    "state_order": "代表状态到结束状态没有形成可证明的时间推进",
     "representative_state": "起始/代表/结束状态没有形成时间推进",
     "redundant_representation": "三类提示词重复",
     "evidence_entailment": "证据投影不满足约束",

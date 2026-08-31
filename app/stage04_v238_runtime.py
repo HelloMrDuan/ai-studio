@@ -4714,6 +4714,26 @@ def _issues_for_shot(
     ]
 
 
+def _audit_repair_signature(
+    audit: dict[str, Any],
+    *,
+    row_count: int,
+) -> tuple[tuple[int, tuple[str, ...]], ...]:
+    return tuple(
+        (
+            shot_index,
+            tuple(sorted({
+                _canonical_audit_code(issue)
+                for issue in _issues_for_shot(audit, shot_index)
+            })),
+        )
+        for shot_index in _audit_target_shot_indices(
+            audit,
+            row_count=row_count,
+        )
+    )
+
+
 def _locked_evidence_rows(
     row: dict[str, Any],
     anchors: list[dict[str, Any]],
@@ -4752,18 +4772,65 @@ def _locked_covered_beats(
     ]
 
 
+_AUDIT_CODE_ALIASES: dict[str, str] = {
+    "state_order_violation": "state_order",
+    "state_order_valid": "state_order",
+    "causal_order": "state_order",
+    "evidence_entailment_violation": "evidence_entailment",
+    "no_result_duplication_violation": "no_result_duplication",
+    "redundant_representation_violation": "redundant_representation",
+    "representative_state_violation": "representative_state",
+    "entity_visibility_violation": "entity_visibility",
+    "future_preconsumption": "future_preconsumption",
+    "no_future_event_preconsumption": "future_preconsumption",
+    "future_preconsumption_violation": "future_preconsumption",
+    "beat_coverage_violation": "beat_coverage",
+}
+
+
+def _canonical_audit_code(issue: dict[str, Any]) -> str:
+    """Normalize ACTIVE audit variants without hiding a known rule as unknown."""
+    if not isinstance(issue, dict):
+        return "unknown"
+    raw_values: list[str] = []
+    for key in ("code", "type", "rule", "violation_type"):
+        raw = str(issue.get(key) or "").strip().casefold()
+        if raw:
+            raw_values.append(
+                re.sub(r"[\s\-]+", "_", raw).strip("_")
+            )
+    for raw in raw_values:
+        canonical = _AUDIT_CODE_ALIASES.get(raw, raw)
+        if canonical in _REPAIR_CODE_FIELDS:
+            return canonical
+        if raw.endswith("_violation"):
+            canonical = raw[: -len("_violation")]
+            if canonical in _REPAIR_CODE_FIELDS:
+                return canonical
+    return "unknown"
+
+
 _REPAIR_CODE_FIELDS: dict[str, tuple[str, ...]] = {
     "evidence_entailment": (
         "summary",
         "action",
         *_SHOT_TEMPORAL_STATE_FIELDS,
     ),
-    "causal_order": _SHOT_TEMPORAL_STATE_FIELDS,
     "no_result_duplication": _SHOT_TEMPORAL_STATE_FIELDS,
     "redundant_representation": _SHOT_TEMPORAL_STATE_FIELDS,
-    "representative_state": _SHOT_TEMPORAL_STATE_FIELDS,
-    "state_order": _SHOT_TEMPORAL_STATE_FIELDS,
+    "representative_state": ("representative_state",),
+    # ACTIVE audit's state_order_violation means the accepted start/core
+    # states stay locked and only the failed core -> end transition is repaired.
+    "state_order": ("video_end_state",),
     "state_handoff": _SHOT_TEMPORAL_STATE_FIELDS,
+    "future_preconsumption": (
+        "summary",
+        "action",
+        *_SHOT_TEMPORAL_STATE_FIELDS,
+    ),
+    # Beat/evidence bindings are immutable in directional repair. A coverage
+    # failure therefore routes to regroup/evidence selection without an LLM call.
+    "beat_coverage": (),
     "entity_visibility": (
         "character_entity_ids",
         "prop_entity_ids",
@@ -4778,16 +4845,22 @@ def _repair_fields_for_issues(
     for issue in issues or []:
         if not isinstance(issue, dict):
             continue
-        code = str(issue.get("code") or "").strip().lower()
-        for known, fields in _REPAIR_CODE_FIELDS.items():
-            if code == known or known in code:
-                for field in fields:
-                    if field not in result:
-                        result.append(field)
+        code = _canonical_audit_code(issue)
+        fields = _REPAIR_CODE_FIELDS.get(code)
+        if fields is None:
+            continue
+        for field in fields:
+            if field not in result:
+                result.append(field)
 
-    # An unstructured audit cannot authorize a broad rewrite. The three state
-    # fields are the smallest safe semantic scope for a directional repair.
-    if not result:
+    recognized = any(
+        _canonical_audit_code(issue) != "unknown"
+        for issue in issues or []
+        if isinstance(issue, dict)
+    )
+    # A genuinely unstructured audit cannot authorize a broad rewrite. The
+    # three state fields remain the smallest conservative legacy scope.
+    if not result and not recognized:
         result.extend(_SHOT_TEMPORAL_STATE_FIELDS)
     return tuple(result)
 
@@ -4811,6 +4884,10 @@ def _repair_failure_metadata(
     candidate: dict[str, Any] | None,
     post: dict[str, Any] | None,
     progress: str,
+    exact_evidence: list[dict[str, Any]] | None = None,
+    covered_beats: list[dict[str, Any]] | None = None,
+    evidence_sufficiency: str = "undetermined",
+    regroup_reason: str = "",
 ) -> dict[str, Any]:
     candidate = candidate if isinstance(candidate, dict) else {}
     post = post if isinstance(post, dict) else current
@@ -4819,10 +4896,22 @@ def _repair_failure_metadata(
         "shot_id": str(current.get("shot_id") or f"Shot {shot_index}"),
         "beat_id": list(_orders(current.get("covered_beat_orders"))),
         "failed_rules": list(dict.fromkeys(
-            str(issue.get("code") or "unknown")
+            _canonical_audit_code(issue)
             for issue in issues
             if isinstance(issue, dict)
         )),
+        "raw_violations": copy.deepcopy(issues),
+        "source_evidence": copy.deepcopy(
+            current.get("source_evidence")
+            or [row.get("text") for row in (exact_evidence or [])]
+        ),
+        "covered_beat": copy.deepcopy(covered_beats or []),
+        "evidence_ids": list(_id_list(current.get("source_evidence_ids"))),
+        "source_spans": copy.deepcopy(
+            current.get("source_evidence_spans")
+            or exact_evidence
+            or []
+        ),
         "pre_repair_states": _shot_state_snapshot(current),
         "repair_patch": copy.deepcopy(candidate),
         "post_repair_states": _shot_state_snapshot(post),
@@ -4834,6 +4923,8 @@ def _repair_failure_metadata(
             if current.get(field) != post.get(field)
         ],
         "repair_progress": progress,
+        "evidence_sufficiency": evidence_sufficiency,
+        "regroup_reason": regroup_reason,
     }
 
 
@@ -4944,6 +5035,50 @@ async def _repair_batch(
         repair_fields = _repair_fields_for_issues(
             shot_issues
         )
+        routed_issues = [
+            {
+                **copy.deepcopy(issue),
+                "repair_code": _canonical_audit_code(issue),
+                "repair_fields": list(
+                    _REPAIR_CODE_FIELDS.get(
+                        _canonical_audit_code(issue),
+                        _SHOT_TEMPORAL_STATE_FIELDS,
+                    )
+                ),
+                **(
+                    {
+                        "failed_transition":
+                            "representative_state_to_video_end_state"
+                    }
+                    if _canonical_audit_code(issue) == "state_order"
+                    else {}
+                ),
+            }
+            for issue in shot_issues
+            if isinstance(issue, dict)
+        ]
+
+        if not repair_fields:
+            metadata = _repair_failure_metadata(
+                shot_index=shot_index,
+                current=current,
+                issues=shot_issues,
+                candidate=None,
+                post=None,
+                progress="needs_regrouping_or_evidence_selection",
+                exact_evidence=exact_evidence,
+                covered_beats=covered_beats,
+                evidence_sufficiency="insufficient_for_locked_directional_repair",
+                regroup_reason=(
+                    "audit rule requires Beat/evidence coverage changes that "
+                    "directional repair is not allowed to make"
+                ),
+            )
+            raise Stage04ShotRepairError(
+                f"V2.39.5: Shot#{shot_index} 必须回到 grouping/evidence selection；"
+                "锁定字段级 repair 无权修改 Beat/evidence binding",
+                metadata=metadata,
+            )
 
         current_shot = {
             field: copy.deepcopy(current.get(field))
@@ -4969,6 +5104,10 @@ async def _repair_batch(
             "LOCKED_COVERED_BEATS 规定需要表达的状态变化，但不能扩大证据事实边界。"
             "video_start_state→representative_state→video_end_state "
             "必须形成同一 Shot 的前向状态链。"
+            "状态必须是从证据中可直接观察、可拍摄的 physical/visual state，"
+            "不能用抽象动作阶段、未来意图或叙事概括伪造时间推进。"
+            "若 FAILED_TRANSITION 仅为 representative_state_to_video_end_state，"
+            "必须锁定 start 和 representative，只返回 evidence 支持的 end。"
             "不得提前消费 NEXT_BEAT_PREVIEW_DO_NOT_CONSUME，"
             "不得重复 PREVIOUS_ACCEPTED_SHOT 已完成的结果。"
             "若证据不足以形成三个不同的前向时间状态，不得复制证据或同一状态三次，"
@@ -5006,7 +5145,7 @@ async def _repair_batch(
             )
             + "\n\n=== FAILED_AUDIT_RULES ===\n"
             + json.dumps(
-                shot_issues,
+                routed_issues,
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
@@ -5053,6 +5192,9 @@ async def _repair_batch(
                 candidate=None,
                 post=None,
                 progress="qwen_call_failed",
+                exact_evidence=exact_evidence,
+                covered_beats=covered_beats,
+                regroup_reason="scoped repair Qwen call failed",
             )
             raise Stage04ShotRepairError(
                 f"V2.39.5: Shot#{shot_index} evidence-locked repair 调用失败："
@@ -5081,14 +5223,33 @@ async def _repair_batch(
             and field in candidate
         }
 
-        if not candidate:
+        usable_candidate = any(
+            (
+                isinstance(candidate.get(field), str)
+                and bool(str(candidate.get(field) or "").strip())
+            )
+            or (
+                field.endswith("_entity_ids")
+                and isinstance(candidate.get(field), list)
+            )
+            for field in repair_fields
+        ) if isinstance(candidate, dict) else False
+
+        if not candidate or not usable_candidate:
             metadata = _repair_failure_metadata(
                 shot_index=shot_index,
                 current=current,
                 issues=shot_issues,
-                candidate=None,
+                candidate=candidate,
                 post=None,
                 progress="needs_regrouping_or_evidence_selection",
+                exact_evidence=exact_evidence,
+                covered_beats=covered_beats,
+                evidence_sufficiency="insufficient",
+                regroup_reason=(
+                    "scoped repair returned no evidence-supported value for "
+                    + ", ".join(repair_fields)
+                ),
             )
             raise Stage04ShotRepairError(
                 f"V2.39.5: Shot#{shot_index} directional repair 没有可用字段；"
@@ -5110,6 +5271,10 @@ async def _repair_batch(
                 candidate=candidate,
                 post=(getattr(exc, "metadata", {}) or {}).get("post") or current,
                 progress="needs_regrouping_or_evidence_selection",
+                exact_evidence=exact_evidence,
+                covered_beats=covered_beats,
+                evidence_sufficiency="insufficient_or_invalid_projection",
+                regroup_reason="scoped repair violated strict-shot-v2 invariants",
             )
             metadata.update(getattr(exc, "metadata", {}) or {})
             metadata["repair_progress"] = (
@@ -5118,7 +5283,7 @@ async def _repair_batch(
             metadata["failed_rules"] = list(dict.fromkeys([
                 *metadata.get("failed_rules", []),
                 *[
-                    str(issue.get("code") or "unknown")
+                    _canonical_audit_code(issue)
                     for issue in shot_issues
                     if isinstance(issue, dict)
                 ],
@@ -5131,6 +5296,29 @@ async def _repair_batch(
         repaired["covered_beat_orders"] = locked_orders
         repaired["source_evidence_ids"] = locked_evidence_ids
 
+        semantic_changed = (
+            _shot_semantic_fingerprint(repaired)
+            != _shot_semantic_fingerprint(current)
+        )
+        if not semantic_changed:
+            metadata = _repair_failure_metadata(
+                shot_index=shot_index,
+                current=current,
+                issues=shot_issues,
+                candidate=candidate,
+                post=repaired,
+                progress="needs_regrouping_or_evidence_selection",
+                exact_evidence=exact_evidence,
+                covered_beats=covered_beats,
+                evidence_sufficiency="undetermined_after_scoped_repair",
+                regroup_reason="scoped repair made no semantic progress",
+            )
+            raise Stage04ShotRepairError(
+                f"V2.39.5: Shot#{shot_index} scoped repair 无语义进展；"
+                "拒绝重复相同请求并回到 grouping/evidence selection",
+                metadata=metadata,
+            )
+
         repaired["_directional_repair_diagnostics"] = (
             _repair_failure_metadata(
                 shot_index=shot_index,
@@ -5138,12 +5326,10 @@ async def _repair_batch(
                 issues=shot_issues,
                 candidate=candidate,
                 post=repaired,
-                progress=(
-                    "semantic_fields_changed"
-                    if _shot_semantic_fingerprint(repaired)
-                    != _shot_semantic_fingerprint(current)
-                    else "no_semantic_progress"
-                ),
+                progress="semantic_fields_changed",
+                exact_evidence=exact_evidence,
+                covered_beats=covered_beats,
+                evidence_sufficiency="sufficient_for_scoped_repair",
             )
         )
         result[index] = repaired
@@ -6345,8 +6531,31 @@ async def _produce_batch(
 
     repair_failure: Stage04ShotRepairError | None = None
     last_repair_metadata: dict[str, Any] = {}
+    attempted_repair_signatures: set[
+        tuple[tuple[int, tuple[str, ...]], ...]
+    ] = set()
     if not _audit_ok(env, audit):
         for _ in range(2):
+            repair_signature = _audit_repair_signature(
+                audit,
+                row_count=len(rows),
+            )
+            if repair_signature in attempted_repair_signatures:
+                last_repair_metadata.update({
+                    "repair_progress":
+                        "needs_regrouping_or_evidence_selection",
+                    "evidence_sufficiency":
+                        "undetermined_after_scoped_repair",
+                    "regroup_reason":
+                        "same audit violation remained after one scoped repair",
+                })
+                repair_failure = Stage04ShotRepairError(
+                    "同一 audit violation 已执行一次 scoped repair；"
+                    "拒绝重复相同路径并回到 grouping/evidence selection",
+                    metadata=last_repair_metadata,
+                )
+                break
+            attempted_repair_signatures.add(repair_signature)
             before_fingerprint = tuple(
                 _shot_semantic_fingerprint(row)
                 for row in rows
@@ -6451,11 +6660,14 @@ async def _produce_batch(
                 candidate=None,
                 post=None,
                 progress="audit_failed_without_valid_patch",
+                exact_evidence=_locked_evidence_rows(rows[0], anchors),
+                covered_beats=_locked_covered_beats(rows[0], compact_beats),
+                regroup_reason="strict audit failed without a valid scoped patch",
             )
         metadata["failed_rules"] = list(dict.fromkeys([
             *metadata.get("failed_rules", []),
             *[
-                str(issue.get("code") or "unknown")
+                _canonical_audit_code(issue)
                 for issue in issues
                 if isinstance(issue, dict)
             ],

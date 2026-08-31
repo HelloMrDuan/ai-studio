@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STUDIO = ROOT / "app/static/studio.html"
 INDEX = ROOT / "app/static/index.html"
 RUNTIME = ROOT / "app/stage04_v238_runtime.py"
-RUNTIME_SHA256 = "2f5537724e4226ed5a862ca1b7b0fd357f009a096586816856b83bdc114e18bd"
+RUNTIME_SHA256 = "b6c1cf972caeb900cae9aee8b6ccb12df0c7b14f1042048c22599a9f094eda7a"
 
 
 class Stage04FrontendEntryTests(TestCase):

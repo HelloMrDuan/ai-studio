@@ -43,6 +43,10 @@ _TEMPORAL_MODES = {
     "insufficient_visual_evidence",
 }
 
+_TEMPORAL_MODE_CONTRACT_MARKER = (
+    "<enum:observable_transition|static_outcome|insufficient_visual_evidence>"
+)
+
 _STATIC_PRESENTATION_FIELDS = (
     "visual_start_frame",
     "representative_frame",
@@ -664,6 +668,8 @@ def _contract_shape_value(value: Any, *, key: str = "") -> Any:
         if not value:
             return []
         return [_contract_shape_value(value[0], key=key)]
+    if key == "temporal_mode":
+        return _TEMPORAL_MODE_CONTRACT_MARKER
     if key in {"source_evidence_ids", "evidence_ids", "source_ids"}:
         return "<allowed_evidence_id>"
     if key in {"covered_beat_orders", "beat_orders"}:
@@ -741,6 +747,7 @@ async def _qwen(
         + "\n=== END_STRICT_OUTPUT_CONTRACT ===\n"
         + "只返回一个满足上述结构的 JSON 值，不要 Markdown 代码块，不要解释文字。"
         + "<...> 是类型/作用域占位符，不是可复制的字面值。"
+        + "其中 <enum:a|b> 表示该字段只能精确返回列出的枚举值之一，禁止自造同义标签。"
         + "所有 evidence ID、Beat order 和数值必须来自当前任务上下文或当前专用规划步骤，"
         + "不得复制合同中的示例值。"
     )
@@ -4553,6 +4560,233 @@ async def _plan_targeted_duration(
     )
 
 
+
+async def _repair_invalid_temporal_mode_classification(
+    env: dict[str, Any],
+    *,
+    row: dict[str, Any],
+    compact_beats: list[dict[str, Any]],
+    anchors: list[dict[str, Any]],
+    context: str,
+) -> dict[str, Any]:
+    """Re-classify only an out-of-contract temporal_mode from locked evidence.
+
+    This deliberately is not an alias mapper.  The replacement mode must come
+    from a single evidence-grounded Qwen classification call.  Beat/evidence,
+    entity, narrative, timing and presentation fields are immutable here.
+    """
+    item = copy.deepcopy(row)
+    raw_mode = str(item.get("temporal_mode") or "").strip().lower()
+    if not raw_mode or raw_mode in _TEMPORAL_MODES:
+        return item
+
+    evidence_ids = _id_list(item.get("source_evidence_ids"))
+    covered_orders = _orders(item.get("covered_beat_orders"))
+    anchor_map = {
+        str(anchor.get("id") or ""): anchor
+        for anchor in anchors or []
+        if isinstance(anchor, dict) and str(anchor.get("id") or "")
+    }
+    beat_map = {
+        int(beat.get("order") or 0): beat
+        for beat in compact_beats or []
+        if isinstance(beat, dict) and int(beat.get("order") or 0) > 0
+    }
+    exact_evidence = [
+        copy.deepcopy(anchor_map[evidence_id])
+        for evidence_id in evidence_ids
+        if evidence_id in anchor_map
+    ]
+    locked_beats = [
+        copy.deepcopy(beat_map[order])
+        for order in covered_orders
+        if order in beat_map
+    ]
+
+    repair_input = {
+        "raw_temporal_mode": raw_mode,
+        "allowed_temporal_modes": sorted(_TEMPORAL_MODES),
+        "covered_beat_orders": covered_orders,
+        "source_evidence_ids": evidence_ids,
+        "locked_beats": locked_beats,
+        "exact_selected_evidence": exact_evidence,
+        "candidate_semantic_core": _candidate_semantic_core(item),
+    }
+
+    def metadata(
+        *,
+        output: dict[str, Any] | None = None,
+        reason: str = "",
+        progress: str,
+        post: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        repair_output = copy.deepcopy(output or {})
+        return {
+            "raw_temporal_mode": raw_mode,
+            "allowed_temporal_modes": sorted(_TEMPORAL_MODES),
+            "temporal_mode_repair_input": copy.deepcopy(repair_input),
+            "temporal_mode_repair_output": repair_output,
+            "temporal_mode_repair_reason": reason,
+            "temporal_mode_evidence_ids": _id_list(
+                repair_output.get("temporal_mode_evidence_ids")
+            ),
+            "pre_repair_candidate": copy.deepcopy(item),
+            "post_repair_candidate": copy.deepcopy(post),
+            "repair_input_fingerprint": hashlib.sha256(
+                json.dumps(
+                    repair_input,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest(),
+            "repair_output_fingerprint": hashlib.sha256(
+                json.dumps(
+                    repair_output,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest(),
+            "repair_progress": progress,
+            "failed_rule": "temporal_mode_contract",
+            "failed_rules": ["temporal_mode_contract"],
+            "evidence_sufficiency": "temporal_mode_contract_invalid",
+            "repair_context": context,
+        }
+
+    if (
+        not evidence_ids
+        or len(exact_evidence) != len(evidence_ids)
+        or not covered_orders
+        or len(locked_beats) != len(covered_orders)
+    ):
+        raise Stage04ShotRepairError(
+            f"{context}: 非法 temporal_mode 且无法完整锁定 Beat/evidence 进行字段级重分类",
+            metadata=metadata(
+                progress="rejected_temporal_mode_repair_scope_incomplete"
+            ),
+        )
+
+    system_prompt = (
+        "你是 strict-shot-v2 temporal_mode 字段级重分类器。"
+        "当前 Shot 的 Beat、source evidence、人物/道具绑定和全部叙事/表现字段已经锁定。"
+        "只能根据 EXACT_SELECTED_EVIDENCE 重新判断 temporal_mode，绝对不能改写 Shot。"
+        "temporal_mode 只能精确返回 observable_transition、static_outcome、"
+        "insufficient_visual_evidence 三者之一："
+        "observable_transition=证据明确支持可观察的前/中/后状态变化；"
+        "static_outcome=证据只支持已经成立的状态/结果/关系而未描述发生过程；"
+        "insufficient_visual_evidence=不新增剧情事实就无法形成证据支持的视觉状态。"
+        "必须返回 evidence-based reason 和 temporal_mode_evidence_ids；"
+        "evidence ids 只能从当前 Shot 已锁定 source_evidence_ids 中选择。"
+        "RAW_INVALID_TEMPORAL_MODE 仅用于诊断，不是候选枚举，禁止照抄。"
+        "不得依据题材关键词或固定业务类别。只返回严格 JSON。"
+    )
+    prompt = (
+        "=== RAW_INVALID_TEMPORAL_MODE ===\n"
+        + raw_mode
+        + "\n\n=== LOCKED_COVERED_BEATS ===\n"
+        + json.dumps(locked_beats, ensure_ascii=False, separators=(",", ":"))
+        + "\n\n=== EXACT_SELECTED_EVIDENCE ===\n"
+        + json.dumps(exact_evidence, ensure_ascii=False, separators=(",", ":"))
+        + "\n\n=== LOCKED_CANDIDATE_SEMANTIC_CORE ===\n"
+        + json.dumps(
+            {
+                **_candidate_semantic_core(item),
+                "source_fact": str(item.get("source_fact") or "")[:700],
+                "narrative_start_state": str(item.get("narrative_start_state") or "")[:900],
+                "narrative_state": str(item.get("narrative_state") or "")[:900],
+                "narrative_end_state": str(item.get("narrative_end_state") or "")[:900],
+                "visual_realization": str(item.get("visual_realization") or "")[:900],
+                "visual_start_frame": str(item.get("visual_start_frame") or "")[:900],
+                "representative_frame": str(item.get("representative_frame") or "")[:900],
+                "visual_end_frame": str(item.get("visual_end_frame") or "")[:900],
+                "visual_motion": str(item.get("visual_motion") or "")[:900],
+                "character_entity_ids": _id_list(item.get("character_entity_ids")),
+                "prop_entity_ids": _id_list(item.get("prop_entity_ids")),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
+    contract = json.dumps(
+        {
+            "temporal_mode": "observable_transition",
+            "temporal_mode_reason": "",
+            "temporal_mode_evidence_ids": [evidence_ids[0]],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    try:
+        raw, parsed, _ = await _qwen(
+            env,
+            phase="studio_stage04_temporal_mode_classification_repair_qwen32b",
+            system_prompt=system_prompt,
+            prompt=prompt,
+            contract=contract,
+            max_tokens=420,
+            temperature=0.0,
+        )
+    except Exception as exc:
+        raise Stage04ShotRepairError(
+            f"{context}: temporal_mode 字段级重分类调用失败：{exc}",
+            metadata=metadata(
+                reason=str(exc),
+                progress="temporal_mode_repair_call_failed",
+            ),
+        ) from exc
+
+    obj = _parse_object(env, raw, parsed)
+    repaired_mode = str(obj.get("temporal_mode") or "").strip().lower()
+    reason = str(obj.get("temporal_mode_reason") or "").strip()
+    repaired_evidence_ids = _id_list(obj.get("temporal_mode_evidence_ids"))
+    repair_output = {
+        "temporal_mode": repaired_mode,
+        "temporal_mode_reason": reason,
+        "temporal_mode_evidence_ids": repaired_evidence_ids,
+    }
+
+    valid_output = (
+        repaired_mode in _TEMPORAL_MODES
+        and bool(reason)
+        and bool(repaired_evidence_ids)
+        and set(repaired_evidence_ids).issubset(set(evidence_ids))
+    )
+    if not valid_output:
+        progress = (
+            "rejected_no_progress"
+            if repaired_mode == raw_mode
+            else "rejected_invalid_temporal_mode_repair_output"
+        )
+        raise Stage04ShotRepairError(
+            f"{context}: temporal_mode 字段级重分类仍未形成闭合枚举；"
+            f"raw={raw_mode!r} repaired={repaired_mode!r}",
+            metadata=metadata(
+                output=repair_output,
+                reason=reason,
+                progress=progress,
+            ),
+        )
+
+    repaired = copy.deepcopy(item)
+    repaired["temporal_mode"] = repaired_mode
+    repaired["temporal_mode_reason"] = reason
+    repaired["temporal_mode_evidence_ids"] = repaired_evidence_ids
+    diagnostics = metadata(
+        output=repair_output,
+        reason=reason,
+        progress="temporal_mode_reclassified",
+        post=repaired,
+    )
+    diagnostics["failed_rule"] = ""
+    diagnostics["failed_rules"] = []
+    diagnostics["evidence_sufficiency"] = "classified"
+    repaired["_temporal_mode_repair_diagnostics"] = diagnostics
+    return repaired
+
+
 async def _complete_targeted_shot_structure(
     env: dict[str, Any],
     *,
@@ -4597,6 +4831,14 @@ async def _complete_targeted_shot_structure(
     item[
         "evidence_binding_source"
     ] = evidence_source
+
+    item = await _repair_invalid_temporal_mode_classification(
+        env,
+        row=item,
+        compact_beats=[beat],
+        anchors=allowed_anchor_rows,
+        context=f"Beat {target_order} targeted Shot",
+    )
 
     item = _normalize_temporal_contract(
         item,
@@ -5492,9 +5734,29 @@ async def _regenerate_shot_from_reselected_evidence(
     candidates = _extract_shots(env, raw, parsed)
     if not candidates:
         raise RuntimeError("regroup Shot regeneration 未返回 Shot")
+    repaired_candidates: list[dict[str, Any]] = []
+    for candidate in candidates:
+        normalized, _origin = _normalize_raw_shot_binding(
+            candidate,
+            compact_beats=[compact_beat],
+            anchors=allowed_anchors,
+        )
+        if normalized is None:
+            continue
+        repaired_candidates.append(
+            await _repair_invalid_temporal_mode_classification(
+                env,
+                row=normalized,
+                compact_beats=[compact_beat],
+                anchors=allowed_anchors,
+                context=f"Beat {target_order} regroup regeneration",
+            )
+        )
+    if not repaired_candidates:
+        raise RuntimeError("regroup Shot regeneration 没有可验证的 evidence-locked Shot")
     return validate_rows(
         env,
-        raw_rows=candidates,
+        raw_rows=repaired_candidates,
         compact_beats=[compact_beat],
         allowed_chars=allowed_chars,
         allowed_props=allowed_props,
@@ -6934,6 +7196,13 @@ async def _validate_initial_rows_with_recovery(
             continue
 
         try:
+            normalized = await _repair_invalid_temporal_mode_classification(
+                env,
+                row=normalized,
+                compact_beats=compact_beats,
+                anchors=anchors,
+                context=f"initial Shot#{index}",
+            )
             rows = validate_rows(
                 env,
                 raw_rows=[normalized],

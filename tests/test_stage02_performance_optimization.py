@@ -731,7 +731,7 @@ class DirectorStage02CacheAndTelemetryTests(Stage02RuntimeTestBase, IsolatedAsyn
 
     def test_stage04_runtime_matches_current_directional_repair_contract(self) -> None:
         digest = hashlib.sha256((ROOT / "app/stage04_v238_runtime.py").read_bytes()).hexdigest()
-        self.assertEqual(digest, "46177fdd2947d9478ab3bedf31811fd6239c5fe13a11fe23ff6aad3be813188a")
+        self.assertEqual(digest, "4423e6da7195f43dae132aa24e8b095b65261f8fae2ad0e8727fc3531c920949")
 
 
 if __name__ == "__main__":

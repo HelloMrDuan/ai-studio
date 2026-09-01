@@ -28,6 +28,30 @@ jobs:
         shell: bash
         run: echo "BASE_RUNTIME_SHA=$(sha256sum app/stage04_v238_runtime.py | awk '{print $1}')" >> "$GITHUB_ENV"
 
+      - name: Prepare patch driver
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tools/apply_stage04_first_beat_temporal_reconsideration_fix.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''    old = (
+                  '            "static_outcome=证据只支持已经成立的状态/结果/关系而未描述发生过程；"\\n'
+              )
+              new = (
+                  '            "static_outcome=证据只支持已经成立的状态/结果/关系，或只支持一个正在持续但没有证据支持内部前中后里程碑的稳定活动状态；"\\n'
+              )
+              text = replace_once(text, old, new, "classification repair semantics")
+          '''
+          new = '''    old = '"static_outcome=证据只支持已经成立的状态/结果/关系而未描述发生过程；"'
+              new = '"static_outcome=证据只支持已经成立的状态/结果/关系，或只支持一个正在持续但没有证据支持内部前中后里程碑的稳定活动状态；"'
+              text = replace_once(text, old, new, "classification repair semantics")
+          '''
+          if old not in text:
+              raise SystemExit('classification repair driver marker missing')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
       - name: Apply first-beat temporal reconsideration fix
         run: python tools/apply_stage04_first_beat_temporal_reconsideration_fix.py
 

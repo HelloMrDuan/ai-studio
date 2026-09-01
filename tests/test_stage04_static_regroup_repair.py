@@ -72,6 +72,23 @@ def repair_patch(text: str) -> dict:
     }
 
 
+
+def duplicate_frame_repair_patch(text: str) -> dict:
+    return {
+        "patch": {
+            "source_fact": text,
+            "narrative_state": text,
+            "visual_realization": "保持同一既成叙事状态，只允许表现层变化。",
+            "realization_scope": "presentation_only",
+            "realization_assumptions": ["不增加任何剧情事实"],
+            "visual_start_frame": "同一画面保持不变。",
+            "representative_frame": "同一画面保持不变。",
+            "visual_end_frame": "同一画面保持不变。",
+            "visual_motion": "镜头轻微推进后停住，仅表现层变化。",
+        }
+    }
+
+
 class StaticOutcomePayloadRepairTests(unittest.IsolatedAsyncioTestCase):
     async def test_static_transition_payload_repairs_only_static_block(self) -> None:
         text = "众人认可了他的决定。"
@@ -166,6 +183,42 @@ class StaticOutcomePayloadRepairTests(unittest.IsolatedAsyncioTestCase):
             {text},
         )
 
+    async def test_regroup_duplicate_static_frames_close_deterministically_without_extra_qwen(self) -> None:
+        text = "众人认可了他的决定。"
+        generation = {"shots": [invalid_static(text)]}
+        qwen = mock.AsyncMock(side_effect=[
+            ({}, generation, {}),
+            ({}, duplicate_frame_repair_patch(text), {}),
+        ])
+        with mock.patch.object(runtime, "_qwen", qwen):
+            rows = await runtime._regenerate_shot_from_reselected_evidence(
+                {},
+                target_order=1,
+                compact_beat=beat(text),
+                anchors=[anchor(text)],
+                previous_shot=None,
+                next_beat=None,
+                allowed_chars=set(),
+                allowed_props=set(),
+                scene_id="scene-1",
+                episode_id="episode-1",
+            )
+        self.assertEqual(qwen.await_count, 2)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["temporal_mode"], "static_outcome")
+        self.assertEqual(rows[0]["summary"], text)
+        self.assertEqual(rows[0]["source_fact"], text)
+        self.assertEqual(
+            {rows[0][key] for key in runtime._SHOT_TEMPORAL_STATE_FIELDS},
+            {text},
+        )
+        self.assertEqual(
+            len({
+                runtime._semantic_text_key(rows[0][key])
+                for key in runtime._STATIC_PRESENTATION_FIELDS
+            }),
+            3,
+        )
     async def test_failed_static_repair_does_not_loop(self) -> None:
         text = "众人认可了他的决定。"
         qwen = mock.AsyncMock(return_value=({}, {"patch": {"source_fact": text}}, {}))

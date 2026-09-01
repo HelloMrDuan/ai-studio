@@ -5040,6 +5040,95 @@ async def _repair_observable_transition_state_consistency(
     return repaired
 
 
+
+def _ensure_static_presentation_frame_distinction(
+    row: dict[str, Any],
+) -> dict[str, Any]:
+    """Deterministically close static_outcome presentation-frame distinction.
+
+    This helper never changes story facts, Beat/evidence binding, entities or timing.
+    It only makes presentation-only frame descriptions distinguishable by shot
+    grammar when a model returned empty or semantically identical frames.
+    """
+    item = copy.deepcopy(row)
+    if _shot_temporal_mode(item) != "static_outcome":
+        return item
+
+    before = {
+        field: str(item.get(field) or "").strip()
+        for field in _STATIC_PRESENTATION_FIELDS
+    }
+    before_keys = {
+        _semantic_text_key(before[field])
+        for field in _STATIC_PRESENTATION_FIELDS
+    }
+    if "" not in before_keys and len(before_keys) == len(_STATIC_PRESENTATION_FIELDS):
+        return item
+
+    stable_visual = next((
+        str(item.get(field) or "").strip()
+        for field in (
+            "visual_realization",
+            "narrative_state",
+            "source_fact",
+            "summary",
+        )
+        if str(item.get(field) or "").strip()
+    ), "同一已锁定叙事状态")
+
+    prefixes = {
+        "visual_start_frame": "远景建立构图",
+        "representative_frame": "中景主体构图",
+        "visual_end_frame": "较紧景别收束构图",
+    }
+    for field in _STATIC_PRESENTATION_FIELDS:
+        original = before[field] or stable_visual
+        item[field] = (
+            f"{prefixes[field]}：{original}；"
+            "仅改变景别、机位或构图，不改变叙事事实。"
+        )
+
+    item["realization_scope"] = "presentation_only"
+    assumptions = [
+        str(value).strip()
+        for value in (item.get("realization_assumptions") or [])
+        if str(value).strip()
+    ]
+    closure_assumption = "三个表现帧仅以景别/机位/构图区分，不代表剧情时间推进"
+    if closure_assumption not in assumptions:
+        assumptions.append(closure_assumption)
+    item["realization_assumptions"] = assumptions
+    if not str(item.get("visual_motion") or "").strip():
+        item["visual_motion"] = (
+            "镜头从远景建立构图过渡到中景主体构图并以较紧景别收束；"
+            "全程仅为表现层变化。"
+        )
+
+    after_keys = {
+        _semantic_text_key(item.get(field))
+        for field in _STATIC_PRESENTATION_FIELDS
+    }
+    if "" in after_keys or len(after_keys) != len(_STATIC_PRESENTATION_FIELDS):
+        raise Stage04RepairInvariantError(
+            "strict-shot-v2 static_outcome deterministic presentation closure failed",
+            metadata={
+                "failed_rules": ["visual_realization"],
+                "temporal_mode": "static_outcome",
+                "before_frames": before,
+            },
+        )
+    item["_static_presentation_closure_diagnostics"] = {
+        "repair_progress": "deterministic_static_presentation_closed",
+        "before_frames": before,
+        "after_frames": {
+            field: str(item.get(field) or "")
+            for field in _STATIC_PRESENTATION_FIELDS
+        },
+        "fact_fields_mutated": [],
+    }
+    return item
+
+
 async def _repair_static_outcome_payload_consistency(
     env: dict[str, Any],
     *,
@@ -5267,6 +5356,7 @@ async def _repair_static_outcome_payload_consistency(
         "video_end_state": stable,
     })
 
+    repaired = _ensure_static_presentation_frame_distinction(repaired)
     try:
         repaired = _normalize_temporal_contract(
             repaired,

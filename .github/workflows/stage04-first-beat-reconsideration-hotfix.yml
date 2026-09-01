@@ -116,6 +116,6 @@ jobs:
             tests/test_stage02_performance_optimization.py \
             tests/test_stage04_frontend_entry.py
           git rm .github/workflows/stage04-first-beat-reconsideration-hotfix.yml
-          git rm tools/apply_stage04_first_beat_temporal_reconsideration_fix.py
+          git rm -f tools/apply_stage04_first_beat_temporal_reconsideration_fix.py
           git commit -m "fix(stage04): recover first beat without future evidence"
           git push origin HEAD:main

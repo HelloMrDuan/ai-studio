@@ -18,12 +18,30 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 3
+          fetch-depth: 4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Remove optional brittle prompt-text edit
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path("tools/apply_stage04_temporal_mode_enum_fix.py")
+          s = p.read_text(encoding="utf-8")
+          needle = '        "targeted retry enum reminder",\n    )'
+          pos = s.find(needle)
+          if pos >= 0:
+              start = s.rfind("    text = replace_once(\n", 0, pos)
+              end = s.find("\n\n    text = replace_once(\n", pos)
+              if start < 0 or end < 0:
+                  raise SystemExit("could not isolate optional replacement")
+              s = s[:start] + s[end + 2:]
+              p.write_text(s, encoding="utf-8")
+          PY
 
       - name: Apply patch
         run: python tools/apply_stage04_temporal_mode_enum_fix.py

@@ -4675,7 +4675,7 @@ async def _repair_invalid_temporal_mode_classification(
         "temporal_mode 只能精确返回 observable_transition、static_outcome、"
         "insufficient_visual_evidence 三者之一："
         "observable_transition=证据明确支持可观察的前/中/后状态变化；"
-        "static_outcome=证据只支持已经成立的状态/结果/关系而未描述发生过程；"
+        "static_outcome=证据只支持已经成立的状态/结果/关系，或只支持一个正在持续但没有证据支持内部前中后里程碑的稳定活动状态；"
         "insufficient_visual_evidence=不新增剧情事实就无法形成证据支持的视觉状态。"
         "必须返回 evidence-based reason 和 temporal_mode_evidence_ids；"
         "evidence ids 只能从当前 Shot 已锁定 source_evidence_ids 中选择。"
@@ -5449,6 +5449,7 @@ async def _generate_missing_beat_shots(
             "至少一个，并直接支持该 Shot。"
             "必须从 evidence 输出 temporal_mode + reason + evidence ids。"
             "observable_transition 才要求三 narrative state 为前向因果链。"
+            "static_outcome 也适用于证据只证明一个持续活动/稳定状态而不证明内部时间里程碑的情况；"
             "static_outcome 必须锁定同一 narrative_state，把不同画面和运动严格隔离到"
             " presentation_only visual realization 字段，不得虚构剧情转折。"
             "insufficient_visual_evidence 必须原样分类，不能造动作补足。"
@@ -6099,6 +6100,204 @@ def _evidence_fingerprint(
     ).hexdigest()
 
 
+
+async def _reconsider_edge_beat_temporal_mode(
+    env: dict[str, Any],
+    *,
+    row: dict[str, Any],
+    compact_beats: list[dict[str, Any]],
+    anchors: list[dict[str, Any]],
+    context: str,
+) -> dict[str, Any] | None:
+    """Reconsider a first/edge Beat after observable progression proved impossible.
+
+    This is deliberately target-evidence-only.  It never borrows the next Beat
+    as fact authority.  A stable ongoing activity may be represented through the
+    existing static_outcome contract when the source proves the activity/state
+    itself but does not prove internal before/middle/end milestones.
+    """
+    item = copy.deepcopy(row)
+    if _shot_temporal_mode(item) != "observable_transition":
+        return None
+
+    evidence_ids = _id_list(item.get("source_evidence_ids"))
+    covered_orders = _orders(item.get("covered_beat_orders"))
+    anchor_map = {
+        str(anchor.get("id") or ""): anchor
+        for anchor in anchors or []
+        if isinstance(anchor, dict) and str(anchor.get("id") or "")
+    }
+    beat_map = {
+        int(beat.get("order") or 0): beat
+        for beat in compact_beats or []
+        if isinstance(beat, dict) and int(beat.get("order") or 0) > 0
+    }
+    exact_evidence = [
+        copy.deepcopy(anchor_map[evidence_id])
+        for evidence_id in evidence_ids
+        if evidence_id in anchor_map
+    ]
+    locked_beats = [
+        copy.deepcopy(beat_map[order])
+        for order in covered_orders
+        if order in beat_map
+    ]
+    metadata_base = {
+        "failed_rule": "edge_temporal_mode_reconsideration",
+        "failed_rules": ["state_order", "temporal_progression"],
+        "pre_repair_candidate": copy.deepcopy(item),
+        "pre_repair_states": _shot_state_snapshot(item),
+        "evidence_ids": evidence_ids,
+        "beat_id": covered_orders,
+        "exact_selected_evidence": copy.deepcopy(exact_evidence),
+        "locked_beats": copy.deepcopy(locked_beats),
+        "repair_context": context,
+        "recovery_scope": "target_evidence_only_no_future_borrowing",
+    }
+    if (
+        not evidence_ids
+        or not covered_orders
+        or len(exact_evidence) != len(evidence_ids)
+        or len(locked_beats) != len(covered_orders)
+    ):
+        raise Stage04ShotRepairError(
+            f"{context}: edge Beat temporal_mode 重分类无法完整锁定当前 Beat/evidence",
+            metadata={
+                **metadata_base,
+                "repair_progress": "edge_temporal_reconsideration_scope_incomplete",
+                "evidence_sufficiency": "undetermined",
+            },
+        )
+
+    system_prompt = (
+        "你是 strict-shot-v2 edge Beat temporal_mode 重分类器。"
+        "当前 Shot 原本被分类为 observable_transition，但严格审计已经证明现有 evidence "
+        "无法支持可证明的 start→representative→end 前向时间链。"
+        "只能使用 EXACT_SELECTED_EVIDENCE 和 LOCKED_BEAT 重新分类，绝对不能借用下一 Beat。"
+        "observable_transition 仅适用于证据直接证明至少三个可区分前向状态的情况。"
+        "static_outcome 不只包括已成立结果/关系，也包括证据明确证明一个正在持续的稳定活动/状态，"
+        "但没有直接证明该活动内部的前/中/后里程碑；此时剧情事实保持稳定，变化只能放在"
+        " presentation-only visual realization。"
+        "insufficient_visual_evidence 表示连稳定可视觉化事实也无法从当前证据直接建立。"
+        "只能返回 observable_transition、static_outcome、insufficient_visual_evidence 三者之一。"
+        "必须给出 evidence-based reason 和当前 evidence ids；只返回严格 JSON。"
+    )
+    prompt = (
+        "=== LOCKED_BEAT ===\n"
+        + json.dumps(locked_beats, ensure_ascii=False, separators=(",", ":"))
+        + "\n\n=== EXACT_SELECTED_EVIDENCE ===\n"
+        + json.dumps(exact_evidence, ensure_ascii=False, separators=(",", ":"))
+        + "\n\n=== FAILED_OBSERVABLE_SHOT ===\n"
+        + json.dumps(
+            {
+                "source_fact": item.get("source_fact"),
+                "summary": item.get("summary"),
+                "action": item.get("action"),
+                "video_start_state": item.get("video_start_state"),
+                "representative_state": item.get("representative_state"),
+                "video_end_state": item.get("video_end_state"),
+                "narrative_start_state": item.get("narrative_start_state"),
+                "narrative_state": item.get("narrative_state"),
+                "narrative_end_state": item.get("narrative_end_state"),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
+    contract = json.dumps(
+        {
+            "temporal_mode": "static_outcome",
+            "temporal_mode_reason": "",
+            "temporal_mode_evidence_ids": [evidence_ids[0]],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    raw, parsed, _ = await _qwen(
+        env,
+        phase="studio_stage04_edge_temporal_mode_reconsideration_qwen32b",
+        system_prompt=system_prompt,
+        prompt=prompt,
+        contract=contract,
+        max_tokens=520,
+        temperature=0.0,
+    )
+    obj = _parse_object(env, raw, parsed)
+    mode = str(obj.get("temporal_mode") or "").strip().lower()
+    reason = str(obj.get("temporal_mode_reason") or "").strip()
+    mode_evidence_ids = _id_list(obj.get("temporal_mode_evidence_ids"))
+    output = {
+        "temporal_mode": mode,
+        "temporal_mode_reason": reason,
+        "temporal_mode_evidence_ids": mode_evidence_ids,
+    }
+    if (
+        mode not in _TEMPORAL_MODES
+        or not reason
+        or not mode_evidence_ids
+        or not set(mode_evidence_ids).issubset(set(evidence_ids))
+    ):
+        raise Stage04ShotRepairError(
+            f"{context}: edge Beat temporal_mode 重分类输出不合法",
+            metadata={
+                **metadata_base,
+                "repair_output": output,
+                "repair_progress": "edge_temporal_reconsideration_invalid_output",
+                "evidence_sufficiency": "undetermined",
+            },
+        )
+
+    if mode == "observable_transition":
+        return None
+
+    if mode == "insufficient_visual_evidence":
+        raise Stage04ShotRepairError(
+            f"{context}: 当前 Beat 证据不足以形成 grounded Shot",
+            metadata={
+                **metadata_base,
+                "repair_output": output,
+                "repair_progress": "edge_temporal_reconsideration_insufficient",
+                "evidence_sufficiency": "insufficient_visual_evidence",
+                "regroup_reason": "target-only evidence remains insufficient after temporal reconsideration",
+            },
+        )
+
+    repaired = copy.deepcopy(item)
+    repaired["temporal_mode"] = "static_outcome"
+    repaired["temporal_mode_reason"] = reason
+    repaired["temporal_mode_evidence_ids"] = mode_evidence_ids
+    try:
+        repaired = await _repair_static_outcome_payload_consistency(
+            env,
+            row=repaired,
+            compact_beats=compact_beats,
+            anchors=anchors,
+            context=context + " static fallback",
+        )
+    except Exception as exc:
+        metadata = copy.deepcopy(getattr(exc, "metadata", {}) or {})
+        metadata.update({
+            **metadata_base,
+            "repair_output": output,
+            "repair_progress": metadata.get("repair_progress") or "edge_static_payload_repair_failed",
+            "evidence_sufficiency": metadata.get("evidence_sufficiency") or "undetermined",
+        })
+        raise Stage04ShotRepairError(
+            f"{context}: edge Beat static_outcome payload 修复失败：{exc}",
+            metadata=metadata,
+        ) from exc
+
+    repaired["_edge_temporal_reconsideration_diagnostics"] = {
+        **metadata_base,
+        "repair_output": output,
+        "post_repair_candidate": copy.deepcopy(repaired),
+        "post_repair_states": _shot_state_snapshot(repaired),
+        "repair_progress": "edge_temporal_reclassified_static_outcome",
+        "evidence_sufficiency": "sufficient_for_stable_state",
+    }
+    return repaired
+
+
 def _reselect_adjacent_evidence(
     env: dict[str, Any],
     *,
@@ -6140,7 +6339,7 @@ def _reselect_adjacent_evidence(
             "evidence_fingerprint_after": before,
         })
         raise Stage04ShotRepairError(
-            f"Beat {target_order} evidence regroup 无可用前向相邻证据",
+            f"Beat {target_order} evidence regroup 无可用前序相邻证据",
             metadata=metadata,
         )
 
@@ -6231,7 +6430,8 @@ async def _regenerate_shot_from_reselected_evidence(
         "只覆盖 TARGET_BEAT；source_evidence_ids 只能从允许列表选择。"
         "必须直接根据 RESELECTED_EVIDENCE 分类 temporal_mode，并返回分类 reason 和 evidence ids；"
         "不得用题材关键词判断。observable_transition 才要求三 narrative state 形成证据支持的"
-        "可见前向状态链。static_outcome 必须保持 narrative state 稳定，并把构图、机位、光影、"
+        "可见前向状态链。static_outcome 也适用于证据只证明持续活动/稳定状态但不证明内部前中后里程碑；"
+        "static_outcome 必须保持 narrative state 稳定，并把构图、机位、光影、"
         "环境或镜头运动隔离在 presentation_only visual realization 字段；这些表现推断不得写入"
         " source_fact/summary/action。insufficient_visual_evidence 必须如实返回，不能虚构动作。"
         "不得重复 PREVIOUS_ACCEPTED_SHOT，不得消费 NEXT_BEAT。"
@@ -6320,8 +6520,82 @@ async def _recover_single_beat_after_scoped_repair(
     episode_id: str,
     audit_fn: Any,
     prior_metadata: dict[str, Any],
+    current_rows: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     target_order = int(target_beat.get("order") or 0)
+
+    previous_beat = next((
+        beat for beat in all_beats
+        if isinstance(beat, dict)
+        and int(beat.get("order") or 0) == target_order - 1
+    ), None)
+
+    # A first/edge Beat has no earlier fact authority to borrow from.  Before
+    # declaring regroup impossible, reconsider whether strict audit has shown
+    # that the Beat is a stable state/ongoing activity rather than a provable
+    # three-milestone transition.  This path is target-evidence-only and never
+    # consumes NEXT_BEAT.
+    if target_order == 1 and previous_beat is None and current_rows:
+        edge_candidate = await _reconsider_edge_beat_temporal_mode(
+            env,
+            row=current_rows[0],
+            compact_beats=current_compact_beats,
+            anchors=current_anchors,
+            context=f"Beat {target_order} edge recovery",
+        )
+        if edge_candidate is not None:
+            try:
+                edge_rows = validate_rows(
+                    env,
+                    raw_rows=[edge_candidate],
+                    compact_beats=current_compact_beats,
+                    allowed_chars=allowed_chars,
+                    allowed_props=allowed_props,
+                    anchors=current_anchors,
+                    scene_id=scene_id,
+                    episode_id=episode_id,
+                )
+                edge_source_window = "\n".join(
+                    str(anchor.get("text") or "")
+                    for anchor in current_anchors
+                    if isinstance(anchor, dict)
+                )
+                edge_audit = await audit_fn(
+                    source_window=edge_source_window,
+                    compact_beats=current_compact_beats,
+                    shots=edge_rows,
+                )
+            except Exception as exc:
+                prior_metadata["edge_temporal_reconsideration"] = {
+                    "repair_progress": "edge_temporal_reconsideration_validation_failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            else:
+                if _audit_ok(env, edge_audit):
+                    diagnostics = copy.deepcopy(
+                        edge_candidate.get("_edge_temporal_reconsideration_diagnostics")
+                        or {}
+                    )
+                    diagnostics.update({
+                        "repair_progress": "edge_temporal_reconsideration_passed_strict_audit",
+                        "final_audit": copy.deepcopy(edge_audit),
+                        "prior_repair": copy.deepcopy(prior_metadata),
+                        "recovery_usage": {
+                            "scoped_repair": 1,
+                            "edge_temporal_reconsideration": 1,
+                            "evidence_regroup": 0,
+                            "shot_regeneration": 0,
+                            "final_strict_audit": 1,
+                        },
+                    })
+                    for edge_row in edge_rows:
+                        edge_row["_regroup_recovery_diagnostics"] = copy.deepcopy(diagnostics)
+                    return edge_rows, edge_audit
+                prior_metadata["edge_temporal_reconsideration"] = {
+                    "repair_progress": "edge_temporal_reconsideration_failed_strict_audit",
+                    "audit": copy.deepcopy(edge_audit),
+                }
+
     _stage04_progress(
         env, 5, "Regroup recovery", "正在重新选择镜头证据"
     )
@@ -7402,7 +7676,7 @@ def _system_prompt() -> str:
         "证据只能来自被覆盖 Beat。"
         "必须直接根据所选 evidence 分类 temporal_mode，不得用题材关键词："
         "observable_transition=证据明确支持动作前/中/后；"
-        "static_outcome=证据只支持已成立的状态/结果/关系，未描述其发生过程；"
+        "static_outcome=证据只支持已成立的状态/结果/关系，或一个正在持续但没有证据支持内部前中后里程碑的稳定活动状态；"
         "insufficient_visual_evidence=不新增剧情事实就无法视觉化。"
         "分类必须给 temporal_mode_reason、temporal_mode_evidence_ids。"
         "observable_transition 的 video_start_state、representative_state、video_end_state "
@@ -8070,6 +8344,7 @@ async def _produce_batch(
                 episode_id=str(scene.get("episode_id") or ""),
                 audit_fn=audit_fn,
                 prior_metadata=copy.deepcopy(exc.metadata),
+                current_rows=[],
             )
             if previous_shot and rows:
                 boundary = await _boundary_audit(
@@ -8309,6 +8584,7 @@ async def _produce_batch(
                 episode_id=str(scene.get("episode_id") or ""),
                 audit_fn=audit_fn,
                 prior_metadata=last_repair_metadata,
+                current_rows=rows,
             )
         if _audit_ok(env, audit):
             repair_failure = None

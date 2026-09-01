@@ -18,7 +18,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 5
+          fetch-depth: 6
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -55,11 +55,10 @@ jobs:
           runtime = Path("app/stage04_v238_runtime.py")
           digest = hashlib.sha256(runtime.read_bytes()).hexdigest()
           old = "46177fdd2947d9478ab3bedf31811fd6239c5fe13a11fe23ff6aad3be813188a"
-          targets = [
+          for path in [
               Path("tests/test_stage02_performance_optimization.py"),
               Path("tests/test_stage04_frontend_entry.py"),
-          ]
-          for path in targets:
+          ]:
               text = path.read_text(encoding="utf-8")
               if old not in text:
                   raise SystemExit(f"expected old runtime hash not found in {path}")
@@ -92,6 +91,7 @@ jobs:
             tests/test_stage04_temporal_mode_enum_closure.py \
             tests/test_stage02_performance_optimization.py \
             tests/test_stage04_frontend_entry.py
-          git rm .github/workflows/stage04-temporal-mode-hotfix.yml tools/apply_stage04_temporal_mode_enum_fix.py
+          git rm .github/workflows/stage04-temporal-mode-hotfix.yml
+          git rm -f tools/apply_stage04_temporal_mode_enum_fix.py
           git commit -m "fix(stage04): close temporal mode enum repair"
           git push origin HEAD:main

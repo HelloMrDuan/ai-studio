@@ -35,6 +35,7 @@ jobs:
           from pathlib import Path
           path = Path('tools/apply_stage04_first_beat_temporal_reconsideration_fix.py')
           text = path.read_text(encoding='utf-8')
+
           old = '''    old = (
                   '            "static_outcome=证据只支持已经成立的状态/结果/关系而未描述发生过程；"\\n'
               )
@@ -49,7 +50,15 @@ jobs:
           '''
           if old not in text:
               raise SystemExit('classification repair driver marker missing')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          text = text.replace(old, new, 1)
+
+          old = '    if previous_beat is None and current_rows:\\n'
+          new = '    if target_order == 1 and previous_beat is None and current_rows:\\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'first-beat guard marker count={text.count(old)}')
+          text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
           PY
 
       - name: Apply first-beat temporal reconsideration fix
@@ -87,6 +96,7 @@ jobs:
           python -m unittest tests.test_stage04_first_beat_temporal_reconsideration -v
           python -m unittest tests.test_stage04_observable_state_repair -v
           python -m unittest tests.test_stage04_regroup_recovery -v
+          python -m unittest tests.test_stage04_audit_repair_routing -v
           python -m unittest discover -s tests -p 'test_stage04_temporal_mode*.py' -v
           python -m unittest tests.test_stage04_static_regroup_repair -v
           git diff --check

@@ -18,14 +18,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 4
+          fetch-depth: 5
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Remove optional brittle prompt-text edit
+      - name: Prepare patch driver
         shell: bash
         run: |
           python - <<'PY'
@@ -43,8 +43,29 @@ jobs:
               p.write_text(s, encoding="utf-8")
           PY
 
-      - name: Apply patch
+      - name: Apply Stage04 fix
         run: python tools/apply_stage04_temporal_mode_enum_fix.py
+
+      - name: Refresh intentional runtime hash assertions
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          runtime = Path("app/stage04_v238_runtime.py")
+          digest = hashlib.sha256(runtime.read_bytes()).hexdigest()
+          old = "46177fdd2947d9478ab3bedf31811fd6239c5fe13a11fe23ff6aad3be813188a"
+          targets = [
+              Path("tests/test_stage02_performance_optimization.py"),
+              Path("tests/test_stage04_frontend_entry.py"),
+          ]
+          for path in targets:
+              text = path.read_text(encoding="utf-8")
+              if old not in text:
+                  raise SystemExit(f"expected old runtime hash not found in {path}")
+              path.write_text(text.replace(old, digest), encoding="utf-8")
+          print(f"RUNTIME_SHA256={digest}")
+          PY
 
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
@@ -67,7 +88,10 @@ jobs:
           echo "RUNTIME_SHA256=$(sha256sum app/stage04_v238_runtime.py | awk '{print $1}')"
           git config user.name "ChatGPT Stage04 Fix"
           git config user.email "actions@users.noreply.github.com"
-          git add app/stage04_v238_runtime.py tests/test_stage04_temporal_mode_enum_closure.py
+          git add app/stage04_v238_runtime.py \
+            tests/test_stage04_temporal_mode_enum_closure.py \
+            tests/test_stage02_performance_optimization.py \
+            tests/test_stage04_frontend_entry.py
           git rm .github/workflows/stage04-temporal-mode-hotfix.yml tools/apply_stage04_temporal_mode_enum_fix.py
           git commit -m "fix(stage04): close temporal mode enum repair"
           git push origin HEAD:main

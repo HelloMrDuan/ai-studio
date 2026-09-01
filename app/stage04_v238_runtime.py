@@ -4788,6 +4788,258 @@ async def _repair_invalid_temporal_mode_classification(
 
 
 
+
+async def _repair_observable_transition_state_consistency(
+    env: dict[str, Any],
+    *,
+    row: dict[str, Any],
+    compact_beats: list[dict[str, Any]],
+    anchors: list[dict[str, Any]],
+    context: str,
+) -> dict[str, Any]:
+    """Repair only collapsed observable-transition state fields.
+
+    Beat/evidence binding, temporal_mode, source fact, entities and timing are
+    immutable.  A single evidence-grounded patch repairs the smallest failed
+    transition; failure routes to evidence regroup instead of re-sending the
+    same full Shot generation payload three times.
+    """
+    item = copy.deepcopy(row)
+    if _shot_temporal_mode(item) != "observable_transition":
+        return item
+
+    evidence_ids = _id_list(item.get("source_evidence_ids"))
+    covered_orders = _orders(item.get("covered_beat_orders"))
+    if not evidence_ids or not covered_orders:
+        return item
+
+    # Normalize aliases first, then inspect the strict three-state invariant.
+    item = _normalize_temporal_contract(
+        item,
+        evidence_ids=evidence_ids,
+        raw_index=1,
+    )
+    try:
+        _assert_temporal_state_distinction(
+            item,
+            context=f"{context} prevalidation",
+        )
+        return item
+    except Stage04RepairInvariantError as exc:
+        initial_error = str(exc)
+
+    keys = {
+        field: _semantic_text_key(item.get(field))
+        for field in _SHOT_TEMPORAL_STATE_FIELDS
+    }
+    duplicate_pairs = [
+        (left, right)
+        for left, right in (
+            ("video_start_state", "representative_state"),
+            ("representative_state", "video_end_state"),
+            ("video_start_state", "video_end_state"),
+        )
+        if keys.get(left) and keys.get(left) == keys.get(right)
+    ]
+    if not duplicate_pairs:
+        raise
+
+    # Prefer the smallest directional patch.  This exactly covers the current
+    # real failure representative_state == video_end_state while preserving the
+    # already valid start/core states.
+    if duplicate_pairs == [("representative_state", "video_end_state")]:
+        repair_fields = ("video_end_state",)
+    elif duplicate_pairs == [("video_start_state", "representative_state")]:
+        repair_fields = ("representative_state",)
+    elif duplicate_pairs == [("video_start_state", "video_end_state")]:
+        repair_fields = ("video_end_state",)
+    else:
+        repair_fields = _SHOT_TEMPORAL_STATE_FIELDS
+
+    anchor_map = {
+        str(anchor.get("id") or ""): anchor
+        for anchor in anchors or []
+        if isinstance(anchor, dict) and str(anchor.get("id") or "")
+    }
+    beat_map = {
+        int(beat.get("order") or 0): beat
+        for beat in compact_beats or []
+        if isinstance(beat, dict) and int(beat.get("order") or 0) > 0
+    }
+    exact_evidence = [
+        copy.deepcopy(anchor_map[evidence_id])
+        for evidence_id in evidence_ids
+        if evidence_id in anchor_map
+    ]
+    locked_beats = [
+        copy.deepcopy(beat_map[order])
+        for order in covered_orders
+        if order in beat_map
+    ]
+    metadata_base = {
+        "failed_rule": "observable_transition_state_consistency",
+        "failed_rules": ["state_order", "no_result_duplication"],
+        "temporal_mode": "observable_transition",
+        "evidence_ids": evidence_ids,
+        "beat_id": covered_orders,
+        "exact_selected_evidence": copy.deepcopy(exact_evidence),
+        "locked_beats": copy.deepcopy(locked_beats),
+        "pre_repair_states": _shot_state_snapshot(item),
+        "duplicate_pairs": copy.deepcopy(duplicate_pairs),
+        "repair_fields": list(repair_fields),
+        "pre_repair_error": initial_error,
+        "repair_context": context,
+    }
+    if (
+        len(exact_evidence) != len(evidence_ids)
+        or len(locked_beats) != len(covered_orders)
+    ):
+        raise Stage04ShotRepairError(
+            f"{context}: observable_transition 状态塌缩且无法完整锁定 Beat/evidence",
+            metadata={
+                **metadata_base,
+                "repair_progress": "observable_state_repair_scope_incomplete",
+                "evidence_sufficiency": "insufficient_for_observable_transition",
+            },
+        )
+
+    system_prompt = (
+        "你是 strict-shot-v2 observable_transition 字段级状态修复器。"
+        "temporal_mode=observable_transition、Beat/source evidence、source_fact、summary/action、"
+        "entity、duration 全部锁定。只修改 FAILED_STATE_FIELDS。"
+        "三个状态必须由 EXACT_SELECTED_EVIDENCE 直接支持，属于同一因果链且严格时间前向。"
+        "若只修 video_end_state，start 和 representative 已合法，必须保持不变，只给出证据支持的"
+        "更晚 end；若只修 representative_state，则 start/end 锁定，给出二者之间可观察中间态。"
+        "不得把下一 Beat 的结果提前写入，不得用抽象阶段词伪造时间推进。"
+        "若证据不足以产生所需不同状态，对应 patch 字段返回空字符串；程序将进入 evidence regroup。"
+        "只返回严格 JSON patch。"
+    )
+    current_payload = {
+        "source_fact": item.get("source_fact"),
+        "summary": item.get("summary"),
+        "action": item.get("action"),
+        "video_start_state": item.get("video_start_state"),
+        "representative_state": item.get("representative_state"),
+        "video_end_state": item.get("video_end_state"),
+    }
+    prompt = (
+        "=== EXACT_SELECTED_EVIDENCE ===\n"
+        + json.dumps(exact_evidence, ensure_ascii=False, separators=(",", ":"))
+        + "\n\n=== LOCKED_COVERED_BEATS ===\n"
+        + json.dumps(locked_beats, ensure_ascii=False, separators=(",", ":"))
+        + "\n\n=== CURRENT_OBSERVABLE_SHOT ===\n"
+        + json.dumps(current_payload, ensure_ascii=False, separators=(",", ":"))
+        + "\n\n=== FAILED_STATE_FIELDS ===\n"
+        + json.dumps(list(repair_fields), ensure_ascii=False, separators=(",", ":"))
+        + "\n\n=== LOCAL_CONTRACT_ERROR ===\n"
+        + initial_error
+    )
+    contract = json.dumps(
+        {"patch": {field: "" for field in repair_fields}},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    try:
+        raw, parsed, _ = await _qwen(
+            env,
+            phase="studio_stage04_observable_state_consistency_repair_qwen32b",
+            system_prompt=system_prompt,
+            prompt=prompt,
+            contract=contract,
+            max_tokens=650,
+            temperature=0.0,
+        )
+    except Exception as exc:
+        raise Stage04ShotRepairError(
+            f"{context}: observable_transition 状态字段级修复调用失败：{exc}",
+            metadata={
+                **metadata_base,
+                "repair_progress": "observable_state_repair_call_failed",
+                "evidence_sufficiency": "insufficient_for_observable_transition",
+                "repair_error": str(exc),
+            },
+        ) from exc
+
+    obj = _parse_object(env, raw, parsed)
+    patch = obj.get("patch") if isinstance(obj.get("patch"), dict) else obj
+    patch = dict(patch) if isinstance(patch, dict) else {}
+    patch = {
+        field: str(patch.get(field) or "").strip()
+        for field in repair_fields
+    }
+    if any(not patch[field] for field in repair_fields):
+        raise Stage04ShotRepairError(
+            f"{context}: observable_transition 现有证据不足以修复状态链",
+            metadata={
+                **metadata_base,
+                "repair_patch": copy.deepcopy(patch),
+                "repair_progress": "needs_regrouping_or_evidence_selection",
+                "evidence_sufficiency": "insufficient_for_observable_transition",
+                "regroup_reason": "state repair returned empty evidence-grounded value",
+            },
+        )
+
+    repaired = copy.deepcopy(item)
+    narrative_alias = {
+        "video_start_state": "narrative_start_state",
+        "representative_state": "narrative_state",
+        "video_end_state": "narrative_end_state",
+    }
+    for field, value in patch.items():
+        repaired[field] = value
+        repaired[narrative_alias[field]] = value
+
+    changed = any(
+        _semantic_text_key(item.get(field))
+        != _semantic_text_key(repaired.get(field))
+        for field in repair_fields
+    )
+    if not changed:
+        raise Stage04ShotRepairError(
+            f"{context}: observable_transition 状态修复无语义进展",
+            metadata={
+                **metadata_base,
+                "repair_patch": copy.deepcopy(patch),
+                "post_repair_states": _shot_state_snapshot(repaired),
+                "repair_progress": "rejected_no_progress",
+                "evidence_sufficiency": "insufficient_for_observable_transition",
+                "regroup_reason": "state repair fingerprint did not change",
+            },
+        )
+
+    try:
+        repaired = _normalize_temporal_contract(
+            repaired,
+            evidence_ids=evidence_ids,
+            raw_index=1,
+        )
+        _assert_temporal_state_distinction(
+            repaired,
+            context=f"{context} post-repair",
+        )
+    except Exception as exc:
+        raise Stage04ShotRepairError(
+            f"{context}: observable_transition 状态修复后仍未形成前向时间链：{exc}",
+            metadata={
+                **metadata_base,
+                "repair_patch": copy.deepcopy(patch),
+                "post_repair_states": _shot_state_snapshot(repaired),
+                "repair_progress": "needs_regrouping_or_evidence_selection",
+                "evidence_sufficiency": "insufficient_for_observable_transition",
+                "regroup_reason": str(exc),
+            },
+        ) from exc
+
+    repaired["_observable_state_repair_diagnostics"] = {
+        **metadata_base,
+        "repair_patch": copy.deepcopy(patch),
+        "post_repair_states": _shot_state_snapshot(repaired),
+        "repair_progress": "observable_state_repaired",
+        "evidence_sufficiency": "sufficient_for_observable_transition",
+    }
+    return repaired
+
+
 async def _repair_static_outcome_payload_consistency(
     env: dict[str, Any],
     *,
@@ -5098,6 +5350,14 @@ async def _complete_targeted_shot_structure(
     )
 
     item = await _repair_static_outcome_payload_consistency(
+        env,
+        row=item,
+        compact_beats=[beat],
+        anchors=allowed_anchor_rows,
+        context=f"Beat {target_order} targeted Shot",
+    )
+
+    item = await _repair_observable_transition_state_consistency(
         env,
         row=item,
         compact_beats=[beat],
@@ -6016,6 +6276,13 @@ async def _regenerate_shot_from_reselected_evidence(
             context=f"Beat {target_order} regroup regeneration",
         )
         repaired = await _repair_static_outcome_payload_consistency(
+            env,
+            row=repaired,
+            compact_beats=[compact_beat],
+            anchors=allowed_anchors,
+            context=f"Beat {target_order} regroup regeneration",
+        )
+        repaired = await _repair_observable_transition_state_consistency(
             env,
             row=repaired,
             compact_beats=[compact_beat],
@@ -7481,6 +7748,13 @@ async def _validate_initial_rows_with_recovery(
                 anchors=anchors,
                 context=f"initial Shot#{index}",
             )
+            normalized = await _repair_observable_transition_state_consistency(
+                env,
+                row=normalized,
+                compact_beats=compact_beats,
+                anchors=anchors,
+                context=f"initial Shot#{index}",
+            )
             rows = validate_rows(
                 env,
                 raw_rows=[normalized],
@@ -7770,9 +8044,13 @@ async def _produce_batch(
                 episode_id=str(scene.get("episode_id") or ""),
             )
         except Stage04ShotRepairError as exc:
-            if str(exc.metadata.get("evidence_sufficiency") or "") != (
-                "insufficient_visual_evidence"
-            ):
+            evidence_sufficiency = str(
+                exc.metadata.get("evidence_sufficiency") or ""
+            )
+            if evidence_sufficiency not in {
+                "insufficient_visual_evidence",
+                "insufficient_for_observable_transition",
+            }:
                 raise
             # The model has produced a valid semantic routing decision. Reuse
             # the existing one-shot regroup/regenerate/final-audit recovery;
@@ -7836,9 +8114,13 @@ async def _produce_batch(
                 episode_id=str(scene.get("episode_id") or ""),
             )
         except Stage04ShotRepairError as exc:
-            if str(exc.metadata.get("evidence_sufficiency") or "") != (
-                "insufficient_visual_evidence"
-            ):
+            evidence_sufficiency = str(
+                exc.metadata.get("evidence_sufficiency") or ""
+            )
+            if evidence_sufficiency not in {
+                "insufficient_visual_evidence",
+                "insufficient_for_observable_transition",
+            }:
                 raise
             # Recover at one-Beat scope so each insufficient classification
             # gets exactly one adjacent-evidence regroup budget.

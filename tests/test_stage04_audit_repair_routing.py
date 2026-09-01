@@ -280,10 +280,13 @@ class AuditViolationRoutingTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertEqual(repair.await_count, 1)
-        self.assertEqual(audit_calls, 2)
+        # The unified controller performs one final strict audit before its
+        # single target-only regeneration budget; it never repeats the same
+        # directional repair.
+        self.assertEqual(audit_calls, 3)
         self.assertEqual(
             captured.exception.metadata["repair_progress"],
-            "evidence_regroup_no_progress",
+            "controller_rejected",
         )
 
 

@@ -43,6 +43,10 @@ _TEMPORAL_MODES = {
     "insufficient_visual_evidence",
 }
 
+_TEMPORAL_RECOVERY_RECOVERED = "RECOVERED"
+_TEMPORAL_RECOVERY_REGENERATE = "REGENERATE"
+_TEMPORAL_RECOVERY_REJECT = "REJECT"
+
 _TEMPORAL_MODE_CONTRACT_MARKER = (
     "<enum:observable_transition|static_outcome|insufficient_visual_evidence>"
 )
@@ -5139,9 +5143,9 @@ async def _repair_static_outcome_payload_consistency(
 ) -> dict[str, Any]:
     """Repair a static_outcome payload that contradicts its own mode.
 
-    temporal_mode, Beat/evidence bindings, entities and timing stay locked.
-    Only the static narrative/presentation block may be regenerated from the
-    exact selected evidence.  The repair is single-shot and fail-closed.
+    temporal_mode, source_fact/narrative_state, Beat/evidence bindings,
+    entities and timing stay locked.  Only presentation-only fields may be
+    regenerated.  The repair is single-shot and fail-closed.
     """
     item = copy.deepcopy(row)
     if _shot_temporal_mode(item) != "static_outcome":
@@ -5150,11 +5154,15 @@ async def _repair_static_outcome_payload_consistency(
     evidence_ids = _id_list(item.get("source_evidence_ids"))
     mode_evidence_ids = _id_list(item.get("temporal_mode_evidence_ids"))
     reason = str(item.get("temporal_mode_reason") or "").strip()
+    locked_source_fact = str(item.get("source_fact") or "").strip()
+    locked_narrative_state = str(item.get("narrative_state") or "").strip()
     if (
         not evidence_ids
         or not reason
         or not mode_evidence_ids
         or not set(mode_evidence_ids).issubset(set(evidence_ids))
+        or not locked_source_fact
+        or not locked_narrative_state
     ):
         # Classification itself is incomplete.  This helper only repairs the
         # payload/mode consistency and must not silently widen its authority.
@@ -5228,8 +5236,8 @@ async def _repair_static_outcome_payload_consistency(
         "你是 strict-shot-v2 static_outcome 字段级一致性修复器。"
         "temporal_mode=static_outcome 已锁定，Beat/source evidence/entity/timing 全部不可修改。"
         "当前错误是 Shot 虽被分类为 static_outcome，却在 narrative 字段中伪造了前后变化。"
-        "只能根据 EXACT_SELECTED_EVIDENCE 重建静态叙事事实和 presentation-only 表现层。"
-        "source_fact 必须是证据直接支持的已成立事实；narrative_state 必须是同一稳定事实。"
+        "source_fact 与 narrative_state 已经锁定，绝对不能重写；只能根据 "
+        "EXACT_SELECTED_EVIDENCE 修复 presentation-only 表现层。"
         "程序会把 narrative_start_state=narrative_state=narrative_end_state，并把三个 video state "
         "投影为同一 narrative_state，所以你不得输出任何剧情前/中/后过程。"
         "visual_start_frame、representative_frame、visual_end_frame 必须画面可区分，"
@@ -5245,11 +5253,11 @@ async def _repair_static_outcome_payload_consistency(
         + "\n\n=== CURRENT_INVALID_STATIC_PAYLOAD ===\n"
         + json.dumps(
             {
-                "source_fact": item.get("source_fact"),
+                "source_fact_locked": locked_source_fact,
                 "summary": item.get("summary"),
                 "action": item.get("action"),
                 "narrative_start_state": item.get("narrative_start_state"),
-                "narrative_state": item.get("narrative_state"),
+                "narrative_state_locked": locked_narrative_state,
                 "narrative_end_state": item.get("narrative_end_state"),
                 "visual_realization": item.get("visual_realization"),
                 "visual_start_frame": item.get("visual_start_frame"),
@@ -5266,8 +5274,6 @@ async def _repair_static_outcome_payload_consistency(
     contract = json.dumps(
         {
             "patch": {
-                "source_fact": "",
-                "narrative_state": "",
                 "visual_realization": "",
                 "realization_scope": "presentation_only",
                 "realization_assumptions": [],
@@ -5306,8 +5312,6 @@ async def _repair_static_outcome_payload_consistency(
     patch = obj.get("patch") if isinstance(obj.get("patch"), dict) else obj
     patch = dict(patch) if isinstance(patch, dict) else {}
     required_text = (
-        "source_fact",
-        "narrative_state",
         "visual_realization",
         "realization_scope",
         "visual_start_frame",
@@ -5345,9 +5349,11 @@ async def _repair_static_outcome_payload_consistency(
         if str(value or "").strip()
     ]
 
-    stable = repaired["narrative_state"]
+    repaired["source_fact"] = locked_source_fact
+    repaired["narrative_state"] = locked_narrative_state
+    stable = locked_narrative_state
     repaired.update({
-        "summary": repaired["source_fact"],
+        "summary": locked_source_fact,
         "action": "",
         "narrative_start_state": stable,
         "narrative_end_state": stable,
@@ -5431,29 +5437,24 @@ async def _complete_targeted_shot_structure(
         "evidence_binding_source"
     ] = evidence_source
 
-    item = await _repair_invalid_temporal_mode_classification(
+    recovery = await _temporal_recovery_controller(
         env,
-        row=item,
-        compact_beats=[beat],
-        anchors=allowed_anchor_rows,
+        candidate=item,
+        beat=beat,
+        locked_evidence=allowed_anchor_rows,
+        audit_failure_metadata={},
+        allow_regeneration=False,
+        validate_candidate=False,
         context=f"Beat {target_order} targeted Shot",
     )
-
-    item = await _repair_static_outcome_payload_consistency(
-        env,
-        row=item,
-        compact_beats=[beat],
-        anchors=allowed_anchor_rows,
-        context=f"Beat {target_order} targeted Shot",
-    )
-
-    item = await _repair_observable_transition_state_consistency(
-        env,
-        row=item,
-        compact_beats=[beat],
-        anchors=allowed_anchor_rows,
-        context=f"Beat {target_order} targeted Shot",
-    )
+    if recovery["decision"] != _TEMPORAL_RECOVERY_RECOVERED:
+        metadata = copy.deepcopy(recovery["metadata"])
+        metadata["pre_repair_candidate"] = copy.deepcopy(item)
+        raise Stage04ShotRepairError(
+            f"Beat {target_order} targeted Shot requires temporal recovery",
+            metadata=metadata,
+        )
+    item = copy.deepcopy(recovery["shot"])
 
     item = _normalize_temporal_contract(
         item,
@@ -6191,7 +6192,7 @@ def _evidence_fingerprint(
 
 
 
-async def _reconsider_edge_beat_temporal_mode(
+async def _reconsider_temporal_mode_after_regeneration(
     env: dict[str, Any],
     *,
     row: dict[str, Any],
@@ -6199,7 +6200,7 @@ async def _reconsider_edge_beat_temporal_mode(
     anchors: list[dict[str, Any]],
     context: str,
 ) -> dict[str, Any] | None:
-    """Reconsider a first/edge Beat after observable progression proved impossible.
+    """Reconsider any Beat after target-only observable regeneration failed.
 
     This is deliberately target-evidence-only.  It never borrows the next Beat
     as fact authority.  A stable ongoing activity may be represented through the
@@ -6233,7 +6234,7 @@ async def _reconsider_edge_beat_temporal_mode(
         if order in beat_map
     ]
     metadata_base = {
-        "failed_rule": "edge_temporal_mode_reconsideration",
+        "failed_rule": "temporal_mode_reconsideration",
         "failed_rules": ["state_order", "temporal_progression"],
         "pre_repair_candidate": copy.deepcopy(item),
         "pre_repair_states": _shot_state_snapshot(item),
@@ -6251,16 +6252,16 @@ async def _reconsider_edge_beat_temporal_mode(
         or len(locked_beats) != len(covered_orders)
     ):
         raise Stage04ShotRepairError(
-            f"{context}: edge Beat temporal_mode 重分类无法完整锁定当前 Beat/evidence",
+            f"{context}: temporal_mode 重分类无法完整锁定当前 Beat/evidence",
             metadata={
                 **metadata_base,
-                "repair_progress": "edge_temporal_reconsideration_scope_incomplete",
+                "repair_progress": "temporal_reconsideration_scope_incomplete",
                 "evidence_sufficiency": "undetermined",
             },
         )
 
     system_prompt = (
-        "你是 strict-shot-v2 edge Beat temporal_mode 重分类器。"
+        "你是 strict-shot-v2 target-only temporal_mode 重分类器。"
         "当前 Shot 原本被分类为 observable_transition，但严格审计已经证明现有 evidence "
         "无法支持可证明的 start→representative→end 前向时间链。"
         "只能使用 EXACT_SELECTED_EVIDENCE 和 LOCKED_BEAT 重新分类，绝对不能借用下一 Beat。"
@@ -6305,7 +6306,7 @@ async def _reconsider_edge_beat_temporal_mode(
     )
     raw, parsed, _ = await _qwen(
         env,
-        phase="studio_stage04_edge_temporal_mode_reconsideration_qwen32b",
+        phase="studio_stage04_temporal_mode_reconsideration_qwen32b",
         system_prompt=system_prompt,
         prompt=prompt,
         contract=contract,
@@ -6328,11 +6329,11 @@ async def _reconsider_edge_beat_temporal_mode(
         or not set(mode_evidence_ids).issubset(set(evidence_ids))
     ):
         raise Stage04ShotRepairError(
-            f"{context}: edge Beat temporal_mode 重分类输出不合法",
+            f"{context}: temporal_mode 重分类输出不合法",
             metadata={
                 **metadata_base,
                 "repair_output": output,
-                "repair_progress": "edge_temporal_reconsideration_invalid_output",
+                "repair_progress": "temporal_reconsideration_invalid_output",
                 "evidence_sufficiency": "undetermined",
             },
         )
@@ -6346,7 +6347,7 @@ async def _reconsider_edge_beat_temporal_mode(
             metadata={
                 **metadata_base,
                 "repair_output": output,
-                "repair_progress": "edge_temporal_reconsideration_insufficient",
+                "repair_progress": "temporal_reconsideration_insufficient",
                 "evidence_sufficiency": "insufficient_visual_evidence",
                 "regroup_reason": "target-only evidence remains insufficient after temporal reconsideration",
             },
@@ -6373,19 +6374,335 @@ async def _reconsider_edge_beat_temporal_mode(
             "evidence_sufficiency": metadata.get("evidence_sufficiency") or "undetermined",
         })
         raise Stage04ShotRepairError(
-            f"{context}: edge Beat static_outcome payload 修复失败：{exc}",
+            f"{context}: static_outcome presentation repair 失败：{exc}",
             metadata=metadata,
         ) from exc
 
-    repaired["_edge_temporal_reconsideration_diagnostics"] = {
+    repaired["_temporal_reconsideration_diagnostics"] = {
         **metadata_base,
         "repair_output": output,
         "post_repair_candidate": copy.deepcopy(repaired),
         "post_repair_states": _shot_state_snapshot(repaired),
-        "repair_progress": "edge_temporal_reclassified_static_outcome",
+        "repair_progress": "temporal_reclassified_static_outcome",
         "evidence_sufficiency": "sufficient_for_stable_state",
     }
     return repaired
+
+
+async def _generate_target_only_temporal_candidate(
+    env: dict[str, Any],
+    *,
+    candidate: dict[str, Any],
+    beat: dict[str, Any],
+    locked_evidence: list[dict[str, Any]],
+    context: str,
+) -> dict[str, Any]:
+    """Regenerate one Shot from the current Beat authority and nothing else."""
+    order = int(beat.get("order") or 0)
+    locked_ids = _id_list(candidate.get("source_evidence_ids"))
+    actual_ids = [
+        str(anchor.get("id") or "")
+        for anchor in locked_evidence
+        if isinstance(anchor, dict) and str(anchor.get("id") or "")
+    ]
+    if order <= 0 or not locked_ids or set(actual_ids) != set(locked_ids):
+        raise Stage04ShotRepairError(
+            f"{context}: target-only regeneration scope incomplete",
+            metadata={
+                "repair_progress": "target_only_regeneration_scope_incomplete",
+                "evidence_ids": locked_ids,
+                "actual_evidence_ids": actual_ids,
+                "recovery_scope": "current_beat_locked_evidence_only",
+            },
+        )
+
+    locked_beat = copy.deepcopy(beat)
+    locked_beat["allowed_source_evidence_ids"] = list(locked_ids)
+    locked_beat["source_evidence_ids"] = list(locked_ids)
+    prompt = (
+        "=== TARGET_BEAT_LOCKED ===\n"
+        + json.dumps(locked_beat, ensure_ascii=False, separators=(",", ":"))
+        + "\n\n=== CURRENT_BEAT_LOCKED_EVIDENCE ===\n"
+        + json.dumps(locked_evidence, ensure_ascii=False, separators=(",", ":"))
+        + "\n\n=== LOCKED_SHOT_CONSTRAINTS ===\n"
+        + json.dumps(
+            {
+                "covered_beat_orders": [order],
+                "source_evidence_ids": locked_ids,
+                "character_entity_ids": _id_list(candidate.get("character_entity_ids")),
+                "prop_entity_ids": _id_list(candidate.get("prop_entity_ids")),
+                "duration_seconds": candidate.get("duration_seconds"),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
+    system_prompt = (
+        "你是 strict-shot-v2 target-only Shot 重生器。只使用 TARGET_BEAT_LOCKED 与 "
+        "CURRENT_BEAT_LOCKED_EVIDENCE；不存在 previous Beat、next Beat 或未来剧情上下文。"
+        "covered Beat、evidence ids、entity binding 与 duration 均锁定。"
+        "必须从当前证据重新生成 grounded Shot 并重新判断 temporal_mode。"
+        "observable_transition 只有在证据直接支持三个可区分前向状态时才能使用；"
+        "稳定事实使用 static_outcome；无法形成可信视觉状态时使用 "
+        "insufficient_visual_evidence。不得为了通过审计虚构动作。只返回严格 JSON。"
+    )
+    raw, parsed, _ = await _qwen(
+        env,
+        phase="studio_stage04_target_only_temporal_regeneration_qwen32b",
+        system_prompt=system_prompt,
+        prompt=prompt,
+        contract=_shot_generation_contract(order),
+        max_tokens=1700,
+        temperature=0.0,
+    )
+    candidates = _extract_shots(env, raw, parsed)
+    if not candidates:
+        raise Stage04ShotRepairError(
+            f"{context}: target-only regeneration returned no Shot",
+            metadata={"repair_progress": "target_only_regeneration_empty"},
+        )
+    anchor_rows = [copy.deepcopy(anchor) for anchor in locked_evidence]
+    for raw_candidate in candidates:
+        normalized, _origin = _normalize_raw_shot_binding(
+            raw_candidate,
+            compact_beats=[locked_beat],
+            anchors=anchor_rows,
+        )
+        if normalized is None:
+            continue
+        normalized["covered_beat_orders"] = [order]
+        normalized["source_evidence_ids"] = list(locked_ids)
+        normalized["character_entity_ids"] = _id_list(
+            candidate.get("character_entity_ids")
+        )
+        normalized["prop_entity_ids"] = _id_list(candidate.get("prop_entity_ids"))
+        if candidate.get("duration_seconds") not in (None, ""):
+            normalized["duration_seconds"] = candidate.get("duration_seconds")
+        return normalized
+    raise Stage04ShotRepairError(
+        f"{context}: target-only regeneration has no bindable Shot",
+        metadata={"repair_progress": "target_only_regeneration_unbindable"},
+    )
+
+
+async def _temporal_recovery_controller(
+    env: dict[str, Any],
+    *,
+    candidate: dict[str, Any],
+    beat: dict[str, Any],
+    locked_evidence: list[dict[str, Any]],
+    audit_failure_metadata: dict[str, Any] | None,
+    allowed_chars: set[str] | None = None,
+    allowed_props: set[str] | None = None,
+    scene_id: str = "",
+    episode_id: str = "",
+    audit_fn: Any = None,
+    allow_regeneration: bool = True,
+    validate_candidate: bool = True,
+    context: str = "temporal recovery",
+) -> dict[str, Any]:
+    """One bounded recovery state machine shared by Beat 1, Beat 2 and Beat N."""
+    item = copy.deepcopy(candidate)
+    beat_row = copy.deepcopy(beat)
+    evidence_rows = [copy.deepcopy(row) for row in locked_evidence]
+    order = int(beat_row.get("order") or 0)
+    history: list[str] = []
+    metadata = {
+        "controller": "temporal-recovery-v1",
+        "target_beat_order": order,
+        "recovery_scope": "current_beat_locked_evidence_only",
+        "prior_failure": copy.deepcopy(audit_failure_metadata or {}),
+        "decision_history": history,
+        "evidence_ids": _id_list(item.get("source_evidence_ids")),
+        "evidence_fingerprint": _evidence_fingerprint(
+            compact_beats=[beat_row], anchors=evidence_rows
+        ),
+    }
+
+    async def validate_and_audit(row: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        rows = validate_rows(
+            env,
+            raw_rows=[row],
+            compact_beats=[beat_row],
+            allowed_chars=set(allowed_chars or set()),
+            allowed_props=set(allowed_props or set()),
+            anchors=evidence_rows,
+            scene_id=scene_id,
+            episode_id=episode_id,
+        )
+        audit: dict[str, Any] = {"valid": True, "violations": []}
+        if callable(audit_fn):
+            audit = await audit_fn(
+                source_window="\n".join(
+                    str(anchor.get("text") or "") for anchor in evidence_rows
+                ),
+                compact_beats=[beat_row],
+                shots=rows,
+            )
+            if not _audit_ok(env, audit):
+                raise Stage04ShotRepairError(
+                    f"{context}: recovered Shot failed strict-shot-v2 audit: "
+                    + _audit_issues(audit),
+                    metadata={"repair_progress": "controller_strict_audit_failed", "audit": audit},
+                )
+        return rows, audit
+
+    try:
+        item = await _repair_invalid_temporal_mode_classification(
+            env,
+            row=item,
+            compact_beats=[beat_row],
+            anchors=evidence_rows,
+            context=context,
+        )
+        history.append("field:temporal_mode")
+        item = await _repair_static_outcome_payload_consistency(
+            env,
+            row=item,
+            compact_beats=[beat_row],
+            anchors=evidence_rows,
+            context=context,
+        )
+        if _shot_temporal_mode(item) == "static_outcome":
+            history.append("field:static_presentation_only")
+        item = await _repair_observable_transition_state_consistency(
+            env,
+            row=item,
+            compact_beats=[beat_row],
+            anchors=evidence_rows,
+            context=context,
+        )
+        if _shot_temporal_mode(item) == "observable_transition":
+            history.append("field:observable_state")
+        if not validate_candidate:
+            return {
+                "decision": _TEMPORAL_RECOVERY_RECOVERED,
+                "shot": item,
+                "rows": [item],
+                "audit": {},
+                "metadata": metadata,
+            }
+        rows, audit = await validate_and_audit(item)
+        history.append("strict:passed_after_field_repair")
+        return {
+            "decision": _TEMPORAL_RECOVERY_RECOVERED,
+            "shot": rows[0],
+            "rows": rows,
+            "audit": audit,
+            "metadata": metadata,
+        }
+    except Stage04ShotRepairError as exc:
+        failure = copy.deepcopy(exc.metadata)
+        metadata["field_repair_failure"] = failure
+        for key in (
+            "failed_rule",
+            "failed_rules",
+            "evidence_sufficiency",
+            "regroup_reason",
+        ):
+            if key in failure:
+                metadata[key] = copy.deepcopy(failure[key])
+        if _shot_temporal_mode(item) != "observable_transition":
+            metadata["repair_progress"] = (
+                failure.get("repair_progress") or "controller_rejected_field_repair"
+            )
+            return {
+                "decision": _TEMPORAL_RECOVERY_REJECT,
+                "shot": item,
+                "rows": [],
+                "audit": {},
+                "metadata": metadata,
+            }
+        history.append("decision:target_only_regeneration")
+    except Exception as exc:
+        metadata.update({
+            "repair_progress": "controller_rejected_local_contract",
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+        return {
+            "decision": _TEMPORAL_RECOVERY_REJECT,
+            "shot": item,
+            "rows": [],
+            "audit": {},
+            "metadata": metadata,
+        }
+
+    if not allow_regeneration:
+        metadata["repair_progress"] = "controller_requires_target_only_regeneration"
+        return {
+            "decision": _TEMPORAL_RECOVERY_REGENERATE,
+            "shot": item,
+            "rows": [],
+            "audit": {},
+            "metadata": metadata,
+        }
+
+    try:
+        regenerated = await _generate_target_only_temporal_candidate(
+            env,
+            candidate=item,
+            beat=beat_row,
+            locked_evidence=evidence_rows,
+            context=context,
+        )
+        history.append("regenerated:target_only")
+        regenerated = await _repair_invalid_temporal_mode_classification(
+            env,
+            row=regenerated,
+            compact_beats=[beat_row],
+            anchors=evidence_rows,
+            context=context + " regenerated",
+        )
+        regenerated = await _repair_static_outcome_payload_consistency(
+            env,
+            row=regenerated,
+            compact_beats=[beat_row],
+            anchors=evidence_rows,
+            context=context + " regenerated",
+        )
+        try:
+            rows, audit = await validate_and_audit(regenerated)
+        except Exception as strict_exc:
+            if _shot_temporal_mode(regenerated) != "observable_transition":
+                raise
+            metadata["regeneration_strict_failure"] = f"{type(strict_exc).__name__}: {strict_exc}"
+            reconsidered = await _reconsider_temporal_mode_after_regeneration(
+                env,
+                row=regenerated,
+                compact_beats=[beat_row],
+                anchors=evidence_rows,
+                context=context + " reconsideration",
+            )
+            history.append("reconsidered:temporal_mode")
+            if reconsidered is None:
+                raise Stage04ShotRepairError(
+                    f"{context}: target-only regeneration and temporal reconsideration made no progress",
+                    metadata={"repair_progress": "controller_rejected_no_progress"},
+                )
+            rows, audit = await validate_and_audit(reconsidered)
+        history.append("strict:passed_after_target_only_regeneration")
+        metadata["repair_progress"] = "controller_recovered"
+        return {
+            "decision": _TEMPORAL_RECOVERY_RECOVERED,
+            "shot": rows[0],
+            "rows": rows,
+            "audit": audit,
+            "metadata": metadata,
+        }
+    except Exception as exc:
+        child_metadata = copy.deepcopy(getattr(exc, "metadata", {}) or {})
+        metadata.update({
+            "repair_progress": child_metadata.get("repair_progress") or "controller_rejected",
+            "controller_error": f"{type(exc).__name__}: {exc}",
+            "child_failure": child_metadata,
+        })
+        return {
+            "decision": _TEMPORAL_RECOVERY_REJECT,
+            "shot": item,
+            "rows": [],
+            "audit": {},
+            "metadata": metadata,
+        }
 
 
 def _reselect_adjacent_evidence(
@@ -6558,28 +6875,24 @@ async def _regenerate_shot_from_reselected_evidence(
         )
         if normalized is None:
             continue
-        repaired = await _repair_invalid_temporal_mode_classification(
+        recovery = await _temporal_recovery_controller(
             env,
-            row=normalized,
-            compact_beats=[compact_beat],
-            anchors=allowed_anchors,
+            candidate=normalized,
+            beat=compact_beat,
+            locked_evidence=allowed_anchors,
+            audit_failure_metadata={},
+            allow_regeneration=False,
+            validate_candidate=False,
             context=f"Beat {target_order} regroup regeneration",
         )
-        repaired = await _repair_static_outcome_payload_consistency(
-            env,
-            row=repaired,
-            compact_beats=[compact_beat],
-            anchors=allowed_anchors,
-            context=f"Beat {target_order} regroup regeneration",
-        )
-        repaired = await _repair_observable_transition_state_consistency(
-            env,
-            row=repaired,
-            compact_beats=[compact_beat],
-            anchors=allowed_anchors,
-            context=f"Beat {target_order} regroup regeneration",
-        )
-        repaired_candidates.append(repaired)
+        if recovery["decision"] != _TEMPORAL_RECOVERY_RECOVERED:
+            metadata = copy.deepcopy(recovery["metadata"])
+            metadata["pre_repair_candidate"] = copy.deepcopy(normalized)
+            raise Stage04ShotRepairError(
+                f"Beat {target_order} regroup regeneration requires temporal recovery",
+                metadata=metadata,
+            )
+        repaired_candidates.append(copy.deepcopy(recovery["shot"]))
     if not repaired_candidates:
         raise RuntimeError("regroup Shot regeneration 没有可验证的 evidence-locked Shot")
     return validate_rows(
@@ -6614,199 +6927,102 @@ async def _recover_single_beat_after_scoped_repair(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     target_order = int(target_beat.get("order") or 0)
 
-    previous_beat = next((
-        beat for beat in all_beats
-        if isinstance(beat, dict)
-        and int(beat.get("order") or 0) == target_order - 1
-    ), None)
-
-    # A first/edge Beat has no earlier fact authority to borrow from.  Before
-    # declaring regroup impossible, reconsider whether strict audit has shown
-    # that the Beat is a stable state/ongoing activity rather than a provable
-    # three-milestone transition.  This path is target-evidence-only and never
-    # consumes NEXT_BEAT.
-    if target_order == 1 and previous_beat is None and current_rows:
-        edge_candidate = await _reconsider_edge_beat_temporal_mode(
-            env,
-            row=current_rows[0],
-            compact_beats=current_compact_beats,
-            anchors=current_anchors,
-            context=f"Beat {target_order} edge recovery",
-        )
-        if edge_candidate is not None:
-            try:
-                edge_rows = validate_rows(
-                    env,
-                    raw_rows=[edge_candidate],
-                    compact_beats=current_compact_beats,
-                    allowed_chars=allowed_chars,
-                    allowed_props=allowed_props,
-                    anchors=current_anchors,
-                    scene_id=scene_id,
-                    episode_id=episode_id,
-                )
-                edge_source_window = "\n".join(
-                    str(anchor.get("text") or "")
-                    for anchor in current_anchors
-                    if isinstance(anchor, dict)
-                )
-                edge_audit = await audit_fn(
-                    source_window=edge_source_window,
-                    compact_beats=current_compact_beats,
-                    shots=edge_rows,
-                )
-            except Exception as exc:
-                prior_metadata["edge_temporal_reconsideration"] = {
-                    "repair_progress": "edge_temporal_reconsideration_validation_failed",
-                    "error": f"{type(exc).__name__}: {exc}",
-                }
-            else:
-                if _audit_ok(env, edge_audit):
-                    diagnostics = copy.deepcopy(
-                        edge_candidate.get("_edge_temporal_reconsideration_diagnostics")
-                        or {}
-                    )
-                    diagnostics.update({
-                        "repair_progress": "edge_temporal_reconsideration_passed_strict_audit",
-                        "final_audit": copy.deepcopy(edge_audit),
-                        "prior_repair": copy.deepcopy(prior_metadata),
-                        "recovery_usage": {
-                            "scoped_repair": 1,
-                            "edge_temporal_reconsideration": 1,
-                            "evidence_regroup": 0,
-                            "shot_regeneration": 0,
-                            "final_strict_audit": 1,
-                        },
-                    })
-                    for edge_row in edge_rows:
-                        edge_row["_regroup_recovery_diagnostics"] = copy.deepcopy(diagnostics)
-                    return edge_rows, edge_audit
-                prior_metadata["edge_temporal_reconsideration"] = {
-                    "repair_progress": "edge_temporal_reconsideration_failed_strict_audit",
-                    "audit": copy.deepcopy(edge_audit),
-                }
-
-    # Beat 1 cannot expand evidence backward because no previous Beat exists.
-    # If temporal reconsideration did not close the Shot, regenerate one fresh
-    # Shot from the current Beat's locked evidence only.  This is not evidence
-    # expansion: NEXT_BEAT is deliberately hidden and the evidence fingerprint
-    # must remain unchanged.  The regenerated Shot still has to pass the normal
-    # strict-shot-v2 validator and final semantic audit.
-    if target_order == 1 and previous_beat is None:
-        edge_compact = next((
+    # Temporal recovery is identical for Beat 1, Beat 2 and Beat N.  It never
+    # expands authority to previous/next Beat evidence.  Adjacent regroup below
+    # remains available only for non-temporal evidence/coverage failures.
+    temporal_candidate = (
+        copy.deepcopy(current_rows[0])
+        if current_rows and isinstance(current_rows[0], dict)
+        else copy.deepcopy(prior_metadata.get("pre_repair_candidate") or {})
+    )
+    failed_markers = {
+        str(prior_metadata.get("failed_rule") or ""),
+        *[
+            str(value or "")
+            for value in (prior_metadata.get("failed_rules") or [])
+        ],
+        str(prior_metadata.get("evidence_sufficiency") or ""),
+        str(prior_metadata.get("repair_progress") or ""),
+    }
+    temporal_markers = {
+        "observable_transition_state_consistency",
+        "temporal_mode_contract",
+        "state_order",
+        "causal_order",
+        "no_result_duplication",
+        "representative_state",
+        "visual_realization",
+        "insufficient_for_observable_transition",
+        "insufficient_visual_evidence",
+        "controller_requires_target_only_regeneration",
+        "rejected_no_progress",
+        "no_semantic_progress",
+    }
+    if temporal_candidate and _shot_temporal_mode(temporal_candidate) == "observable_transition":
+        state_keys = [
+            _semantic_text_key(temporal_candidate.get(field))
+            for field in _SHOT_TEMPORAL_STATE_FIELDS
+        ]
+        if all(state_keys) and len(set(state_keys)) < len(state_keys):
+            failed_markers.add("observable_transition_state_consistency")
+    if temporal_candidate and failed_markers.intersection(temporal_markers):
+        target_compact = next((
             copy.deepcopy(beat)
             for beat in current_compact_beats
             if isinstance(beat, dict)
             and int(beat.get("order") or 0) == target_order
         ), None)
-        if edge_compact is None:
-            raise Stage04ShotRepairError(
-                f"Beat {target_order} target-only regeneration 缺少锁定 Beat",
-                metadata={
-                    "repair_progress": "edge_target_only_regeneration_scope_incomplete",
-                    "prior_repair": copy.deepcopy(prior_metadata),
-                    "recovery_scope": "target_evidence_only_no_future_borrowing",
-                },
-            )
-
-        edge_allowed_ids = set(_id_list(
-            edge_compact.get("allowed_source_evidence_ids")
-            or edge_compact.get("source_evidence_ids")
-        ))
-        edge_anchors = [
+        locked_ids = set(_id_list(temporal_candidate.get("source_evidence_ids")))
+        target_anchors = [
             copy.deepcopy(anchor)
             for anchor in current_anchors
             if isinstance(anchor, dict)
-            and str(anchor.get("id") or "") in edge_allowed_ids
+            and str(anchor.get("id") or "") in locked_ids
         ]
-        if not edge_allowed_ids or len(edge_anchors) != len(edge_allowed_ids):
+        if target_compact is None or not locked_ids or len(target_anchors) != len(locked_ids):
             raise Stage04ShotRepairError(
-                f"Beat {target_order} target-only regeneration 无法完整锁定当前 evidence",
+                f"Beat {target_order} temporal recovery scope incomplete",
                 metadata={
-                    "repair_progress": "edge_target_only_regeneration_scope_incomplete",
-                    "prior_repair": copy.deepcopy(prior_metadata),
-                    "evidence_ids": sorted(edge_allowed_ids),
-                    "recovery_scope": "target_evidence_only_no_future_borrowing",
+                    **copy.deepcopy(prior_metadata),
+                    "repair_progress": "temporal_controller_scope_incomplete",
+                    "recovery_scope": "current_beat_locked_evidence_only",
                 },
             )
-
-        edge_source_window = "\n".join(
-            str(anchor.get("text") or "")
-            for anchor in edge_anchors
-        )
-        edge_fingerprint = _evidence_fingerprint(
-            compact_beats=[edge_compact],
-            anchors=edge_anchors,
-        )
-        edge_recovery = {
-            "recovery_budget": copy.deepcopy(_SHOT_RECOVERY_BUDGET),
-            "recovery_usage": {
-                "scoped_repair": 1,
-                "edge_temporal_reconsideration": 1 if current_rows else 0,
-                "evidence_regroup": 0,
-                "shot_regeneration": 1,
-                "final_strict_audit": 0,
-            },
-            "repair_progress": "edge_target_only_regeneration_started",
-            "prior_repair": copy.deepcopy(prior_metadata),
-            "evidence_ids": sorted(edge_allowed_ids),
-            "evidence_fingerprint_before": edge_fingerprint,
-            "evidence_fingerprint_after": edge_fingerprint,
-            "recovery_scope": {
-                "target_beat_order": target_order,
-                "mode": "target_only_shot_regeneration_no_future_borrowing",
-            },
-        }
         _stage04_progress(
-            env, 5, "Edge recovery", "正在使用当前 Beat 锁定证据重生首镜头"
+            env, 5, "Temporal recovery", "正在使用当前 Beat 锁定证据执行统一时间恢复"
         )
-        try:
-            edge_regenerated = await _regenerate_shot_from_reselected_evidence(
-                env,
-                target_order=target_order,
-                compact_beat=edge_compact,
-                anchors=edge_anchors,
-                previous_shot=None,
-                next_beat=None,
-                allowed_chars=allowed_chars,
-                allowed_props=allowed_props,
-                scene_id=scene_id,
-                episode_id=episode_id,
-            )
-        except Exception as exc:
-            edge_recovery.update({
-                "repair_progress": "edge_target_only_regeneration_failed",
-                "regroup_reason": f"{type(exc).__name__}: {exc}",
-            })
-            raise Stage04ShotRepairError(
-                f"Beat {target_order} target-only Shot 重生失败：{exc}",
-                metadata=edge_recovery,
-            ) from exc
-
-        edge_recovery["recovery_usage"]["final_strict_audit"] = 1
-        edge_final_audit = await audit_fn(
-            source_window=edge_source_window,
-            compact_beats=[edge_compact],
-            shots=edge_regenerated,
+        outcome = await _temporal_recovery_controller(
+            env,
+            candidate=temporal_candidate,
+            beat=target_compact,
+            locked_evidence=target_anchors,
+            audit_failure_metadata=prior_metadata,
+            allowed_chars=allowed_chars,
+            allowed_props=allowed_props,
+            scene_id=scene_id,
+            episode_id=episode_id,
+            audit_fn=audit_fn,
+            allow_regeneration=True,
+            validate_candidate=True,
+            context=f"Beat {target_order} temporal recovery",
         )
-        edge_recovery["final_audit"] = copy.deepcopy(edge_final_audit)
-        if not _audit_ok(env, edge_final_audit):
-            edge_recovery.update({
-                "repair_progress": "edge_target_only_regeneration_failed_strict_audit",
-                "regroup_reason": "target-only regenerated Shot did not pass strict-shot-v2",
-            })
-            raise Stage04ShotRepairError(
-                f"Beat {target_order} target-only Shot 仍未通过 strict-shot-v2："
-                + _audit_issues(edge_final_audit),
-                metadata=edge_recovery,
-            )
-
-        edge_recovery["repair_progress"] = (
-            "edge_target_only_regeneration_passed_strict_audit"
+        if outcome["decision"] == _TEMPORAL_RECOVERY_RECOVERED:
+            diagnostics = copy.deepcopy(outcome["metadata"])
+            diagnostics["recovery_usage"] = {
+                "scoped_repair": 1,
+                "target_only_regeneration": int(
+                    "regenerated:target_only" in diagnostics.get("decision_history", [])
+                ),
+                "evidence_regroup": 0,
+                "final_strict_audit": 1,
+            }
+            for recovered_row in outcome["rows"]:
+                recovered_row["_regroup_recovery_diagnostics"] = copy.deepcopy(diagnostics)
+            return outcome["rows"], outcome["audit"]
+        raise Stage04ShotRepairError(
+            f"Beat {target_order} temporal recovery rejected without adjacent fact borrowing",
+            metadata=copy.deepcopy(outcome["metadata"]),
         )
-        for edge_row in edge_regenerated:
-            edge_row["_regroup_recovery_diagnostics"] = copy.deepcopy(edge_recovery)
-        return edge_regenerated, edge_final_audit
 
     _stage04_progress(
         env, 5, "Regroup recovery", "正在重新选择镜头证据"
@@ -8220,27 +8436,54 @@ async def _validate_initial_rows_with_recovery(
             continue
 
         try:
-            normalized = await _repair_invalid_temporal_mode_classification(
-                env,
-                row=normalized,
-                compact_beats=compact_beats,
-                anchors=anchors,
-                context=f"initial Shot#{index}",
+            covered = _orders(normalized.get("covered_beat_orders"))
+            target_beat = next(
+                (
+                    beat for beat in compact_beats
+                    if int(beat.get("order") or 0) in set(covered)
+                ),
+                None,
             )
-            normalized = await _repair_static_outcome_payload_consistency(
-                env,
-                row=normalized,
-                compact_beats=compact_beats,
-                anchors=anchors,
-                context=f"initial Shot#{index}",
-            )
-            normalized = await _repair_observable_transition_state_consistency(
-                env,
-                row=normalized,
-                compact_beats=compact_beats,
-                anchors=anchors,
-                context=f"initial Shot#{index}",
-            )
+            if target_beat is None:
+                raise RuntimeError("initial Shot temporal recovery 缺少 locked Beat")
+            evidence_ids = set(_id_list(normalized.get("source_evidence_ids")))
+            target_evidence = [
+                anchor for anchor in anchors
+                if str(anchor.get("id") or "") in evidence_ids
+            ]
+            if len(covered) == 1:
+                recovery = await _temporal_recovery_controller(
+                    env,
+                    candidate=normalized,
+                    beat=target_beat,
+                    locked_evidence=target_evidence,
+                    audit_failure_metadata={},
+                    allow_regeneration=False,
+                    validate_candidate=False,
+                    context=f"initial Shot#{index}",
+                )
+                if recovery["decision"] != _TEMPORAL_RECOVERY_RECOVERED:
+                    raise Stage04ShotRepairError(
+                        f"initial Shot#{index} requires temporal recovery",
+                        metadata={
+                            **copy.deepcopy(recovery["metadata"]),
+                            "pre_repair_candidate": copy.deepcopy(normalized),
+                        },
+                    )
+                normalized = copy.deepcopy(recovery["shot"])
+            else:
+                normalized = await _repair_invalid_temporal_mode_classification(
+                    env, row=normalized, compact_beats=compact_beats,
+                    anchors=anchors, context=f"initial Shot#{index}",
+                )
+                normalized = await _repair_static_outcome_payload_consistency(
+                    env, row=normalized, compact_beats=compact_beats,
+                    anchors=anchors, context=f"initial Shot#{index}",
+                )
+                normalized = await _repair_observable_transition_state_consistency(
+                    env, row=normalized, compact_beats=compact_beats,
+                    anchors=anchors, context=f"initial Shot#{index}",
+                )
             rows = validate_rows(
                 env,
                 raw_rows=[normalized],

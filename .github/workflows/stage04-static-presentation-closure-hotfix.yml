@@ -28,6 +28,20 @@ jobs:
         shell: bash
         run: echo "BASE_RUNTIME_SHA=$(sha256sum app/stage04_v238_runtime.py | awk '{print $1}')" >> "$GITHUB_ENV"
 
+      - name: Prepare regression fixture
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tools/apply_stage04_static_presentation_closure_fix.py')
+          text = path.read_text(encoding='utf-8')
+          old = '            "visual_motion": "",\n'
+          new = '            "visual_motion": "镜头轻微推进后停住，仅表现层变化。",\n'
+          if text.count(old) != 1:
+              raise SystemExit(f'duplicate-frame visual_motion marker count={text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
       - name: Apply static presentation closure fix
         run: python tools/apply_stage04_static_presentation_closure_fix.py
 
@@ -83,6 +97,6 @@ jobs:
             tests/test_stage02_performance_optimization.py \
             tests/test_stage04_frontend_entry.py
           git rm .github/workflows/stage04-static-presentation-closure-hotfix.yml
-          git rm tools/apply_stage04_static_presentation_closure_fix.py
+          git rm -f tools/apply_stage04_static_presentation_closure_fix.py
           git commit -m "fix(stage04): close static presentation frames deterministically"
           git push origin HEAD:main

@@ -4787,6 +4787,263 @@ async def _repair_invalid_temporal_mode_classification(
     return repaired
 
 
+
+async def _repair_static_outcome_payload_consistency(
+    env: dict[str, Any],
+    *,
+    row: dict[str, Any],
+    compact_beats: list[dict[str, Any]],
+    anchors: list[dict[str, Any]],
+    context: str,
+) -> dict[str, Any]:
+    """Repair a static_outcome payload that contradicts its own mode.
+
+    temporal_mode, Beat/evidence bindings, entities and timing stay locked.
+    Only the static narrative/presentation block may be regenerated from the
+    exact selected evidence.  The repair is single-shot and fail-closed.
+    """
+    item = copy.deepcopy(row)
+    if _shot_temporal_mode(item) != "static_outcome":
+        return item
+
+    evidence_ids = _id_list(item.get("source_evidence_ids"))
+    mode_evidence_ids = _id_list(item.get("temporal_mode_evidence_ids"))
+    reason = str(item.get("temporal_mode_reason") or "").strip()
+    if (
+        not evidence_ids
+        or not reason
+        or not mode_evidence_ids
+        or not set(mode_evidence_ids).issubset(set(evidence_ids))
+    ):
+        # Classification itself is incomplete.  This helper only repairs the
+        # payload/mode consistency and must not silently widen its authority.
+        return item
+
+    try:
+        return _normalize_temporal_contract(
+            item,
+            evidence_ids=evidence_ids,
+            raw_index=1,
+        )
+    except Stage04ShotRepairError:
+        raise
+    except Exception as exc:
+        if "static_outcome" not in str(exc):
+            raise
+        initial_error = str(exc)
+
+    covered_orders = _orders(item.get("covered_beat_orders"))
+    anchor_map = {
+        str(anchor.get("id") or ""): anchor
+        for anchor in anchors or []
+        if isinstance(anchor, dict) and str(anchor.get("id") or "")
+    }
+    beat_map = {
+        int(beat.get("order") or 0): beat
+        for beat in compact_beats or []
+        if isinstance(beat, dict) and int(beat.get("order") or 0) > 0
+    }
+    exact_evidence = [
+        copy.deepcopy(anchor_map[evidence_id])
+        for evidence_id in evidence_ids
+        if evidence_id in anchor_map
+    ]
+    locked_beats = [
+        copy.deepcopy(beat_map[order])
+        for order in covered_orders
+        if order in beat_map
+    ]
+
+    metadata_base = {
+        "failed_rule": "static_outcome_payload_consistency",
+        "failed_rules": ["visual_realization"],
+        "temporal_mode": "static_outcome",
+        "temporal_mode_reason": reason,
+        "temporal_mode_evidence_ids": mode_evidence_ids,
+        "evidence_ids": evidence_ids,
+        "beat_id": covered_orders,
+        "exact_selected_evidence": copy.deepcopy(exact_evidence),
+        "locked_beats": copy.deepcopy(locked_beats),
+        "pre_repair_candidate": copy.deepcopy(item),
+        "pre_repair_error": initial_error,
+        "repair_context": context,
+    }
+
+    if (
+        len(exact_evidence) != len(evidence_ids)
+        or not covered_orders
+        or len(locked_beats) != len(covered_orders)
+    ):
+        raise Stage04ShotRepairError(
+            f"{context}: static_outcome payload 冲突且无法完整锁定 Beat/evidence",
+            metadata={
+                **metadata_base,
+                "repair_progress": "static_payload_repair_scope_incomplete",
+                "evidence_sufficiency": "undetermined",
+            },
+        )
+
+    system_prompt = (
+        "你是 strict-shot-v2 static_outcome 字段级一致性修复器。"
+        "temporal_mode=static_outcome 已锁定，Beat/source evidence/entity/timing 全部不可修改。"
+        "当前错误是 Shot 虽被分类为 static_outcome，却在 narrative 字段中伪造了前后变化。"
+        "只能根据 EXACT_SELECTED_EVIDENCE 重建静态叙事事实和 presentation-only 表现层。"
+        "source_fact 必须是证据直接支持的已成立事实；narrative_state 必须是同一稳定事实。"
+        "程序会把 narrative_start_state=narrative_state=narrative_end_state，并把三个 video state "
+        "投影为同一 narrative_state，所以你不得输出任何剧情前/中/后过程。"
+        "visual_start_frame、representative_frame、visual_end_frame 必须画面可区分，"
+        "但差异只能来自构图、机位、镜头运动、环境光影或不改变剧情的微小表现。"
+        "visual_motion 只能描述表现层运动；realization_scope 必须精确为 presentation_only。"
+        "不得新增角色、道具、动作、因果结果或下一 Beat 事实。只返回严格 JSON patch。"
+    )
+    prompt = (
+        "=== LOCKED_COVERED_BEATS ===\n"
+        + json.dumps(locked_beats, ensure_ascii=False, separators=(",", ":"))
+        + "\n\n=== EXACT_SELECTED_EVIDENCE ===\n"
+        + json.dumps(exact_evidence, ensure_ascii=False, separators=(",", ":"))
+        + "\n\n=== CURRENT_INVALID_STATIC_PAYLOAD ===\n"
+        + json.dumps(
+            {
+                "source_fact": item.get("source_fact"),
+                "summary": item.get("summary"),
+                "action": item.get("action"),
+                "narrative_start_state": item.get("narrative_start_state"),
+                "narrative_state": item.get("narrative_state"),
+                "narrative_end_state": item.get("narrative_end_state"),
+                "visual_realization": item.get("visual_realization"),
+                "visual_start_frame": item.get("visual_start_frame"),
+                "representative_frame": item.get("representative_frame"),
+                "visual_end_frame": item.get("visual_end_frame"),
+                "visual_motion": item.get("visual_motion"),
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        + "\n\n=== INITIAL_LOCAL_CONTRACT_ERROR ===\n"
+        + initial_error
+    )
+    contract = json.dumps(
+        {
+            "patch": {
+                "source_fact": "",
+                "narrative_state": "",
+                "visual_realization": "",
+                "realization_scope": "presentation_only",
+                "realization_assumptions": [],
+                "visual_start_frame": "",
+                "representative_frame": "",
+                "visual_end_frame": "",
+                "visual_motion": "",
+            }
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    try:
+        raw, parsed, _ = await _qwen(
+            env,
+            phase="studio_stage04_static_outcome_payload_repair_qwen32b",
+            system_prompt=system_prompt,
+            prompt=prompt,
+            contract=contract,
+            max_tokens=900,
+            temperature=0.0,
+        )
+    except Exception as exc:
+        raise Stage04ShotRepairError(
+            f"{context}: static_outcome 字段级一致性修复调用失败：{exc}",
+            metadata={
+                **metadata_base,
+                "repair_progress": "static_payload_repair_call_failed",
+                "evidence_sufficiency": "undetermined",
+                "repair_error": str(exc),
+            },
+        ) from exc
+
+    obj = _parse_object(env, raw, parsed)
+    patch = obj.get("patch") if isinstance(obj.get("patch"), dict) else obj
+    patch = dict(patch) if isinstance(patch, dict) else {}
+    required_text = (
+        "source_fact",
+        "narrative_state",
+        "visual_realization",
+        "realization_scope",
+        "visual_start_frame",
+        "representative_frame",
+        "visual_end_frame",
+        "visual_motion",
+    )
+    missing = [
+        field
+        for field in required_text
+        if not str(patch.get(field) or "").strip()
+    ]
+    assumptions = patch.get("realization_assumptions")
+    if not isinstance(assumptions, list):
+        missing.append("realization_assumptions")
+    if str(patch.get("realization_scope") or "").strip() != "presentation_only":
+        missing.append("realization_scope=presentation_only")
+    if missing:
+        raise Stage04ShotRepairError(
+            f"{context}: static_outcome 字段级修复输出不完整：{', '.join(missing)}",
+            metadata={
+                **metadata_base,
+                "repair_progress": "static_payload_repair_invalid_output",
+                "evidence_sufficiency": "undetermined",
+                "repair_output": copy.deepcopy(patch),
+            },
+        )
+
+    repaired = copy.deepcopy(item)
+    for field in required_text:
+        repaired[field] = str(patch.get(field) or "").strip()
+    repaired["realization_assumptions"] = [
+        str(value).strip()
+        for value in assumptions
+        if str(value or "").strip()
+    ]
+
+    stable = repaired["narrative_state"]
+    repaired.update({
+        "summary": repaired["source_fact"],
+        "action": "",
+        "narrative_start_state": stable,
+        "narrative_end_state": stable,
+        "video_start_state": stable,
+        "representative_state": stable,
+        "video_end_state": stable,
+    })
+
+    try:
+        repaired = _normalize_temporal_contract(
+            repaired,
+            evidence_ids=evidence_ids,
+            raw_index=1,
+        )
+    except Exception as exc:
+        raise Stage04ShotRepairError(
+            f"{context}: static_outcome 字段级修复后仍未闭合 strict contract：{exc}",
+            metadata={
+                **metadata_base,
+                "repair_progress": "static_payload_repair_rejected",
+                "evidence_sufficiency": "undetermined",
+                "repair_output": copy.deepcopy(patch),
+                "post_repair_candidate": copy.deepcopy(repaired),
+                "post_repair_error": str(exc),
+            },
+        ) from exc
+
+    repaired["_static_outcome_repair_diagnostics"] = {
+        **metadata_base,
+        "repair_progress": "static_payload_repaired",
+        "evidence_sufficiency": "sufficient_for_static_payload_repair",
+        "repair_output": copy.deepcopy(patch),
+        "post_repair_candidate": copy.deepcopy(repaired),
+    }
+    return repaired
+
+
 async def _complete_targeted_shot_structure(
     env: dict[str, Any],
     *,
@@ -4833,6 +5090,14 @@ async def _complete_targeted_shot_structure(
     ] = evidence_source
 
     item = await _repair_invalid_temporal_mode_classification(
+        env,
+        row=item,
+        compact_beats=[beat],
+        anchors=allowed_anchor_rows,
+        context=f"Beat {target_order} targeted Shot",
+    )
+
+    item = await _repair_static_outcome_payload_consistency(
         env,
         row=item,
         compact_beats=[beat],
@@ -5743,15 +6008,21 @@ async def _regenerate_shot_from_reselected_evidence(
         )
         if normalized is None:
             continue
-        repaired_candidates.append(
-            await _repair_invalid_temporal_mode_classification(
-                env,
-                row=normalized,
-                compact_beats=[compact_beat],
-                anchors=allowed_anchors,
-                context=f"Beat {target_order} regroup regeneration",
-            )
+        repaired = await _repair_invalid_temporal_mode_classification(
+            env,
+            row=normalized,
+            compact_beats=[compact_beat],
+            anchors=allowed_anchors,
+            context=f"Beat {target_order} regroup regeneration",
         )
+        repaired = await _repair_static_outcome_payload_consistency(
+            env,
+            row=repaired,
+            compact_beats=[compact_beat],
+            anchors=allowed_anchors,
+            context=f"Beat {target_order} regroup regeneration",
+        )
+        repaired_candidates.append(repaired)
     if not repaired_candidates:
         raise RuntimeError("regroup Shot regeneration 没有可验证的 evidence-locked Shot")
     return validate_rows(
@@ -7197,6 +7468,13 @@ async def _validate_initial_rows_with_recovery(
 
         try:
             normalized = await _repair_invalid_temporal_mode_classification(
+                env,
+                row=normalized,
+                compact_beats=compact_beats,
+                anchors=anchors,
+                context=f"initial Shot#{index}",
+            )
+            normalized = await _repair_static_outcome_payload_consistency(
                 env,
                 row=normalized,
                 compact_beats=compact_beats,

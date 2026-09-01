@@ -40,12 +40,12 @@ jobs:
           if text.count(old) != 1:
               raise SystemExit(f'duplicate-frame visual_motion marker count={text.count(old)}')
           text = text.replace(old, new, 1)
-          old = '''        self.assertEqual(
-            rows[0]["_static_presentation_closure_diagnostics"]["fact_fields_mutated"],
-            [],
-        )
-
-'''
+          old = (
+              '        self.assertEqual(\n'
+              '            rows[0]["_static_presentation_closure_diagnostics"]["fact_fields_mutated"],\n'
+              '            [],\n'
+              '        )\n\n'
+          )
           if text.count(old) != 1:
               raise SystemExit(f'ephemeral diagnostics assertion marker count={text.count(old)}')
           text = text.replace(old, '', 1)

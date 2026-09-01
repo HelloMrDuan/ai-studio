@@ -39,7 +39,17 @@ jobs:
           new = '            "visual_motion": "镜头轻微推进后停住，仅表现层变化。",\n'
           if text.count(old) != 1:
               raise SystemExit(f'duplicate-frame visual_motion marker count={text.count(old)}')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          text = text.replace(old, new, 1)
+          old = '''        self.assertEqual(
+            rows[0]["_static_presentation_closure_diagnostics"]["fact_fields_mutated"],
+            [],
+        )
+
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'ephemeral diagnostics assertion marker count={text.count(old)}')
+          text = text.replace(old, '', 1)
+          path.write_text(text, encoding='utf-8')
           PY
 
       - name: Apply static presentation closure fix

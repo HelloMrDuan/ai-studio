@@ -98,6 +98,32 @@ def _static_patch(text: str) -> dict:
     }
 
 
+
+def _static_generation_row(text: str) -> dict:
+    row = _observable_row(text)
+    row.update({
+        "action": "",
+        "temporal_mode": "static_outcome",
+        "temporal_mode_reason": "target evidence proves an ongoing stable activity without internal milestones",
+        "temporal_mode_evidence_ids": ["E001"],
+        "source_fact": text,
+        "narrative_start_state": text,
+        "narrative_state": text,
+        "narrative_end_state": text,
+        "visual_realization": "只用景别与镜头运动表现持续寻剑状态。",
+        "realization_scope": "presentation_only",
+        "realization_assumptions": ["不新增寻剑结果"],
+        "visual_start_frame": "雪山远景建立，少年处于持续寻剑状态。",
+        "representative_frame": "中景突出少年，寻剑状态保持不变。",
+        "visual_end_frame": "较紧景别收束，寻剑状态仍保持不变。",
+        "visual_motion": "镜头缓慢推近后停住，仅表现层变化。",
+        "video_start_state": text,
+        "representative_state": text,
+        "video_end_state": text,
+    })
+    return row
+
+
 class FirstBeatTemporalReconsiderationTests(unittest.IsolatedAsyncioTestCase):
     async def test_first_beat_stable_ongoing_activity_reclassifies_without_future_evidence(self) -> None:
         text = "一个少年在雪山寻找失落古剑。"
@@ -185,40 +211,64 @@ class FirstBeatTemporalReconsiderationTests(unittest.IsolatedAsyncioTestCase):
             0,
         )
 
-    async def test_first_beat_observable_no_progress_stays_fail_closed_without_future_borrowing(self) -> None:
+    async def test_first_beat_observable_no_progress_regenerates_from_target_only_evidence(self) -> None:
         text = "一个少年在雪山寻找失落古剑。"
         classification = {
             "temporal_mode": "observable_transition",
             "temporal_mode_reason": "classifier still believes the evidence proves a transition",
             "temporal_mode_evidence_ids": ["E001"],
         }
-        qwen = mock.AsyncMock(return_value=({}, classification, {}))
+        generation = {"shots": [_static_generation_row(text)]}
+        qwen = mock.AsyncMock(side_effect=[
+            ({}, classification, {}),
+            ({}, generation, {}),
+        ])
 
         def forbidden_builder(**_kwargs):
-            raise AssertionError("no previous Beat means recovery must fail before borrowing future evidence")
+            raise AssertionError("first-beat target-only recovery must not borrow adjacent/future evidence")
+
+        async def audit_fn(**kwargs):
+            self.assertEqual(kwargs["shots"][0]["source_evidence_ids"], ["E001"])
+            self.assertNotIn("守护神兽", kwargs["source_window"])
+            self.assertNotIn("守护神兽", kwargs["shots"][0]["summary"])
+            return {"valid": True, "violations": []}
 
         env = {"_studio_v2371e_batch_evidence": forbidden_builder}
         with mock.patch.object(runtime, "_qwen", qwen):
-            with self.assertRaises(runtime.Stage04ShotRepairError) as captured:
-                await runtime._recover_single_beat_after_scoped_repair(
-                    env,
-                    source=text + "\n途中遇到守护神兽。",
-                    target_beat=_beat(text),
-                    all_beats=[_beat(text), _next_beat()],
-                    current_compact_beats=[_beat(text)],
-                    current_anchors=[_anchor(text)],
-                    previous_shot=None,
-                    next_beat=_next_beat(),
-                    allowed_chars=set(),
-                    allowed_props=set(),
-                    scene_id="scene-1",
-                    episode_id="episode-1",
-                    audit_fn=mock.AsyncMock(),
-                    prior_metadata={"repair_progress": "needs_regrouping_or_evidence_selection"},
-                    current_rows=[_observable_row(text)],
-                )
-        self.assertEqual(qwen.await_count, 1)
-        self.assertIn("无可用前序相邻证据", str(captured.exception))
+            rows, audit = await runtime._recover_single_beat_after_scoped_repair(
+                env,
+                source=text + "\n途中遇到守护神兽。",
+                target_beat=_beat(text),
+                all_beats=[_beat(text), _next_beat()],
+                current_compact_beats=[_beat(text)],
+                current_anchors=[_anchor(text)],
+                previous_shot=None,
+                next_beat=_next_beat(),
+                allowed_chars=set(),
+                allowed_props=set(),
+                scene_id="scene-1",
+                episode_id="episode-1",
+                audit_fn=audit_fn,
+                prior_metadata={"repair_progress": "needs_regrouping_or_evidence_selection"},
+                current_rows=[_observable_row(text)],
+            )
+        self.assertEqual(qwen.await_count, 2)
+        self.assertTrue(audit["valid"])
+        self.assertEqual(rows[0]["temporal_mode"], "static_outcome")
+        self.assertEqual(rows[0]["source_evidence_ids"], ["E001"])
+        second_prompt = qwen.await_args_list[1].kwargs["prompt"]
+        self.assertNotIn("守护神兽", second_prompt)
+        diagnostics = rows[0]["_regroup_recovery_diagnostics"]
+        self.assertEqual(
+            diagnostics["repair_progress"],
+            "edge_target_only_regeneration_passed_strict_audit",
+        )
+        self.assertEqual(diagnostics["recovery_usage"]["evidence_regroup"], 0)
+        self.assertEqual(diagnostics["recovery_usage"]["shot_regeneration"], 1)
+        self.assertEqual(
+            diagnostics["evidence_fingerprint_before"],
+            diagnostics["evidence_fingerprint_after"],
+        )
 
 
 if __name__ == "__main__":

@@ -6686,6 +6686,128 @@ async def _recover_single_beat_after_scoped_repair(
                     "audit": copy.deepcopy(edge_audit),
                 }
 
+    # Beat 1 cannot expand evidence backward because no previous Beat exists.
+    # If temporal reconsideration did not close the Shot, regenerate one fresh
+    # Shot from the current Beat's locked evidence only.  This is not evidence
+    # expansion: NEXT_BEAT is deliberately hidden and the evidence fingerprint
+    # must remain unchanged.  The regenerated Shot still has to pass the normal
+    # strict-shot-v2 validator and final semantic audit.
+    if target_order == 1 and previous_beat is None:
+        edge_compact = next((
+            copy.deepcopy(beat)
+            for beat in current_compact_beats
+            if isinstance(beat, dict)
+            and int(beat.get("order") or 0) == target_order
+        ), None)
+        if edge_compact is None:
+            raise Stage04ShotRepairError(
+                f"Beat {target_order} target-only regeneration 缺少锁定 Beat",
+                metadata={
+                    "repair_progress": "edge_target_only_regeneration_scope_incomplete",
+                    "prior_repair": copy.deepcopy(prior_metadata),
+                    "recovery_scope": "target_evidence_only_no_future_borrowing",
+                },
+            )
+
+        edge_allowed_ids = set(_id_list(
+            edge_compact.get("allowed_source_evidence_ids")
+            or edge_compact.get("source_evidence_ids")
+        ))
+        edge_anchors = [
+            copy.deepcopy(anchor)
+            for anchor in current_anchors
+            if isinstance(anchor, dict)
+            and str(anchor.get("id") or "") in edge_allowed_ids
+        ]
+        if not edge_allowed_ids or len(edge_anchors) != len(edge_allowed_ids):
+            raise Stage04ShotRepairError(
+                f"Beat {target_order} target-only regeneration 无法完整锁定当前 evidence",
+                metadata={
+                    "repair_progress": "edge_target_only_regeneration_scope_incomplete",
+                    "prior_repair": copy.deepcopy(prior_metadata),
+                    "evidence_ids": sorted(edge_allowed_ids),
+                    "recovery_scope": "target_evidence_only_no_future_borrowing",
+                },
+            )
+
+        edge_source_window = "\n".join(
+            str(anchor.get("text") or "")
+            for anchor in edge_anchors
+        )
+        edge_fingerprint = _evidence_fingerprint(
+            compact_beats=[edge_compact],
+            anchors=edge_anchors,
+        )
+        edge_recovery = {
+            "recovery_budget": copy.deepcopy(_SHOT_RECOVERY_BUDGET),
+            "recovery_usage": {
+                "scoped_repair": 1,
+                "edge_temporal_reconsideration": 1 if current_rows else 0,
+                "evidence_regroup": 0,
+                "shot_regeneration": 1,
+                "final_strict_audit": 0,
+            },
+            "repair_progress": "edge_target_only_regeneration_started",
+            "prior_repair": copy.deepcopy(prior_metadata),
+            "evidence_ids": sorted(edge_allowed_ids),
+            "evidence_fingerprint_before": edge_fingerprint,
+            "evidence_fingerprint_after": edge_fingerprint,
+            "recovery_scope": {
+                "target_beat_order": target_order,
+                "mode": "target_only_shot_regeneration_no_future_borrowing",
+            },
+        }
+        _stage04_progress(
+            env, 5, "Edge recovery", "正在使用当前 Beat 锁定证据重生首镜头"
+        )
+        try:
+            edge_regenerated = await _regenerate_shot_from_reselected_evidence(
+                env,
+                target_order=target_order,
+                compact_beat=edge_compact,
+                anchors=edge_anchors,
+                previous_shot=None,
+                next_beat=None,
+                allowed_chars=allowed_chars,
+                allowed_props=allowed_props,
+                scene_id=scene_id,
+                episode_id=episode_id,
+            )
+        except Exception as exc:
+            edge_recovery.update({
+                "repair_progress": "edge_target_only_regeneration_failed",
+                "regroup_reason": f"{type(exc).__name__}: {exc}",
+            })
+            raise Stage04ShotRepairError(
+                f"Beat {target_order} target-only Shot 重生失败：{exc}",
+                metadata=edge_recovery,
+            ) from exc
+
+        edge_recovery["recovery_usage"]["final_strict_audit"] = 1
+        edge_final_audit = await audit_fn(
+            source_window=edge_source_window,
+            compact_beats=[edge_compact],
+            shots=edge_regenerated,
+        )
+        edge_recovery["final_audit"] = copy.deepcopy(edge_final_audit)
+        if not _audit_ok(env, edge_final_audit):
+            edge_recovery.update({
+                "repair_progress": "edge_target_only_regeneration_failed_strict_audit",
+                "regroup_reason": "target-only regenerated Shot did not pass strict-shot-v2",
+            })
+            raise Stage04ShotRepairError(
+                f"Beat {target_order} target-only Shot 仍未通过 strict-shot-v2："
+                + _audit_issues(edge_final_audit),
+                metadata=edge_recovery,
+            )
+
+        edge_recovery["repair_progress"] = (
+            "edge_target_only_regeneration_passed_strict_audit"
+        )
+        for edge_row in edge_regenerated:
+            edge_row["_regroup_recovery_diagnostics"] = copy.deepcopy(edge_recovery)
+        return edge_regenerated, edge_final_audit
+
     _stage04_progress(
         env, 5, "Regroup recovery", "正在重新选择镜头证据"
     )

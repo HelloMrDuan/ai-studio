@@ -1,0 +1,88 @@
+name: Stage04 static presentation closure hotfix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/stage04-static-presentation-closure-hotfix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch-test-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Capture baseline runtime hash
+        shell: bash
+        run: echo "BASE_RUNTIME_SHA=$(sha256sum app/stage04_v238_runtime.py | awk '{print $1}')" >> "$GITHUB_ENV"
+
+      - name: Apply static presentation closure fix
+        run: python tools/apply_stage04_static_presentation_closure_fix.py
+
+      - name: Refresh intentional runtime hash assertions
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          runtime = Path('app/stage04_v238_runtime.py')
+          digest = hashlib.sha256(runtime.read_bytes()).hexdigest()
+          old = os.environ['BASE_RUNTIME_SHA']
+          for path in [
+              Path('tests/test_stage02_performance_optimization.py'),
+              Path('tests/test_stage04_frontend_entry.py'),
+          ]:
+              text = path.read_text(encoding='utf-8')
+              if old not in text:
+                  raise SystemExit(f'expected baseline runtime hash not found in {path}')
+              path.write_text(text.replace(old, digest), encoding='utf-8')
+          print(f'RUNTIME_SHA256={digest}')
+          PY
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Compile and focused tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m py_compile app/stage04_v238_runtime.py tests/test_stage04_static_regroup_repair.py
+          python -m unittest tests.test_stage04_static_regroup_repair -v
+          python -m unittest tests.test_stage04_first_beat_temporal_reconsideration -v
+          python -m unittest tests.test_stage04_observable_state_repair -v
+          python -m unittest tests.test_stage04_regroup_recovery -v
+          python -m unittest tests.test_stage04_audit_repair_routing -v
+          python -m unittest discover -s tests -p 'test_stage04_temporal_mode*.py' -v
+          git diff --check
+
+      - name: Full test suite
+        run: python -m unittest discover -s tests -p 'test*.py'
+
+      - name: Commit tested fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "RUNTIME_SHA256=$(sha256sum app/stage04_v238_runtime.py | awk '{print $1}')"
+          git config user.name "ChatGPT Stage04 Fix"
+          git config user.email "actions@users.noreply.github.com"
+          git add app/stage04_v238_runtime.py \
+            tests/test_stage04_static_regroup_repair.py \
+            tests/test_stage02_performance_optimization.py \
+            tests/test_stage04_frontend_entry.py
+          git rm .github/workflows/stage04-static-presentation-closure-hotfix.yml
+          git rm tools/apply_stage04_static_presentation_closure_fix.py
+          git commit -m "fix(stage04): close static presentation frames deterministically"
+          git push origin HEAD:main

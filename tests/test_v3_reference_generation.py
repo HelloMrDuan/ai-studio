@@ -7,9 +7,11 @@ from pathlib import Path
 from app.v3.contracts import Capability, ProviderModelSpec, ProviderTransport
 from app.v3.generation_contract import GenerationContract
 from app.v3.generation_executor import (
+    ComfyContractBinding,
     ComfyReferenceBinding,
     ReferenceAssetStore,
     ReferenceFirstComfyExecutor,
+    bind_comfy_contract,
     bind_comfy_references,
 )
 from app.v3.adapters.h3 import H3ReferenceFirstExecutor, H3WorkflowCompiler, H3WorkflowConfig
@@ -70,6 +72,7 @@ class ReferenceFirstGenerationTests(unittest.IsolatedAsyncioTestCase):
                 "10": {"class_type": "LoadImage", "inputs": {"image": ""}},
                 "11": {"class_type": "LoadImage", "inputs": {"image": ""}},
                 "20": {"class_type": "ReferenceConditioning", "inputs": {"a": ["10", 0], "b": ["11", 0]}},
+                "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "placeholder"}},
             }
             receipt = await executor.execute(
                 contract, workflow=template,
@@ -77,12 +80,16 @@ class ReferenceFirstGenerationTests(unittest.IsolatedAsyncioTestCase):
                     ComfyReferenceBinding(reference_index=0, node_id="10"),
                     ComfyReferenceBinding(reference_index=1, node_id="11"),
                 ),
+                contract_bindings=(
+                    ComfyContractBinding(contract_field="source_text", node_id="6", input_name="text", suffix=", cinematic"),
+                ),
             )
             self.assertEqual(receipt.provider_reference_ids, ("hero-v1", "beast-v1"))
             self.assertEqual(len(adapter.uploaded), 2)
             queued = adapter.queued[0]
             self.assertEqual(queued["10"]["inputs"]["image"], receipt.uploaded_reference_names[0])
             self.assertEqual(queued["11"]["inputs"]["image"], receipt.uploaded_reference_names[1])
+            self.assertEqual(queued["6"]["inputs"]["text"], "少年遇到守护神兽, cinematic")
             self.assertNotEqual(receipt.uploaded_reference_names[0], receipt.uploaded_reference_names[1])
             self.assertTrue(all(name.startswith("xiaoduan-v3/") for name in receipt.uploaded_reference_names))
 
@@ -93,6 +100,27 @@ class ReferenceFirstGenerationTests(unittest.IsolatedAsyncioTestCase):
                 ["hero.png", "beast.png"],
                 [ComfyReferenceBinding(reference_index=0, node_id="10")],
             )
+
+    def test_contract_binding_targets_declared_input_only(self):
+        contract = GenerationContract(
+            shot_id="shot-1", source_text="雪山中的少年", entity_ids=("char_hero",),
+            reference_ids=("hero-v1",), provider_reference_ids=("hero-v1",),
+            provider_id="comfy-ref", model_id="image-ref",
+            required_capabilities=frozenset({Capability.image_generation, Capability.image_reference}),
+            camera_direction="wide", action="walk", duration_seconds=3.0,
+        )
+        template = {
+            "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "placeholder"}},
+            "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "negative stays"}},
+        }
+        compiled = bind_comfy_contract(
+            template,
+            contract,
+            [ComfyContractBinding(contract_field="source_text", node_id="6", input_name="text", prefix="scene: ")],
+        )
+        self.assertEqual(compiled["6"]["inputs"]["text"], "scene: 雪山中的少年")
+        self.assertEqual(compiled["7"]["inputs"]["text"], "negative stays")
+        self.assertEqual(template["6"]["inputs"]["text"], "placeholder")
 
     async def test_h3_receives_adopted_first_frame_in_actual_loadimage_node(self):
         with tempfile.TemporaryDirectory() as tmp:

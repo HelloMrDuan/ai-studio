@@ -36,10 +36,13 @@ def _comfy_reference_profile(settings: Settings) -> dict[str, Any] | None:
         raise ValueError("comfyui_reference_profile.v3.json must be an object")
     workflow_path = Path(str(raw.get("reference_workflow_path") or ""))
     bindings = raw.get("reference_bindings")
+    contract_bindings = raw.get("contract_bindings") or []
     if not workflow_path.is_file():
         raise ValueError(f"configured Comfy reference workflow does not exist: {workflow_path}")
     if not isinstance(bindings, list) or not bindings:
         raise ValueError("Comfy reference profile requires reference_bindings")
+    if not isinstance(contract_bindings, list):
+        raise ValueError("Comfy reference profile contract_bindings must be an array")
     max_refs = int(raw.get("max_references") or len(bindings))
     if max_refs < 1 or len(bindings) < max_refs:
         raise ValueError("Comfy reference profile has insufficient binding slots")
@@ -47,6 +50,7 @@ def _comfy_reference_profile(settings: Settings) -> dict[str, Any] | None:
         "profile_path": str(profile_path),
         "reference_workflow_path": str(workflow_path),
         "reference_bindings": bindings,
+        "contract_bindings": contract_bindings,
         "max_references": max_refs,
         "identity_reference": bool(raw.get("identity_reference")),
         "ip_adapter": bool(raw.get("ip_adapter")),

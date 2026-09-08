@@ -1,0 +1,30 @@
+name: V3 Verify
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches:
+      - refactor/xiaoduan-studio-v3
+
+permissions:
+  contents: read
+
+jobs:
+  python-v3:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+      - name: Compile V3 modules
+        run: python -m compileall -q app/v3 scripts/upstream/check_updates.py
+      - name: Run V3 foundation tests
+        run: python -m unittest -v tests.test_v3_foundation tests.test_v3_resource_store
+      - name: Diff check
+        run: git diff --check HEAD^ HEAD

@@ -32,6 +32,12 @@ TEMPORAL_HOST = os.environ.get("TEMPORAL_HOST", "127.0.0.1")
 TEMPORAL_PORT = int(os.environ.get("TEMPORAL_PORT", "7233"))
 DATA_ROOT = Path(os.environ.get("XIAODUAN_DATA_DIR", "/root/autodl-tmp/ai-studio/data/platform-v2"))
 OUT_ROOT = Path(os.environ.get("XIAODUAN_ACCEPTANCE_OUT", "/root/autodl-tmp/manual-upload/v3-global-acceptance"))
+TEMPORAL_WORKER_PID_FILE = Path(
+    os.environ.get(
+        "XIAODUAN_TEMPORAL_WORKER_PID_FILE",
+        "/root/autodl-tmp/ai-studio/logs/xiaoduan-temporal-worker.pid",
+    )
+)
 
 opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -183,6 +189,38 @@ def resource_lifecycle() -> None:
         record("Artifact lifecycle", "FAIL", f"{type(exc).__name__}: {exc}")
 
 
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def _temporal_worker_process() -> str | None:
+    try:
+        pid_text = TEMPORAL_WORKER_PID_FILE.read_text(encoding="utf-8").strip()
+        pid = int(pid_text)
+        if _pid_alive(pid):
+            return f"pid={pid} via {TEMPORAL_WORKER_PID_FILE}"
+    except (FileNotFoundError, ValueError, OSError):
+        pass
+
+    ps = subprocess.run(
+        ["ps", "-eo", "pid=,args="],
+        text=True,
+        capture_output=True,
+        check=False,
+    ).stdout.splitlines()
+    for line in ps:
+        lowered = line.lower()
+        if "scripts/v3_temporal_worker.py" in lowered:
+            return line.strip()[:300]
+    return None
+
+
 def runtime_dependencies() -> float:
     check_http_json("ComfyUI runtime", f"{COMFY}/system_stats")
     check_http_json("Local Qwen runtime", f"{QWEN}/v1/models")
@@ -194,9 +232,12 @@ def runtime_dependencies() -> float:
         record("Temporal server", "BLOCKED", str(exc))
 
     try:
-        ps = subprocess.run(["ps", "-eo", "args"], text=True, capture_output=True, check=False).stdout.lower()
-        worker = "temporal" in ps and "worker" in ps and "v3_global_acceptance.py" not in ps
-        record("Temporal worker", "PASS" if worker else "BLOCKED", "V3 worker process detected" if worker else "no V3 Temporal worker process")
+        worker = _temporal_worker_process()
+        record(
+            "Temporal worker",
+            "PASS" if worker else "BLOCKED",
+            f"V3 worker process detected: {worker}" if worker else "no V3 Temporal worker process",
+        )
     except Exception as exc:
         record("Temporal worker", "BLOCKED", f"{type(exc).__name__}: {exc}")
 

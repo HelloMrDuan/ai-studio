@@ -81,9 +81,10 @@ class ReferenceFirstGenerationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(receipt.provider_reference_ids, ("hero-v1", "beast-v1"))
             self.assertEqual(len(adapter.uploaded), 2)
             queued = adapter.queued[0]
-            self.assertIn("xiaoduan-v3/", queued["10"]["inputs"]["image"])
-            self.assertIn("hero", queued["10"]["inputs"]["image"])
-            self.assertIn("beast", queued["11"]["inputs"]["image"])
+            self.assertEqual(queued["10"]["inputs"]["image"], receipt.uploaded_reference_names[0])
+            self.assertEqual(queued["11"]["inputs"]["image"], receipt.uploaded_reference_names[1])
+            self.assertNotEqual(receipt.uploaded_reference_names[0], receipt.uploaded_reference_names[1])
+            self.assertTrue(all(name.startswith("xiaoduan-v3/") for name in receipt.uploaded_reference_names))
 
     def test_comfy_binding_fails_when_one_reference_slot_is_missing(self):
         with self.assertRaises(Exception):
@@ -117,7 +118,8 @@ class ReferenceFirstGenerationTests(unittest.IsolatedAsyncioTestCase):
             workflow = adapter.queued[0]
             self.assertEqual(workflow["7"]["class_type"], "MiniMaxH3ImageToVideo")
             self.assertEqual(workflow["7"]["inputs"]["first_frame"], ["5", 0])
-            self.assertIn("first", workflow["5"]["inputs"]["image"])
+            self.assertEqual(workflow["5"]["inputs"]["image"], receipt.uploaded_reference_names[0])
+            self.assertTrue(receipt.uploaded_reference_names[0].startswith("xiaoduan-v3/"))
 
     def test_h3_ref2va_uses_real_reference_to_video_node(self):
         compiler = H3WorkflowCompiler(H3WorkflowConfig(

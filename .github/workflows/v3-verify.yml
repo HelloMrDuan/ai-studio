@@ -32,6 +32,7 @@ jobs:
           tests.test_v3_provider_catalog
           tests.test_v3_workflow_contracts
           tests.test_v3_media_foundation
+          tests.test_v3_media_pipeline
           tests.test_v3_branding
           tests.test_v3_generation_contract
           tests.test_v3_reference_generation

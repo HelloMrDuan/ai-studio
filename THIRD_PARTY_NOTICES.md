@@ -9,8 +9,12 @@ Xiaoduan Studio V3 intentionally tracks and reuses mature open-source work where
 - Reviewed upstream baseline: `5ceffd02a267de2ede0bbdb0fab8d7d875ea9842`
 - Directly adapted in V3:
   - `app/services/task_artifacts.py` → `app/v3/media/task_artifacts.py`
-  - pure SRT parsing / Levenshtein helpers from `app/services/subtitle.py` → `app/v3/media/subtitle_utils.py`
-- Xiaoduan modifications remove MoneyPrinterTurbo-specific config, task-directory, logger and Whisper dependencies so the primitives can be used by capability-driven providers and Temporal Activities.
+  - SRT parsing / Levenshtein helpers from `app/services/subtitle.py` → `app/v3/media/subtitle_utils.py`
+  - subtitle timeline/correction strategy from `app/services/subtitle.py` → `app/v3/media/subtitle.py`
+  - provider/self-hosted TTS dispatch patterns from `app/services/voice.py` → capability-neutral `app/v3/media/tts.py`
+  - bounded BGM upload, filename validation, FFmpeg audio validation and atomic persistence from `app/services/bgm.py` → `app/v3/media/bgm.py`
+  - FFmpeg/video codec fallback, AAC 192k audio and composition safety ideas from `app/services/video.py` → `app/v3/media/composition.py`
+- Xiaoduan modifications remove MoneyPrinterTurbo-specific global config, Streamlit, monolithic task orchestration and fixed provider assumptions. Media stages are independent services intended for Temporal Activities and capability-driven providers.
 
 MoneyPrinterTurbo MIT license text:
 
@@ -41,7 +45,7 @@ MoneyPrinterTurbo MIT license text:
 - Repository: https://github.com/waooAI/waoowaoo
 - License: Elastic License 2.0
 - Reviewed upstream baseline: `6cbbe22cc6492159e0f649d507e4e21a9aec3074`
-- Status so far: architecture and contracts studied, especially Creative Skills and Temporal durable execution. Current V3 foundation/workflow code is independently implemented rather than copied verbatim from waoowaoo source.
-- Any later direct reuse must be separately reviewed against Elastic License 2.0 and must preserve required notices and modification disclosures.
+- Status so far: architecture and contracts studied, especially Creative Skills, resource lineage and Temporal durable execution. Current V3 foundation/workflow code is independently implemented rather than copied verbatim from waoowaoo source.
+- Any direct reuse must be separately reviewed against Elastic License 2.0 and preserve required notices and modification disclosures.
 
 Tracked baselines are machine-readable in `config/upstreams.json` and are checked by `.github/workflows/upstream-watch.yml`.

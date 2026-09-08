@@ -266,11 +266,15 @@ async def main() -> None:
     image_meta = image.get("metadata") if isinstance(image.get("metadata"), dict) else {}
     video_meta = video.get("metadata") if isinstance(video.get("metadata"), dict) else {}
 
-    first_frame_resource_id = str(video_meta.get("first_frame_resource_id") or "")
-    if first_frame_resource_id and first_frame_resource_id != str(image.get("resource_id") or ""):
+    # The video candidate must reference the adopted image resource, proving H3
+    # consumed the image produced earlier in this same workflow rather than
+    # silently falling back to the original hero-v1 input reference.
+    expected_h3_reference = f"resource:{image['resource_id']}"
+    video_references = [str(value) for value in (video.get("reference_ids") or [])]
+    if expected_h3_reference not in video_references:
         raise SystemExit(
             "TEMPORAL VISUAL E2E FAILED: H3 first-frame lineage mismatch: "
-            f"{first_frame_resource_id} != {image.get('resource_id')}"
+            f"expected {expected_h3_reference}; actual={video_references}"
         )
 
     unique_refs = list(dict.fromkeys(result.output_refs))
@@ -285,7 +289,7 @@ async def main() -> None:
     print("video_artifact_ref:", video_meta.get("artifact_ref"))
     print("video_artifact_path:", video_path)
     print("video_bytes:", video_path.stat().st_size)
-    print("h3_first_frame_resource_id:", first_frame_resource_id or image.get("resource_id"))
+    print("h3_first_frame_reference:", expected_h3_reference)
     print("output_refs_unique:", unique_refs)
 
 

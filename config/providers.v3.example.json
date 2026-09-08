@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "models": [
+    {
+      "provider_id": "example-remote-openai",
+      "model_id": "example-model",
+      "transport": "remote_api",
+      "base_url": "https://example.invalid/v1",
+      "secret_ref": "EXAMPLE_API_KEY",
+      "capabilities": ["text", "structured_output"],
+      "enabled": false,
+      "healthy": true,
+      "priority": 100
+    },
+    {
+      "provider_id": "example-local-vllm",
+      "model_id": "local-model",
+      "transport": "local_openai_compatible",
+      "base_url": "http://127.0.0.1:8000/v1",
+      "capabilities": ["text", "structured_output"],
+      "enabled": false,
+      "healthy": true,
+      "priority": 100
+    }
+  ]
+}

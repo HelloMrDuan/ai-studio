@@ -25,6 +25,10 @@ jobs:
       - name: Compile V3 modules
         run: python -m compileall -q app/v3 scripts/upstream/check_updates.py
       - name: Run V3 foundation tests
-        run: python -m unittest -v tests.test_v3_foundation tests.test_v3_resource_store
+        run: >-
+          python -m unittest -v
+          tests.test_v3_foundation
+          tests.test_v3_resource_store
+          tests.test_v3_provider_catalog
       - name: Diff check
         run: git diff --check HEAD^ HEAD

@@ -9,5 +9,13 @@
       "node_id": "10",
       "input_name": "image"
     }
+  ],
+  "contract_bindings": [
+    {
+      "contract_field": "source_text",
+      "node_id": "6",
+      "input_name": "text",
+      "suffix": ", cinematic still, detailed, coherent anatomy"
+    }
   ]
 }

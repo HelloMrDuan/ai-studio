@@ -18,7 +18,11 @@ class FaceIDProfileTests(unittest.TestCase):
         self.assertEqual(workflow["10"]["class_type"], "LoadImage")
         self.assertEqual(workflow["12"]["class_type"], "IPAdapterUnifiedLoaderFaceID")
         self.assertEqual(workflow["12"]["inputs"]["preset"], "FACEID PLUS V2")
+        self.assertEqual(workflow["12"]["inputs"]["lora_strength"], 0.8)
         self.assertEqual(workflow["13"]["class_type"], "IPAdapterFaceID")
+        self.assertEqual(workflow["13"]["inputs"]["weight"], 1.0)
+        self.assertEqual(workflow["13"]["inputs"]["weight_faceidv2"], 2.0)
+        self.assertEqual(workflow["13"]["inputs"]["end_at"], 1.0)
         self.assertEqual(workflow["3"]["inputs"]["model"], ["13", 0])
 
         binding = profile["contract_bindings"][0]

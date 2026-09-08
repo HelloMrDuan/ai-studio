@@ -1,0 +1,39 @@
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+from app.v3.media.subtitle_utils import file_to_subtitles, similarity
+from app.v3.media.task_artifacts import atomic_write_json, patch_json, read_json
+
+
+class XiaoduanV3MediaFoundationTests(unittest.TestCase):
+    def test_atomic_json_write_and_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp) / "task" / "manifest.json"
+            atomic_write_json(target, {"task_id": "t1", "state": "generated"})
+            self.assertEqual(read_json(target)["state"], "generated")
+            patched = patch_json(target, state="candidate_ready", provider="local-comfyui")
+            self.assertEqual(patched["state"], "candidate_ready")
+            self.assertEqual(read_json(target)["provider"], "local-comfyui")
+
+    def test_srt_parser_keeps_last_block_without_trailing_blank_line(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp) / "sample.srt"
+            target.write_text(
+                "1\n00:00:00,000 --> 00:00:01,000\n第一句\n\n"
+                "2\n00:00:01,000 --> 00:00:02,000\n第二句",
+                encoding="utf-8",
+            )
+            items = file_to_subtitles(target)
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[-1][2], "第二句")
+
+    def test_similarity_is_normalized(self) -> None:
+        self.assertEqual(similarity("same", "same"), 1.0)
+        self.assertGreater(similarity("hello world", "hello wor1d"), 0.8)
+
+
+if __name__ == "__main__":
+    unittest.main()

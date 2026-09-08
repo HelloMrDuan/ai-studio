@@ -17,6 +17,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# Scripts are frequently executed as `python scripts/<name>.py`, which makes
+# scripts/ the first import root. Make the repository root explicit so V3 media
+# module checks exercise the actual package instead of reporting a false
+# `No module named app` failure.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 API = os.environ.get("XIAODUAN_V3_BASE", "http://127.0.0.1:6008").rstrip("/")
 COMFY = os.environ.get("COMFY_BASE", "http://127.0.0.1:8188").rstrip("/")
 QWEN = os.environ.get("QWEN_BASE", "http://127.0.0.1:6006").rstrip("/")
@@ -206,7 +214,10 @@ def runtime_dependencies() -> float:
             record(f"Media:{module.rsplit('.', 1)[-1]}", "FAIL", f"{type(exc).__name__}: {exc}")
 
     free_gib = shutil.disk_usage("/root/autodl-tmp").free / 1024**3
-    record("Disk free", "PASS" if free_gib >= 30 else "BLOCKED", f"{free_gib:.1f} GiB free; target >=30 GiB for video acceptance")
+    # This is a capacity-risk signal, not a gate. When --live-h3 is requested
+    # the real workflow is still attempted so operators can decide when to
+    # expand storage based on actual runtime behavior.
+    record("Disk free", "PASS" if free_gib >= 30 else "BLOCKED", f"{free_gib:.1f} GiB free; recommended >=30 GiB for video acceptance; not gating")
     return free_gib
 
 
@@ -237,8 +248,7 @@ def live_image(reference_id: str, timeout_seconds: int) -> None:
 
 def live_h3(reference_id: str, timeout_seconds: int, free_gib: float) -> None:
     if free_gib < 30:
-        record("LIVE H3 E2E", "BLOCKED", f"disk free {free_gib:.1f} GiB <30 GiB")
-        return
+        record("LIVE H3 disk headroom", "BLOCKED", f"disk free {free_gib:.1f} GiB < recommended 30 GiB; attempting real H3 anyway")
     try:
         queued = request_json("POST", f"{API}/api/v3/generation/h3/video/queue", {
             "provider_id": "local-h3-video",

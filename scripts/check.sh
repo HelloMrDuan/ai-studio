@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-echo "===== 平台进程 ====="
+echo "===== xiaoduan映画 V3 进程 ====="
 ps -ef | grep '[u]vicorn app.main:app' || true
 
 echo
@@ -10,8 +10,8 @@ python3 - <<'PY'
 import urllib.request
 
 checks = [
-    ("统一平台", "http://127.0.0.1:6008/api/health"),
-    ("Gemma", "http://127.0.0.1:6006/v1/models"),
+    ("xiaoduan映画 V3", "http://127.0.0.1:6008/api/v3/health"),
+    ("本地 LLM", "http://127.0.0.1:6006/v1/models"),
     ("ComfyUI", "http://127.0.0.1:8188/system_stats"),
 ]
 for name, url in checks:
@@ -28,5 +28,5 @@ nvidia-smi --query-gpu=name,memory.used,memory.free,memory.total \
   --format=csv,noheader 2>/dev/null || true
 
 echo
-echo "===== 平台日志 ====="
-tail -n 80 /root/autodl-tmp/ai-studio/logs/platform-v2.log 2>/dev/null || true
+echo "===== V3 日志 ====="
+tail -n 80 /root/autodl-tmp/ai-studio/logs/xiaoduan-studio-v3.log 2>/dev/null || true

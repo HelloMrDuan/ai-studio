@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
@@ -21,7 +24,9 @@ context_resolver = ContextResolver(default_cultural_context="Chinese")
 provider_registry = build_provider_registry(settings)
 resource_store = ResourceStore(settings.data_dir)
 
+STATIC_DIR = Path(__file__).parent / "static"
 app = FastAPI(title="xiaoduan映画 · Xiaoduan Studio V3", version="3.0.0-alpha")
+app.mount("/v3-static", StaticFiles(directory=STATIC_DIR), name="v3-static")
 
 
 class PlanRequest(BaseModel):
@@ -54,6 +59,11 @@ class CandidateRequest(BaseModel):
 class AuditRequest(BaseModel):
     passed: bool
     audit: dict[str, Any] = Field(default_factory=dict)
+
+
+@app.get("/")
+async def index() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/api/v3/health")

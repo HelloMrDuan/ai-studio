@@ -16,6 +16,8 @@ from typing import Any
 
 import httpx
 
+from app.v3.contracts import Capability, ProviderModelSpec, ProviderTransport
+
 
 class TTSError(RuntimeError):
     pass
@@ -110,3 +112,31 @@ class OpenAICompatibleTTS:
             bytes_written=len(content),
             response_format=request.response_format,
         )
+
+
+def build_tts_adapter(spec: ProviderModelSpec, *, timeout_seconds: float = 300.0) -> OpenAICompatibleTTS:
+    """Create the TTS runtime adapter for one already-resolved provider model.
+
+    Local and remote HTTP speech providers deliberately share this code path.
+    Unsupported transports fail closed; no provider substitution happens here.
+    """
+
+    if Capability.tts not in spec.capabilities:
+        raise TTSError(f"provider model lacks tts capability: {spec.identity}")
+    if spec.transport not in {
+        ProviderTransport.remote_api,
+        ProviderTransport.local_http,
+        ProviderTransport.local_openai_compatible,
+    }:
+        raise TTSError(f"unsupported TTS provider transport: {spec.transport.value}")
+    base_url = str(spec.base_url or "").strip()
+    if not base_url:
+        raise TTSError(f"TTS provider base_url is required: {spec.identity}")
+    return OpenAICompatibleTTS(
+        OpenAICompatibleTTSConfig(
+            provider_id=spec.provider_id,
+            base_url=base_url,
+            secret_ref=spec.secret_ref,
+            timeout_seconds=timeout_seconds,
+        )
+    )

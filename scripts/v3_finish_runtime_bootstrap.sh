@@ -53,5 +53,9 @@ echo "================ TEMPORAL BUSINESS E2E ================"
 "$PY" scripts/v3_temporal_e2e.py
 
 echo
+echo "================ TEMPORAL VISUAL IMAGE -> H3 E2E ================"
+"$PY" scripts/v3_temporal_visual_e2e.py --reference-id hero-v1
+
+echo
 echo "================ GLOBAL CONTROL ACCEPTANCE ================"
 "$PY" scripts/v3_global_acceptance.py --reference-id hero-v1 --timeout 1800

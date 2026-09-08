@@ -44,6 +44,7 @@ jobs:
           tests.test_v3_workflow_contracts
           tests.test_v3_domain_executor
           tests.test_v3_materialized_generation
+          tests.test_v3_web_workflow
           tests.test_v3_media_foundation
           tests.test_v3_media_pipeline
           tests.test_v3_branding

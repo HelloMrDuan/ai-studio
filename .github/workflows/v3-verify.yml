@@ -34,6 +34,7 @@ jobs:
           tests.test_v3_media_foundation
           tests.test_v3_branding
           tests.test_v3_generation_contract
+          tests.test_v3_reference_generation
           tests.test_v3_storyboard_audit
           tests.test_v3_storyboard_pipeline
           tests.test_v3_semantic_audit

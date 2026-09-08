@@ -23,7 +23,12 @@ class GenerationContract:
     shot_id: str
     source_text: str
     entity_ids: tuple[str, ...]
+    # Canonical entity references are retained for lineage/continuity audit.
     reference_ids: tuple[str, ...]
+    # References actually sent to the selected provider. For image generation
+    # this normally equals reference_ids. For video generation it is normally
+    # the adopted shot first/last frame, while entity refs remain lineage.
+    provider_reference_ids: tuple[str, ...]
     provider_id: str
     model_id: str
     required_capabilities: frozenset[Capability]
@@ -33,29 +38,22 @@ class GenerationContract:
 
 
 class GenerationContractCompiler:
-    """Compile a shot from semantic identity + canonical references.
+    """Compile semantic shots into explicit provider capability contracts.
 
-    A persistent entity shot is not allowed to silently become a naked text
-    prompt. Every required entity must resolve to an adopted canonical anchor.
-    Provider capability selection happens after the reference contract is built.
+    Image generation is entity-reference-first. Video generation is frame-first:
+    canonical entity references remain part of lineage, but the video provider
+    receives the adopted shot frame(s). This prevents a single-reference H3
+    model from silently dropping character/creature/prop references.
     """
 
-    def __init__(
-        self,
-        *,
-        continuity: ContinuityRegistry,
-        providers: ProviderRegistry,
-    ) -> None:
+    def __init__(self, *, continuity: ContinuityRegistry, providers: ProviderRegistry) -> None:
         self.continuity = continuity
         self.providers = providers
 
     def _references(self, shot: ShotContract) -> ReferenceContract:
         if not shot.required_entity_ids:
             return ReferenceContract(entity_ids=(), reference_ids=())
-        return self.continuity.build_reference_contract(
-            shot.required_entity_ids,
-            require_anchor=True,
-        )
+        return self.continuity.build_reference_contract(shot.required_entity_ids, require_anchor=True)
 
     def compile_image(
         self,
@@ -65,18 +63,15 @@ class GenerationContractCompiler:
         model_id: str | None = None,
     ) -> GenerationContract:
         references = self._references(shot)
+        provider_refs = references.reference_ids
         capabilities = {Capability.image_generation}
-        if references.reference_ids:
+        if provider_refs:
             capabilities.add(Capability.image_reference)
-        if len(references.reference_ids) > 1:
+        if len(provider_refs) > 1:
             capabilities.add(Capability.multi_reference)
-        selection = self.providers.resolve(
-            capabilities,
-            provider_id=provider_id,
-            model_id=model_id,
-        )
-        self.providers.assert_reference_budget(selection, len(references.reference_ids))
-        return self._build(shot, references, selection, capabilities)
+        selection = self.providers.resolve(capabilities, provider_id=provider_id, model_id=model_id)
+        self.providers.assert_reference_budget(selection, len(provider_refs))
+        return self._build(shot, references, provider_refs, selection, capabilities)
 
     def compile_video(
         self,
@@ -84,28 +79,38 @@ class GenerationContractCompiler:
         *,
         provider_id: str | None = None,
         model_id: str | None = None,
+        first_frame_reference_id: str | None = None,
+        last_frame_reference_id: str | None = None,
         require_first_frame: bool = True,
     ) -> GenerationContract:
         references = self._references(shot)
+        first = str(first_frame_reference_id or "").strip()
+        last = str(last_frame_reference_id or "").strip()
+        if require_first_frame and not first:
+            raise ValueError("video generation requires an adopted first_frame_reference_id")
+        provider_refs = tuple(dict.fromkeys(item for item in (first, last) if item))
+
         capabilities = {Capability.video_generation}
-        if references.reference_ids:
-            capabilities.add(Capability.image_reference)
-        if len(references.reference_ids) > 1:
-            capabilities.add(Capability.multi_reference)
-        if require_first_frame:
+        if first:
             capabilities.add(Capability.first_frame)
-        selection = self.providers.resolve(
-            capabilities,
-            provider_id=provider_id,
-            model_id=model_id,
-        )
-        self.providers.assert_reference_budget(selection, len(references.reference_ids))
-        return self._build(shot, references, selection, capabilities)
+            capabilities.add(Capability.image_reference)
+        if last:
+            capabilities.add(Capability.last_frame)
+            capabilities.add(Capability.image_reference)
+        if first and last:
+            capabilities.add(Capability.first_last_frame)
+        if len(provider_refs) > 1:
+            capabilities.add(Capability.multi_reference)
+
+        selection = self.providers.resolve(capabilities, provider_id=provider_id, model_id=model_id)
+        self.providers.assert_reference_budget(selection, len(provider_refs))
+        return self._build(shot, references, provider_refs, selection, capabilities)
 
     @staticmethod
     def _build(
         shot: ShotContract,
         references: ReferenceContract,
+        provider_refs: tuple[str, ...],
         selection: ProviderSelection,
         capabilities: set[Capability],
     ) -> GenerationContract:
@@ -114,6 +119,7 @@ class GenerationContractCompiler:
             source_text=shot.source_text,
             entity_ids=references.entity_ids,
             reference_ids=references.reference_ids,
+            provider_reference_ids=provider_refs,
             provider_id=selection.spec.provider_id,
             model_id=selection.spec.model_id,
             required_capabilities=frozenset(capabilities),

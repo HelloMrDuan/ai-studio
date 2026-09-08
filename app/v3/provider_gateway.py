@@ -70,8 +70,7 @@ class ProviderRegistry:
             return ProviderSelection(spec=spec, required_capabilities=frozenset(required))
 
         eligible = [
-            spec
-            for spec in self._specs.values()
+            spec for spec in self._specs.values()
             if spec.enabled and spec.healthy and self._supports(spec, required)
         ]
         if not eligible:
@@ -85,7 +84,15 @@ class ProviderRegistry:
             raise ValueError("reference_count must be non-negative")
         if reference_count <= 1:
             return
-        if Capability.multi_reference not in selection.spec.capabilities:
+        # First+last frame is a distinct provider capability, not the same thing
+        # as arbitrary multi-entity reference conditioning. H3 legitimately
+        # accepts two frame roles without advertising generic multi_reference.
+        dedicated_first_last = (
+            reference_count == 2
+            and Capability.first_last_frame in selection.required_capabilities
+            and Capability.first_last_frame in selection.spec.capabilities
+        )
+        if not dedicated_first_last and Capability.multi_reference not in selection.spec.capabilities:
             raise ProviderResolutionError(
                 f"provider model {selection.spec.identity} does not support multi-reference generation"
             )

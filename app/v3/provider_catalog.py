@@ -20,12 +20,65 @@ def _capabilities(values: list[str] | tuple[str, ...]) -> set[Capability]:
     return result
 
 
+def _comfy_reference_profile(settings: Settings) -> dict[str, Any] | None:
+    """Load an operator-proven Comfy reference workflow profile.
+
+    Image reference capabilities remain disabled until this profile exists and
+    names a real workflow plus explicit reference slots. This keeps local
+    ComfyUI fail-closed while making reference-first execution configurable
+    without hard-coding IPAdapter/PuLID node variants in business code.
+    """
+    profile_path = Path(settings.data_dir) / "comfyui_reference_profile.v3.json"
+    if not profile_path.is_file():
+        return None
+    raw = json.loads(profile_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("comfyui_reference_profile.v3.json must be an object")
+    workflow_path = Path(str(raw.get("reference_workflow_path") or ""))
+    bindings = raw.get("reference_bindings")
+    if not workflow_path.is_file():
+        raise ValueError(f"configured Comfy reference workflow does not exist: {workflow_path}")
+    if not isinstance(bindings, list) or not bindings:
+        raise ValueError("Comfy reference profile requires reference_bindings")
+    max_refs = int(raw.get("max_references") or len(bindings))
+    if max_refs < 1 or len(bindings) < max_refs:
+        raise ValueError("Comfy reference profile has insufficient binding slots")
+    return {
+        "profile_path": str(profile_path),
+        "reference_workflow_path": str(workflow_path),
+        "reference_bindings": bindings,
+        "max_references": max_refs,
+        "identity_reference": bool(raw.get("identity_reference")),
+        "ip_adapter": bool(raw.get("ip_adapter")),
+    }
+
+
 def platform_provider_specs(settings: Settings) -> list[ProviderModelSpec]:
     """Describe the platform's existing local model services as V3 providers."""
     qwen_capabilities = {Capability.text, Capability.structured_output}
     projector = settings.gemma_mm_projector_path
     if projector and Path(projector).is_file():
         qwen_capabilities.add(Capability.vision)
+
+    comfy_capabilities = {Capability.image_generation}
+    comfy_metadata: dict[str, Any] = {
+        "source": "existing-platform",
+        "workflow_path": str(settings.comfyui_workflow_path),
+        "capability_note": "reference capabilities require an operator-proven V3 reference profile",
+    }
+    comfy_max_refs = None
+    reference_profile = _comfy_reference_profile(settings)
+    if reference_profile:
+        comfy_capabilities.add(Capability.image_reference)
+        if int(reference_profile["max_references"]) > 1:
+            comfy_capabilities.add(Capability.multi_reference)
+        if reference_profile["identity_reference"]:
+            comfy_capabilities.add(Capability.identity_reference)
+        if reference_profile["ip_adapter"]:
+            comfy_capabilities.add(Capability.ip_adapter)
+        comfy_max_refs = int(reference_profile["max_references"])
+        comfy_metadata.update(reference_profile)
+        comfy_metadata["capability_note"] = "reference workflow/profile is configured and explicit"
 
     return [
         ProviderModelSpec(
@@ -35,20 +88,17 @@ def platform_provider_specs(settings: Settings) -> list[ProviderModelSpec]:
             capabilities=qwen_capabilities,
             base_url=str(settings.gemma_base_url).rstrip("/"),
             priority=10,
-            metadata={"source": "existing-platform", "legacy_service": "GemmaService"},
+            metadata={"source": "existing-platform", "adapter": "openai-compatible"},
         ),
         ProviderModelSpec(
             provider_id="local-comfyui-image",
             model_id="configured-image-workflow",
             transport=ProviderTransport.local_comfyui,
-            capabilities={Capability.image_generation},
+            capabilities=comfy_capabilities,
             base_url=str(settings.comfyui_base_url).rstrip("/"),
             priority=10,
-            metadata={
-                "source": "existing-platform",
-                "workflow_path": str(settings.comfyui_workflow_path),
-                "capability_note": "reference capabilities stay disabled until the active workflow proves them",
-            },
+            max_references=comfy_max_refs,
+            metadata=comfy_metadata,
         ),
         ProviderModelSpec(
             provider_id="local-h3-video",
@@ -63,16 +113,13 @@ def platform_provider_specs(settings: Settings) -> list[ProviderModelSpec]:
             },
             base_url=str(settings.comfyui_base_url).rstrip("/"),
             priority=10,
-            metadata={"source": "existing-platform", "legacy_service": "H3VideoService"},
+            metadata={"source": "existing-platform", "adapter": "v3-h3-workflow-compiler"},
         ),
     ]
 
 
 def load_user_provider_specs(path: Path) -> list[ProviderModelSpec]:
-    """Load user-owned local or API providers from a data-dir config.
-
-    Secrets stay as `secret_ref`; this loader never reads secret values.
-    """
+    """Load user-owned local or API providers from a data-dir config."""
     if not path.is_file():
         return []
     data = json.loads(path.read_text(encoding="utf-8"))

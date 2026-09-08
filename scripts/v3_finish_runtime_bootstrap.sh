@@ -15,6 +15,11 @@ install -m 0755 scripts/start_comfy_safe.sh "$RUNTIME_ROOT/start_comfy.sh"
 echo "installed: $RUNTIME_ROOT/start_comfy.sh"
 
 echo
+echo "================ COMFY REFERENCE PROFILE ================"
+"$PY" scripts/v3_faceid_prepare.py
+"$PY" scripts/configure_comfy_reference_profile.py --profile faceid
+
+echo
 echo "================ TTS ================"
 if ! "$PY" -c 'import edge_tts' >/dev/null 2>&1; then
   "$PY" -m pip install --disable-pip-version-check edge-tts
@@ -40,8 +45,12 @@ echo "================ REAL TTS ACCEPTANCE ================"
 "$PY" scripts/v3_tts_acceptance.py
 
 echo
-echo "================ TEMPORAL ACCEPTANCE ================"
+echo "================ TEMPORAL TRANSPORT ACCEPTANCE ================"
 "$PY" scripts/v3_temporal_acceptance.py
+
+echo
+echo "================ TEMPORAL BUSINESS E2E ================"
+"$PY" scripts/v3_temporal_e2e.py
 
 echo
 echo "================ GLOBAL CONTROL ACCEPTANCE ================"

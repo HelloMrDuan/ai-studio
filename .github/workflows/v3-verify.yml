@@ -33,5 +33,6 @@ jobs:
           tests.test_v3_workflow_contracts
           tests.test_v3_media_foundation
           tests.test_v3_branding
+          tests.test_v3_generation_contract
       - name: Diff check
         run: git diff --check HEAD^ HEAD

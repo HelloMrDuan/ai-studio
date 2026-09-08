@@ -1,5 +1,11 @@
-"""Strict semantic audit contracts for Xiaoduan Studio V3."""
+"""Strict audit contracts for Xiaoduan Studio V3."""
 
+from .identity import (
+    IdentityAuditDecision,
+    IdentityAuditPolicy,
+    IdentityAuditResult,
+    evaluate_identity_similarity,
+)
 from .semantic import (
     AuditProtocolError,
     SemanticAuditResult,
@@ -12,4 +18,8 @@ __all__ = [
     "SemanticAuditResult",
     "parse_semantic_audit",
     "semantic_audit_passed",
+    "IdentityAuditDecision",
+    "IdentityAuditPolicy",
+    "IdentityAuditResult",
+    "evaluate_identity_similarity",
 ]

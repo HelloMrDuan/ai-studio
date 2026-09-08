@@ -4,7 +4,7 @@ import unittest
 
 from app.v3.continuity import ContinuityRegistry
 from app.v3.contracts import Capability, EntityKind, ProviderModelSpec, ProviderTransport, VisualEntity
-from app.v3.generation_contract import GenerationContractCompiler, ShotContract
+from app.v3.generation_contract import GenerationContract, GenerationContractCompiler, ShotContract
 from app.v3.provider_gateway import ProviderRegistry, ProviderResolutionError
 
 
@@ -59,6 +59,23 @@ class XiaoduanV3GenerationContractTests(unittest.TestCase):
                 )
             ]
         )
+
+    def test_generation_contract_allows_frame_first_video_callers_to_omit_shot_fields(self) -> None:
+        contract = GenerationContract(
+            shot_id="shot-video-001",
+            source_text="same character walks through snow",
+            entity_ids=("char_hero",),
+            reference_ids=("resource:res_image",),
+            provider_reference_ids=("resource:res_image",),
+            provider_id="local-h3-video",
+            model_id="minimax-h3",
+            required_capabilities=frozenset(
+                {Capability.video_generation, Capability.image_reference, Capability.first_frame}
+            ),
+        )
+        self.assertEqual(contract.camera_direction, "")
+        self.assertEqual(contract.action, "")
+        self.assertEqual(contract.duration_seconds, 3.0)
 
     def test_snow_story_keeps_same_canonical_entities_across_three_shots(self) -> None:
         compiler = GenerationContractCompiler(

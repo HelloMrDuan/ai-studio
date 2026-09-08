@@ -17,6 +17,7 @@ from .context_resolver import ContextResolver
 from .contracts import Capability, ResolvedField
 from .generation_contract import GenerationContract
 from .generation_executor import ReferenceAssetStore, ReferenceFirstComfyExecutor
+from .media.tts import TTSError, TTSRequest, build_tts_adapter
 from .provider_catalog import build_provider_registry
 from .provider_gateway import ProviderResolutionError
 from .resource_store import ResourceStore, ResourceStoreError
@@ -29,6 +30,8 @@ context_resolver = ContextResolver(default_cultural_context="Chinese")
 provider_registry = build_provider_registry(settings)
 resource_store = ResourceStore(settings.data_dir)
 reference_store = ReferenceAssetStore(settings.data_dir)
+tts_artifact_root = Path(settings.data_dir) / "v3" / "media" / "tts"
+tts_artifact_root.mkdir(parents=True, exist_ok=True)
 
 STATIC_DIR = Path(__file__).parent / "static"
 app = FastAPI(title="xiaoduan映画 · Xiaoduan Studio V3", version="3.0.0-alpha")
@@ -91,6 +94,16 @@ class H3QueueRequest(BaseModel):
     length: int = 124
     steps: int = 20
     seed: int = 0
+
+
+class TTSGenerateRequest(BaseModel):
+    provider_id: str | None = None
+    model_id: str | None = None
+    text: str = Field(min_length=1)
+    voice: str = Field(min_length=1)
+    response_format: str = "mp3"
+    speed: float = Field(default=1.0, gt=0.0, le=4.0)
+    instructions: str = ""
 
 
 @app.get("/")
@@ -294,6 +307,56 @@ async def queue_reference_first_h3(request: H3QueueRequest) -> dict[str, Any]:
         }
     except (ProviderResolutionError, ValueError, FileNotFoundError, RuntimeError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.post("/api/v3/generation/tts")
+async def generate_tts(request: TTSGenerateRequest) -> dict[str, Any]:
+    """Generate speech through the capability-selected local or remote TTS provider."""
+    response_format = request.response_format.strip().lower().lstrip(".")
+    if response_format not in {"mp3", "wav", "flac", "opus", "aac", "pcm"}:
+        raise HTTPException(status_code=400, detail="unsupported TTS response_format")
+    try:
+        selected = provider_registry.resolve(
+            {Capability.tts},
+            provider_id=request.provider_id,
+            model_id=request.model_id,
+        )
+        adapter = build_tts_adapter(selected.spec)
+        artifact_id = "tts_" + secrets.token_hex(12)
+        target = tts_artifact_root / f"{artifact_id}.{response_format}"
+        receipt = await adapter.synthesize(
+            TTSRequest(
+                text=request.text,
+                voice=request.voice,
+                model=selected.spec.model_id,
+                response_format=response_format,
+                speed=request.speed,
+                instructions=request.instructions,
+            ),
+            target,
+        )
+        return {
+            "artifact_id": artifact_id,
+            "provider_id": receipt.provider_id,
+            "model_id": receipt.model,
+            "voice": receipt.voice,
+            "response_format": receipt.response_format,
+            "bytes_written": receipt.bytes_written,
+            "download_path": f"/api/v3/media/tts/{artifact_id}",
+            "private_storage": True,
+        }
+    except (ProviderResolutionError, TTSError, ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/v3/media/tts/{artifact_id}")
+async def get_tts_artifact(artifact_id: str) -> FileResponse:
+    if not artifact_id.startswith("tts_") or not artifact_id[4:].isalnum():
+        raise HTTPException(status_code=400, detail="invalid TTS artifact_id")
+    matches = list(tts_artifact_root.glob(f"{artifact_id}.*"))
+    if len(matches) != 1 or not matches[0].is_file():
+        raise HTTPException(status_code=404, detail="TTS artifact not found")
+    return FileResponse(matches[0])
 
 
 @app.post("/api/v3/projects/{project_id}/resources/candidates")

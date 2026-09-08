@@ -111,6 +111,15 @@ class ComfyReferenceBinding:
     input_name: str = "image"
 
 
+@dataclass(frozen=True)
+class ComfyContractBinding:
+    contract_field: str
+    node_id: str
+    input_name: str
+    prefix: str = ""
+    suffix: str = ""
+
+
 class ComfyWorkflowBindingError(RuntimeError):
     pass
 
@@ -127,6 +136,35 @@ def parse_reference_bindings(raw: Any) -> tuple[ComfyReferenceBinding, ...]:
                 reference_index=int(item["reference_index"]),
                 node_id=str(item["node_id"]),
                 input_name=str(item.get("input_name") or "image"),
+            )
+        )
+    return tuple(result)
+
+
+def parse_contract_bindings(raw: Any) -> tuple[ComfyContractBinding, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ComfyWorkflowBindingError("provider contract_bindings must be an array")
+    allowed = {"shot_id", "source_text", "camera_direction", "action"}
+    result: list[ComfyContractBinding] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise ComfyWorkflowBindingError("contract binding must be an object")
+        field = str(item.get("contract_field") or "").strip()
+        if field not in allowed:
+            raise ComfyWorkflowBindingError(f"unsupported contract binding field: {field}")
+        node_id = str(item.get("node_id") or "").strip()
+        input_name = str(item.get("input_name") or "").strip()
+        if not node_id or not input_name:
+            raise ComfyWorkflowBindingError("contract binding requires node_id and input_name")
+        result.append(
+            ComfyContractBinding(
+                contract_field=field,
+                node_id=node_id,
+                input_name=input_name,
+                prefix=str(item.get("prefix") or ""),
+                suffix=str(item.get("suffix") or ""),
             )
         )
     return tuple(result)
@@ -160,6 +198,22 @@ def bind_comfy_references(
     return compiled
 
 
+def bind_comfy_contract(
+    workflow: dict[str, Any],
+    contract: GenerationContract,
+    bindings: tuple[ComfyContractBinding, ...] | list[ComfyContractBinding],
+) -> dict[str, Any]:
+    """Inject declared GenerationContract fields into explicit Comfy workflow inputs."""
+    compiled = deepcopy(workflow)
+    for binding in bindings:
+        node = compiled.get(binding.node_id)
+        if not isinstance(node, dict) or not isinstance(node.get("inputs"), dict):
+            raise ComfyWorkflowBindingError(f"contract binding node missing: {binding.node_id}")
+        value = str(getattr(contract, binding.contract_field, "") or "").strip()
+        node["inputs"][binding.input_name] = f"{binding.prefix}{value}{binding.suffix}"
+    return compiled
+
+
 @dataclass(frozen=True)
 class GenerationExecutionReceipt:
     prompt_id: str
@@ -182,6 +236,7 @@ class ReferenceFirstComfyExecutor:
         *,
         workflow: dict[str, Any],
         reference_bindings: tuple[ComfyReferenceBinding, ...] | list[ComfyReferenceBinding],
+        contract_bindings: tuple[ComfyContractBinding, ...] | list[ComfyContractBinding] = (),
     ) -> GenerationExecutionReceipt:
         if contract.provider_id != self.adapter.spec.provider_id or contract.model_id != self.adapter.spec.model_id:
             raise RuntimeError("generation contract/provider adapter mismatch")
@@ -198,6 +253,7 @@ class ReferenceFirstComfyExecutor:
             name = str(response.get("name") or "").strip()
             uploaded.append(f"{subfolder}/{name}" if subfolder else name)
         compiled = bind_comfy_references(workflow, uploaded, reference_bindings)
+        compiled = bind_comfy_contract(compiled, contract, contract_bindings)
         queued = await self.adapter.queue_workflow(compiled)
         return GenerationExecutionReceipt(
             prompt_id=str(queued["prompt_id"]),
@@ -208,7 +264,7 @@ class ReferenceFirstComfyExecutor:
         )
 
     async def execute_provider_profile(self, contract: GenerationContract) -> GenerationExecutionReceipt:
-        """Load the provider's declared workflow/bindings; never guess reference nodes."""
+        """Load the provider's declared workflow/bindings; never guess reference or prompt nodes."""
         metadata = self.adapter.spec.metadata
         path = Path(str(metadata.get("reference_workflow_path") or ""))
         if not path.is_file():
@@ -218,5 +274,11 @@ class ReferenceFirstComfyExecutor:
         workflow = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(workflow, dict) or not workflow:
             raise ComfyWorkflowBindingError("reference workflow must be a non-empty Comfy API workflow object")
-        bindings = parse_reference_bindings(metadata.get("reference_bindings"))
-        return await self.execute(contract, workflow=workflow, reference_bindings=bindings)
+        reference_bindings = parse_reference_bindings(metadata.get("reference_bindings"))
+        contract_bindings = parse_contract_bindings(metadata.get("contract_bindings"))
+        return await self.execute(
+            contract,
+            workflow=workflow,
+            reference_bindings=reference_bindings,
+            contract_bindings=contract_bindings,
+        )

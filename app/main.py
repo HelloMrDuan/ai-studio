@@ -6,5 +6,8 @@ but the default ASGI application is V3 only.
 """
 
 from app.v3.main import app
+from app.v3.web_routes import router as web_workflow_router
+
+app.include_router(web_workflow_router)
 
 __all__ = ["app"]

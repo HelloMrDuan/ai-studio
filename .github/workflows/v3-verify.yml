@@ -33,6 +33,7 @@ jobs:
           scripts/v3_temporal_worker.py
           scripts/v3_temporal_acceptance.py
           scripts/v3_temporal_e2e.py
+          scripts/v3_temporal_visual_e2e.py
       - name: Run V3 tests
         run: >-
           python -m unittest -v
@@ -41,6 +42,7 @@ jobs:
           tests.test_v3_provider_catalog
           tests.test_v3_workflow_contracts
           tests.test_v3_domain_executor
+          tests.test_v3_materialized_generation
           tests.test_v3_media_foundation
           tests.test_v3_media_pipeline
           tests.test_v3_branding

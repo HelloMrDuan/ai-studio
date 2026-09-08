@@ -32,9 +32,13 @@ class GenerationContract:
     provider_id: str
     model_id: str
     required_capabilities: frozenset[Capability]
-    camera_direction: str
-    action: str
-    duration_seconds: float
+    # Keep the low-level contract backwards-compatible with ShotContract.
+    # Video/frame-first call sites historically omitted camera/action because
+    # those values are encoded in the video prompt; they must still compile to
+    # a valid GenerationContract rather than failing before provider execution.
+    camera_direction: str = ""
+    action: str = ""
+    duration_seconds: float = 3.0
 
 
 class GenerationContractCompiler:

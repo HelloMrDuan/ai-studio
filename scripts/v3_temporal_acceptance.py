@@ -21,6 +21,7 @@ async def main() -> None:
     address = os.environ.get("TEMPORAL_ADDRESS", "127.0.0.1:7233")
     namespace = os.environ.get("TEMPORAL_NAMESPACE", "default")
     task_queue = os.environ.get("XIAODUAN_TEMPORAL_TASK_QUEUE", "xiaoduan-v3-production")
+    timeout_seconds = float(os.environ.get("XIAODUAN_TEMPORAL_ACCEPTANCE_TIMEOUT", "30"))
     client = await Client.connect(address, namespace=namespace)
 
     suffix = int(time.time())
@@ -40,12 +41,24 @@ async def main() -> None:
         ),
     )
 
-    result = await client.execute_workflow(
+    handle = await client.start_workflow(
         ProductionWorkflow.run,
         request,
         id=workflow_id,
         task_queue=task_queue,
     )
+    print("TEMPORAL ACCEPTANCE: STARTED", flush=True)
+    print("workflow_id:", workflow_id, flush=True)
+    print("task_queue:", task_queue, flush=True)
+
+    try:
+        result = await asyncio.wait_for(handle.result(), timeout=timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        raise SystemExit(
+            "TEMPORAL ACCEPTANCE TIMEOUT: "
+            f"workflow_id={workflow_id} task_queue={task_queue} timeout={timeout_seconds:.0f}s"
+        ) from exc
+
     if result.status != "completed":
         raise SystemExit(f"TEMPORAL ACCEPTANCE FAILED: {result}")
     if payload_ref not in result.output_refs:

@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
       - name: Compile V3 modules
-        run: python -m compileall -q app/main.py app/v3 scripts/upstream/check_updates.py
+        run: python -m compileall -q app/main.py app/v3 scripts/upstream/check_updates.py scripts/v3_faceid_prepare.py
       - name: Run V3 tests
         run: >-
           python -m unittest -v
@@ -36,6 +36,7 @@ jobs:
           tests.test_v3_branding
           tests.test_v3_generation_contract
           tests.test_v3_reference_generation
+          tests.test_v3_faceid_profile
           tests.test_v3_storyboard_audit
           tests.test_v3_storyboard_pipeline
           tests.test_v3_semantic_audit

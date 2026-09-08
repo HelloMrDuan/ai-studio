@@ -51,6 +51,11 @@ class ProductionWorkflow:
                     message=self._cancel_reason,
                 )
 
+            # The Activity is invoked by its registered string name so the
+            # Workflow stays decoupled from the concrete worker implementation.
+            # Temporal cannot infer the return type from a string activity name,
+            # therefore result_type is required or the SDK decodes the payload as
+            # a plain dict and the typed workflow contract check below fails.
             result = await workflow.execute_activity(
                 "xiaoduan_execute_step",
                 StepActivityInput(
@@ -58,6 +63,7 @@ class ProductionWorkflow:
                     project_id=input.project_id,
                     step=step,
                 ),
+                result_type=StepActivityResult,
                 start_to_close_timeout=timedelta(hours=6),
                 heartbeat_timeout=timedelta(seconds=60),
                 retry_policy=RetryPolicy(

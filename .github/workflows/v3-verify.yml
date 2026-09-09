@@ -60,6 +60,7 @@ jobs:
           tests.test_v3_stage_revision
           tests.test_v3_front_half_skill_overlay
           tests.test_v3_authoring_assets
+          tests.test_v3_asset_model_refined
           tests.test_v3_shot_authoring
           tests.test_v3_media_foundation
           tests.test_v3_media_pipeline

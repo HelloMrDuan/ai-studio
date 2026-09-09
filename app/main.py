@@ -26,14 +26,13 @@ from app.v3.asset_authoring_refined import RefinedAuthoringAssetService
 from app.v3.postproduction_prefetch import PostProductionPrefetch
 from app.v3.bgm_prefetch import BGMPrefetchService
 from app.v3.shot_continuity_linker import ShotContinuityLinker
-from app.v3.stage_progress import StageProgressTracker
+from app.v3.authoring_progress import create_authoring_progress_tracker
 
 production_skill_registry = ProductionSkillRegistry(legacy_runtime.director)
 production_skill_registry.install()
 production_runtime_optimizer = ProductionRuntimeOptimizer(settings, legacy_runtime.director)
 production_runtime_optimizer.install()
-stage_progress_tracker = StageProgressTracker(settings, legacy_runtime.director)
-stage_progress_tracker.install()
+stage_progress_tracker = create_authoring_progress_tracker(settings, legacy_runtime.director)
 authoring_asset_service = RefinedAuthoringAssetService(settings, legacy_runtime)
 authoring_asset_service.install_confirmation_hook()
 
@@ -62,7 +61,7 @@ from app.v3.character_appearances import create_character_appearance_router
 from app.v3.shot_refinement import create_shot_refinement_router
 from app.v3.bgm_prefetch import create_bgm_prefetch_router
 from app.v3.asset_explorer import create_asset_explorer_router
-from app.v3.stage_progress import create_stage_progress_router
+from app.v3.authoring_progress import create_authoring_progress_router
 
 _SKIP_V3_PATHS = {"/", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
 _existing_paths = {getattr(route, "path", "") for route in app.router.routes}
@@ -87,7 +86,7 @@ app.include_router(create_shot_authoring_router(settings, legacy_runtime))
 app.include_router(create_shot_refinement_router(legacy_runtime))
 app.include_router(create_bgm_prefetch_router(settings, legacy_runtime))
 app.include_router(create_asset_explorer_router(settings, legacy_runtime))
-app.include_router(create_stage_progress_router(stage_progress_tracker))
+app.include_router(create_authoring_progress_router(stage_progress_tracker))
 app.include_router(original_workbench_router)
 app.title = "小段映画 · 漫剧工作台"
 

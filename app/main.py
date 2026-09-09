@@ -58,6 +58,7 @@ from app.v3.shot_authoring import create_shot_authoring_router
 from app.v3.character_appearances import create_character_appearance_router
 from app.v3.shot_refinement import create_shot_refinement_router
 from app.v3.bgm_prefetch import create_bgm_prefetch_router
+from app.v3.asset_explorer import create_asset_explorer_router
 
 _SKIP_V3_PATHS = {"/", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
 _existing_paths = {getattr(route, "path", "") for route in app.router.routes}
@@ -81,6 +82,7 @@ app.include_router(create_character_appearance_router(legacy_runtime))
 app.include_router(create_shot_authoring_router(settings, legacy_runtime))
 app.include_router(create_shot_refinement_router(legacy_runtime))
 app.include_router(create_bgm_prefetch_router(settings, legacy_runtime))
+app.include_router(create_asset_explorer_router(settings, legacy_runtime))
 app.include_router(original_workbench_router)
 app.title = "小段映画 · 漫剧工作台"
 

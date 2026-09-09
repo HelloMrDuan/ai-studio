@@ -64,6 +64,8 @@ class OriginalWorkbenchBridgeContractTests(unittest.TestCase):
         self.assertIn("completed: '已完成 · 待采用'", source)
         self.assertIn("running: '生成中'", source)
         self.assertIn("failed: '失败'", source)
+        self.assertIn("state.textContent = '待确认'", source)
+        self.assertIn("v3DeepStageProgress", source)
 
     def test_postproduction_has_editable_voice_subtitle_bgm_and_composition(self) -> None:
         backend = (ROOT / "app" / "v3" / "legacy_postproduction.py").read_text(encoding="utf-8")

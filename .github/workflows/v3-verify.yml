@@ -70,6 +70,7 @@ jobs:
           tests.test_v3_front_half_skill_overlay
           tests.test_v3_authoring_assets
           tests.test_v3_asset_model_refined
+          tests.test_v3_ready_stage_materialization
           tests.test_v3_character_appearances
           tests.test_v3_shot_authoring
           tests.test_v3_shot_continuity_linker

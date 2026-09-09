@@ -13,23 +13,22 @@ if str(REPO_ROOT) not in sys.path:
 from app.config import get_settings
 from app.v3.workflow.activities import ProductionActivities
 from app.v3.workflow.contracts import StepActivityInput, StepActivityResult
-from app.v3.workflow.full_pipeline_executor import FullPipelineExecutor
+from app.v3.workflow.production_cached_executor import ProductionCachedFullPipelineExecutor
 from app.v3.workflow.worker import run_worker
 
 
 settings = get_settings()
-domain_executor = FullPipelineExecutor(settings)
+domain_executor = ProductionCachedFullPipelineExecutor(settings)
 
 
 async def execute_step(input: StepActivityInput) -> StepActivityResult:
-    """Dispatch durable Temporal Activities into the V3 production domain layer."""
+    """Dispatch durable Temporal Activities into the production domain layer."""
     step = input.step
     print(
         f"ACTIVITY START workflow={input.workflow_id} step={step.step_id} operation={step.operation}",
         flush=True,
     )
 
-    # Keep the transport-only acceptance operation for the existing smoke test.
     if step.operation == "acceptance_echo":
         result = StepActivityResult(
             kind="completed",

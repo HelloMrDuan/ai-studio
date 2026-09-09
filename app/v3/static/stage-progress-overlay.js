@@ -1,6 +1,8 @@
 (() => {
   const POLL_MS = 1000;
   let polling = false;
+  let finalizing = false;
+  let lastFinalizeKey = '';
 
   function esc(value) {
     return String(value ?? '').replace(/[&<>"']/g, c => ({
@@ -102,7 +104,7 @@
   function etaText(data) {
     if (data.status === 'completed') return `总耗时 ${formatSeconds(data.elapsed_seconds)}`;
     if (data.status === 'failed') return '执行失败';
-    if (data.status === 'waiting') return `已耗时 ${formatSeconds(data.elapsed_seconds)} · 等待下一内部步骤`;
+    if (data.status === 'waiting') return `内容生成已结束 · 正在本地完成校验`;
     const low = data.estimated_remaining_low_seconds;
     const high = data.estimated_remaining_high_seconds;
     if (low != null && high != null) {
@@ -135,7 +137,7 @@
       : data.status === 'failed'
         ? '执行失败'
         : data.status === 'waiting'
-          ? '等待内部推进'
+          ? '本地收口中 · 不会再次调用模型'
           : `${current.name || '正在处理'} · ${Math.round(Number(current.percent) || 0)}%`;
     const steps = (data.steps || []).map(item => {
       const pct = Math.max(0, Math.min(100, Number(item.percent) || 0));
@@ -166,12 +168,53 @@
       <div class="v3spBar"><i style="width:${overall}%"></i></div>
       <div class="v3spMeta">
         <span><b>${esc(etaText(data))}</b></span>
-        <span>内部执行轮次 ${Number(data.turn_count) || 1}</span>
+        <span>生产调用 ${Number(data.turn_count) || 1} 次</span>
       </div>
       <div class="v3spSteps">${steps}</div>
-      <div class="v3spFoot">${esc(source)}。百分比和剩余时间是基于真实执行边界、当前阶段耗时和历史样本计算的预计值，不伪装成模型内部不可观测的精确 Token 进度。</div>
+      <div class="v3spFoot">${esc(source)}。百分比和剩余时间基于真实执行边界、当前阶段耗时和历史样本估算；①-④单次生产结束后只做本地资产登记与校验，不再自动调用下一轮模型。</div>
       ${data.error ? `<div class="v3spError">${esc(data.error)}</div>` : ''}
     `;
+  }
+
+  async function tryLocalFinalize(data) {
+    const id = projectId();
+    if (!id || data?.status !== 'waiting' || finalizing) return;
+    const key = `${id}:${data.stage || ''}:${data.updated_at || ''}`;
+    if (lastFinalizeKey === key) return;
+    lastFinalizeKey = key;
+    finalizing = true;
+    try {
+      const response = await fetch(`/api/v3/studio/projects/${encodeURIComponent(id)}/finalize-authoring-stage`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: '{}',
+      });
+      const text = await response.text();
+      let body = {};
+      try { body = JSON.parse(text); } catch (_) { body = {detail: text}; }
+      if (!response.ok) throw new Error(body?.detail || `本地完成阶段失败：${response.status}`);
+      if (body.finalized) {
+        try { if (typeof refreshAll === 'function') await refreshAll(); } catch (_) {}
+      } else if (body.needs_regeneration) {
+        const panel = ensurePanel();
+        if (panel) {
+          const box = document.createElement('div');
+          box.className = 'v3spError';
+          box.textContent = `本轮内容已经生成，但本地完成校验未通过：${body.reason || '需要重新生成'}`;
+          panel.appendChild(box);
+        }
+      }
+    } catch (error) {
+      const panel = ensurePanel();
+      if (panel && !panel.querySelector('.v3spFinalizeError')) {
+        const box = document.createElement('div');
+        box.className = 'v3spError v3spFinalizeError';
+        box.textContent = error.message || String(error);
+        panel.appendChild(box);
+      }
+    } finally {
+      finalizing = false;
+    }
   }
 
   async function refresh() {
@@ -186,7 +229,9 @@
     try {
       const response = await fetch(`/api/v3/studio/projects/${encodeURIComponent(id)}/stage-progress`, {cache: 'no-store'});
       if (!response.ok) return;
-      render(await response.json());
+      const data = await response.json();
+      render(data);
+      await tryLocalFinalize(data);
     } catch (_) {
       // Progress UI must never interrupt the creation workflow.
     } finally {

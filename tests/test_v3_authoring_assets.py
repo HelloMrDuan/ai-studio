@@ -57,6 +57,7 @@ class AuthoringAssetTests(unittest.IsolatedAsyncioTestCase):
             project_id,
             entity_type="character",
             name="少年",
+            logical_key="continuity:character:young-hero",
             metadata={
                 "continuity": {
                     "aliases": ["少年侠客"],
@@ -69,6 +70,7 @@ class AuthoringAssetTests(unittest.IsolatedAsyncioTestCase):
             project_id,
             entity_type="character",
             name="师父",
+            logical_key="continuity:character:master",
             metadata={
                 "continuity": {
                     "core_profile": {"外观": "灰发，深色长袍"},
@@ -80,6 +82,7 @@ class AuthoringAssetTests(unittest.IsolatedAsyncioTestCase):
             project_id,
             entity_type="location",
             name="雪山古道",
+            logical_key="continuity:location:snow-road",
             metadata={"continuity": {"core_profile": {"结构": "狭窄山道，两侧积雪岩壁"}}},
         )
         return director, a, b, location

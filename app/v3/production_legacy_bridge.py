@@ -41,12 +41,26 @@ class ProductionReadyLegacyBridge(ReferenceAwareLegacyCandidateV3Bridge):
     ) -> dict[str, Any]:
         next_payload = dict(payload)
         raw = dict(payload.get("params") or {}) if isinstance(payload.get("params"), dict) else {}
-        if capability == "image" and str(raw.get("quality_stage") or "preview") != "final":
+        quality_stage = str(raw.get("quality_stage") or "preview").strip().lower()
+        if capability == "image" and quality_stage != "final":
             for key in ("steps", "cfg", "sampler", "sampler_name", "scheduler"):
                 raw.pop(key, None)
             raw.pop("model_key", None)
 
         params = apply_smart_candidate_params(raw, shot=formal, capability=capability)
+        # A normal preview is a new creative attempt, so freeze a fresh concrete
+        # seed at submission time. A final refine explicitly carries the preview
+        # seed and therefore remains reproducible and cacheable.
+        if capability == "image" and quality_stage != "final":
+            seed_value = raw.get("seed")
+            try:
+                seed = int(seed_value) if seed_value is not None else -1
+            except Exception:
+                seed = -1
+            if seed < 0:
+                seed = secrets.randbelow(2_147_483_646) + 1
+            params["seed"] = seed
+
         next_payload["params"] = params
         metadata = dict(next_payload.get("metadata") or {}) if isinstance(next_payload.get("metadata"), dict) else {}
         metadata.update(

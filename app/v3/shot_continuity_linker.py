@@ -17,8 +17,6 @@ def _ids(value: Any) -> tuple[str, ...]:
 
 
 def _appearance_signature(shot: dict[str, Any]) -> tuple[str, ...]:
-    # New native storyboard output may use one of these names; accepting all
-    # keeps older formal shots compatible while the front half migrates.
     for field in (
         "character_appearance_asset_ids",
         "character_appearance_ids",
@@ -55,12 +53,7 @@ _TIME_JUMP = re.compile(
 
 
 class ShotContinuityLinker:
-    """Deterministically connect adjacent shots that can safely inherit state.
-
-    This is intentionally cheaper than an LLM audit.  It only links when scene,
-    visible character set and explicit appearance-version set are compatible and
-    no clear time jump exists.  It never overwrites an explicit start state.
-    """
+    """Deterministically connect adjacent shots that can safely inherit state."""
 
     def __init__(self, settings: Any, legacy_runtime: Any) -> None:
         self.settings = settings
@@ -125,7 +118,13 @@ class ShotContinuityLinker:
     def link(self, project_id: str) -> dict[str, Any]:
         state = self._load(project_id)
         shots = [row for row in state.get("shots") or [] if isinstance(row, dict) and not bool(row.get("provisional"))]
-        shots.sort(key=lambda pair: _order(pair, shots.index(pair) if pair in shots else 0))
+        # list.sort temporarily mutates list internals, so never call
+        # shots.index() from inside its key function. Preserve original index
+        # explicitly for deterministic fallback ordering.
+        indexed = list(enumerate(shots))
+        indexed.sort(key=lambda pair: _order(pair[1], pair[0]))
+        shots = [shot for _, shot in indexed]
+
         linked = 0
         breaks = 0
         inherited = 0

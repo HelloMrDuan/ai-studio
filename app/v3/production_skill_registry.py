@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from types import MethodType
 from typing import Any
@@ -13,6 +14,30 @@ from app.services.production_skills import (
 )
 
 
+def builtin_single_pass_contract(skill_name: str, skill_md: str) -> dict[str, Any]:
+    """Return the deterministic runtime contract for Xiaoduan authoring Skills.
+
+    The built-in ①-④ Skills each have one complete authoring deliverable. Their
+    quality rules live in the checked-in Skill itself; the generated turn is
+    always persisted as a production asset before readiness is evaluated. A
+    second LLM call must not be required merely to invent artifact receipt IDs.
+    """
+    return {
+        "schema_version": "skill_contract_v2",
+        "skill_name": skill_name,
+        "source_sha256": hashlib.sha256(skill_md.encode("utf-8")).hexdigest(),
+        "completion_mode": "native_only",
+        "output_groups": [],
+        "conditional_requirements": [],
+        "compiler_reason": (
+            "小段①-④内置专业 Skill 使用单次生产合同；"
+            "完整生成结果会先持久化为正式阶段资产，再由本地 readiness 收口"
+        ),
+        "single_pass": True,
+        "llm_contract_compiler_required": False,
+    }
+
+
 class ProductionSkillRegistry:
     """Make Xiaoduan's native production Skills authoritative at runtime.
 
@@ -23,10 +48,10 @@ class ProductionSkillRegistry:
 
     Native authoring stages are deliberately single-pass. A stage first runs
     its one real production step exactly once. After the produced content,
-    entities and contract receipts have been materialized, the platform
-    deterministically re-evaluates readiness. Only a genuinely ready stage is
-    promoted locally to ``complete_stage``. No second content-generation turn
-    and no legacy ``advance`` call is allowed.
+    entities and the persisted turn asset exist, the platform deterministically
+    re-evaluates readiness. Only then is the same in-memory target promoted to
+    ``complete_stage``. No second content-generation turn and no legacy
+    ``advance`` call is allowed.
     """
 
     def __init__(self, director: Any) -> None:
@@ -35,6 +60,7 @@ class ProductionSkillRegistry:
         self._original_available_files = getattr(director, "_available_files")
         self._original_read_source_file = getattr(director, "_read_source_file")
         self._original_source_status = getattr(director, "source_status")
+        self._original_ensure_skill_contract = getattr(director, "_ensure_skill_contract", None)
         self._original_ensure_native_plan = getattr(director, "_ensure_native_plan", None)
         self._original_native_target = getattr(director, "_native_target", None)
         self._original_message = getattr(director, "message", None)
@@ -55,15 +81,7 @@ class ProductionSkillRegistry:
 
     @staticmethod
     def _install_single_pass_completion_promotion() -> None:
-        """Promote a ready single-pass step to terminal locally.
-
-        Director.message() intentionally materializes the generated turn,
-        entities and contract receipts before calling apply_asset_completion.
-        That is the first point where readiness can be known truthfully. The
-        old implementation targeted complete_stage before this point and could
-        therefore fail with ``complete_stage_must_be_ready`` even though the
-        content itself had been produced successfully.
-        """
+        """Promote a ready single-pass step to terminal locally."""
         if getattr(
             director_module,
             "_xiaoduan_single_pass_completion_promotion_installed",
@@ -104,21 +122,16 @@ class ProductionSkillRegistry:
                 )
                 completion = terminal_state.get("completion") or {}
                 if completion.get("ready") is True:
-                    # Mutate the original target because Director.message()
-                    # later persists and mechanically validates this same dict.
                     native_target.clear()
                     native_target.update(terminal_target)
                     if steps:
                         native_plan["current_index"] = len(steps) - 1
                     native_plan["completed_locally"] = True
-                    native_plan["completion_mode"] = (
-                        "single_pass_after_materialization"
-                    )
+                    native_plan["completion_mode"] = "single_pass_after_materialization"
                     return terminal_state
 
-                # The one production call did not satisfy its contract. Keep
-                # the stage non-terminal and expose the actual missing items;
-                # never trigger another hidden Qwen turn.
+                # This should only happen for a real local completion problem.
+                # Never turn it into another hidden Qwen generation turn.
                 return original_apply(
                     contract=contract,
                     runtime_state=terminal_state,
@@ -144,9 +157,6 @@ class ProductionSkillRegistry:
         if getattr(self.director, "_xiaoduan_native_production_skills_installed", False):
             return
 
-        # DirectorService resolves these globals at call time, so replacing the
-        # module-level registry switches the real stage runtime without forking
-        # the legacy project/session implementation.
         director_module.STAGE_SKILLS = dict(STAGE_PRODUCTION_SKILLS)
         director_module.WORKFLOW_SKILL = WORKFLOW_PRODUCTION_SKILL
         self._install_single_pass_completion_promotion()
@@ -155,6 +165,7 @@ class ProductionSkillRegistry:
         original_available_files = self._original_available_files
         original_read_source_file = self._original_read_source_file
         original_source_status = self._original_source_status
+        original_ensure_skill_contract = self._original_ensure_skill_contract
         original_ensure_native_plan = self._original_ensure_native_plan
         original_native_target = self._original_native_target
         original_message = self._original_message
@@ -189,6 +200,7 @@ class ProductionSkillRegistry:
                 "story_bible": True,
                 "typed_stage_boundaries": True,
                 "single_pass_authoring": True,
+                "deterministic_authoring_contract": True,
                 "local_readiness_completion": True,
                 "legacy_auto_advance": False,
                 "external_workflow_required": False,
@@ -196,7 +208,7 @@ class ProductionSkillRegistry:
             return {
                 "ready": True,
                 "manifest": {
-                    "schema_version": "xiaoduan-production-skills-v3-single-pass-readiness",
+                    "schema_version": "xiaoduan-production-skills-v4-deterministic-contract",
                     "workflow_skill": WORKFLOW_PRODUCTION_SKILL,
                     "stage_order": [
                         {"stage": stage, "skill": skill}
@@ -211,6 +223,26 @@ class ProductionSkillRegistry:
         self.director._available_files = MethodType(available_files, self.director)
         self.director._read_source_file = MethodType(read_source_file, self.director)
         self.director.source_status = MethodType(source_status, self.director)
+
+        if callable(original_ensure_skill_contract):
+            async def ensure_skill_contract(
+                instance: Any,
+                *,
+                skill_name: str,
+                skill_md: str,
+                stage_state: dict[str, Any],
+            ) -> dict[str, Any]:
+                if is_builtin_production_skill(skill_name):
+                    contract = builtin_single_pass_contract(skill_name, skill_md)
+                    stage_state["skill_contract"] = contract
+                    return contract
+                return await original_ensure_skill_contract(
+                    skill_name=skill_name,
+                    skill_md=skill_md,
+                    stage_state=stage_state,
+                )
+
+            self.director._ensure_skill_contract = MethodType(ensure_skill_contract, self.director)
 
         if callable(original_ensure_native_plan):
             async def ensure_native_plan(
@@ -272,8 +304,6 @@ class ProductionSkillRegistry:
                     steps = list(plan.get("steps") or [])
                     if not steps:
                         raise RuntimeError("小段单次生产计划缺少唯一步骤")
-                    # First run the sole real production step. It may only be
-                    # promoted to complete_stage after assets/receipts exist.
                     return {
                         "kind": "step",
                         "index": 0,
@@ -317,4 +347,7 @@ class ProductionSkillRegistry:
         self.director._xiaoduan_native_production_skills_installed = True
 
 
-__all__ = ["ProductionSkillRegistry"]
+__all__ = [
+    "ProductionSkillRegistry",
+    "builtin_single_pass_contract",
+]

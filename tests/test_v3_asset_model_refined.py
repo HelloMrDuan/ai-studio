@@ -100,13 +100,25 @@ class RefinedAssetModelTests(unittest.TestCase):
             root = Path(raw)
             project_id = "b" * 24
             director, hero, location, prop, scene = self._setup(root, project_id)
-            service = CanonicalReferenceAssetBootstrap(_Legacy(director), submit_candidate=lambda *_: None)
+            legacy = _Legacy(director)
 
+            # References are intentionally gated behind stable authoring
+            # profiles. A completed ②/③ project must materialize those profiles
+            # first; raw Stage① discovery entities are not reference-ready.
+            authoring = RefinedAuthoringAssetService(
+                type("S", (), {"data_dir": root})(),
+                legacy,
+            )
+            authoring.status(project_id)
+
+            service = CanonicalReferenceAssetBootstrap(legacy, submit_candidate=lambda *_: None)
             state = service.status(project_id)
 
             self.assertEqual({item["entity_type"] for item in state["items"]}, {"character", "location", "prop"})
             self.assertEqual(state["required_count"], 3)
             self.assertEqual(state["canonical_asset_kinds"], ["character", "location", "prop"])
+            self.assertTrue(state["stable_profile_required"])
+            self.assertFalse(state["stage01_story_entities_exposed"])
 
 
 if __name__ == "__main__":

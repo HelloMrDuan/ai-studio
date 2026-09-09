@@ -23,7 +23,7 @@ app.router.routes[:] = [
 from app.v3.legacy_authoring_retirement import retire_legacy_authoring_jobs
 from app.v3.production_skill_registry import ProductionSkillRegistry
 from app.v3.production_runtime_optimization import ProductionRuntimeOptimizer
-from app.v3.asset_authoring_refined import RefinedAuthoringAssetService
+from app.v3.production_authoring_assets import ProductionAuthoringAssetService
 from app.v3.postproduction_prefetch import PostProductionPrefetch
 from app.v3.bgm_prefetch import BGMPrefetchService
 from app.v3.shot_continuity_linker import ShotContinuityLinker
@@ -51,8 +51,12 @@ stage_progress_tracker = create_authoring_progress_tracker(settings, legacy_runt
 authoring_execution_timing = AuthoringExecutionTimingFix(stage_progress_tracker)
 authoring_execution_timing.install()
 
-authoring_asset_service = RefinedAuthoringAssetService(settings, legacy_runtime)
+# Stage②/③ reaching 100% must immediately materialize reusable assets so the
+# user can inspect them before manual confirmation. Existing ready projects are
+# reconciled on startup with zero model calls.
+authoring_asset_service = ProductionAuthoringAssetService(settings, legacy_runtime)
 authoring_asset_service.install_confirmation_hook()
+authoring_asset_reconciliation = authoring_asset_service.reconcile_existing_projects()
 
 shot_continuity_linker = ShotContinuityLinker(settings, legacy_runtime)
 shot_continuity_linker.install_confirmation_hook()
@@ -73,7 +77,7 @@ from app.v3.original_workbench_overlay import router as original_workbench_route
 from app.v3.project_management import create_project_management_router
 from app.v3.canonical_reference_assets import create_canonical_reference_asset_router
 from app.v3.stage_revision import create_stage_revision_router
-from app.v3.asset_authoring_refined import create_refined_authoring_asset_router
+from app.v3.production_authoring_assets import create_production_authoring_asset_router
 from app.v3.shot_authoring import create_shot_authoring_router
 from app.v3.character_appearances import create_character_appearance_router
 from app.v3.shot_refinement import create_shot_refinement_router
@@ -99,7 +103,7 @@ app.include_router(legacy_postproduction_router)
 app.include_router(create_project_management_router(settings, legacy_runtime))
 app.include_router(create_canonical_reference_asset_router(legacy_runtime))
 app.include_router(create_stage_revision_router(settings, legacy_runtime))
-app.include_router(create_refined_authoring_asset_router(settings, legacy_runtime))
+app.include_router(create_production_authoring_asset_router(settings, legacy_runtime))
 app.include_router(create_character_appearance_router(legacy_runtime))
 app.include_router(create_shot_authoring_router(settings, legacy_runtime))
 app.include_router(create_shot_refinement_router(legacy_runtime))
@@ -120,6 +124,7 @@ __all__ = [
     "stage_progress_tracker",
     "authoring_execution_timing",
     "authoring_asset_service",
+    "authoring_asset_reconciliation",
     "shot_continuity_linker",
     "postproduction_prefetch",
     "bgm_prefetch",

@@ -22,6 +22,13 @@ app.router.routes[:] = [
     if getattr(route, "path", "") != "/"
 ]
 
+# ①②③继续运行原成熟 Skill；这里只叠加可复用资产/稳定身份质量约束，
+# 不替换 Skill、不新增合同产物，也不创建第二套前半段状态机。
+from app.v3.front_half_skill_overlay import FrontHalfSkillOverlay
+
+front_half_skill_overlay = FrontHalfSkillOverlay(legacy_runtime.director)
+front_half_skill_overlay.install()
+
 # ⑤制作：保留原候选/采用 UI，只把镜头图片和视频生产器替换为新版
 # Temporal + ResourceStore。参考图从已采用的角色/场景/道具资产中解析；
 # 缺少时自动创建参考图候选，仍由用户显式采用。
@@ -59,4 +66,9 @@ app.include_router(create_stage_revision_router(settings, legacy_runtime))
 app.include_router(original_workbench_router)
 app.title = "小段映画 · 漫剧工作台"
 
-__all__ = ["app", "legacy_runtime", "legacy_v3_bridge"]
+__all__ = [
+    "app",
+    "legacy_runtime",
+    "front_half_skill_overlay",
+    "legacy_v3_bridge",
+]

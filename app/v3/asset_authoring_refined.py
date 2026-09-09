@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from .authoring_assets import AuthoringAssetService, _clean
+from .authoring_assets import AuthoringAssetService, _clean, _copy, _now
 
 
 _CANONICAL_TYPES = {"character", "location", "prop"}
@@ -13,10 +14,27 @@ _STAGE_BY_TYPE = {"character": "02", "location": "03", "prop": "03"}
 _ROLE_BY_TYPE = {"character": "character_profile", "location": "location_profile", "prop": "prop_profile"}
 _LABEL_BY_TYPE = {"character": "角色", "location": "场景", "prop": "道具"}
 _STAGE_ORDER_INDEX = {"01": 1, "02": 2, "03": 3, "04": 4, "": 0}
+_REFERENCE_ROLES = {
+    "character_reference",
+    "character_turnaround",
+    "character_consistency",
+    "scene_reference",
+    "location_reference",
+    "prop_reference",
+    "item_reference",
+}
+_DOWNSTREAM_STAGES = {"04", "make", "edit", "final"}
 
 
 class RefinedAuthoringAssetService(AuthoringAssetService):
-    """Canonical, stage-gated and de-duplicated reusable authoring assets."""
+    """Canonical, stage-gated and de-duplicated reusable authoring assets.
+
+    Same-type entities with the same visible name can exist in older projects
+    because different extraction passes used different logical keys. They are
+    treated as aliases of one canonical reusable asset. The UI exposes one card,
+    every alias entity id points at the same profile asset, and edits invalidate
+    dependants bound to any alias rather than only the selected id.
+    """
 
     def _entity(self, project_id: str, entity_id: str) -> dict[str, Any]:
         for item in self.production.list_entities(project_id):
@@ -71,11 +89,22 @@ class RefinedAuthoringAssetService(AuthoringAssetService):
             grouped.setdefault(self._group_key(entity), []).append(entity)
 
         result: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
-        for key, rows in grouped.items():
+        for rows in grouped.values():
             rows = sorted(rows, key=lambda item: self._entity_score(project_id, item), reverse=True)
             result.append((rows[0], rows))
-        result.sort(key=lambda pair: (pair[0].get("entity_type") or "", pair[0].get("name") or ""))
+        result.sort(key=lambda pair: (_clean(pair[0].get("entity_type")), _clean(pair[0].get("name"))))
         return result
+
+    def _group_for_entity(
+        self,
+        project_id: str,
+        entity_id: str,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        wanted = _clean(entity_id)
+        for canonical, rows in self._canonical_groups(project_id):
+            if wanted in {_clean(item.get("entity_id")) for item in rows}:
+                return canonical, rows
+        raise FileNotFoundError(f"故事资产不存在：{entity_id}")
 
     def _merged_design(self, canonical: dict[str, Any], rows: list[dict[str, Any]]) -> str:
         manual = self._manual_design(canonical)
@@ -132,12 +161,13 @@ class RefinedAuthoringAssetService(AuthoringAssetService):
         payload = self._profile_payload(canonical)
         payload["stable_design"] = self._merged_design(canonical, rows)
         entity_id = _clean(canonical.get("entity_id"))
+        source_entity_ids = sorted({_clean(item.get("entity_id")) for item in rows if _clean(item.get("entity_id"))})
+        payload["source_entity_ids"] = source_entity_ids
         content = json.dumps(payload, ensure_ascii=False, indent=2)
         current = self._active_profile(project_id, entity_id)
         if self._same_text(project_id, current, content):
             return current
 
-        source_entity_ids = sorted({_clean(item.get("entity_id")) for item in rows if _clean(item.get("entity_id"))})
         parents: list[str] = []
         for entity in rows:
             parents.extend(self._profile_parents(project_id, entity))
@@ -178,6 +208,19 @@ class RefinedAuthoringAssetService(AuthoringAssetService):
         completed = {_clean(item) for item in project.get("completed_stages") or []}
         current = _clean(project.get("current_stage"))
         return required in completed or _STAGE_ORDER_INDEX.get(current, 0) > _STAGE_ORDER_INDEX[required]
+
+    def _profile_map(self, project_id: str) -> dict[str, dict[str, Any]]:
+        """Resolve every duplicate/legacy entity id to the canonical profile."""
+        result: dict[str, dict[str, Any]] = {}
+        for canonical, rows in self._canonical_groups(project_id):
+            profile = self._active_profile(project_id, _clean(canonical.get("entity_id")))
+            if not profile:
+                continue
+            for entity in rows:
+                entity_id = _clean(entity.get("entity_id"))
+                if entity_id:
+                    result[entity_id] = profile
+        return result
 
     def sync(self, project_id: str) -> dict[str, Any]:
         project = self.director.get_project(project_id)
@@ -251,6 +294,126 @@ class RefinedAuthoringAssetService(AuthoringAssetService):
             "content_idempotent": True,
             "stage01_story_entities_exposed": False,
             "duplicate_groups_merged": int(sync_result.get("duplicate_groups_merged") or 0),
+        }
+
+    def _invalidate_alias_dependents(
+        self,
+        project_id: str,
+        source_entity_ids: set[str],
+        *,
+        keep_asset_id: str,
+        revision_id: str,
+        canonical_entity_id: str,
+    ) -> list[str]:
+        graph = self.production.get_graph(project_id)
+        assets = graph.get("assets") or {}
+        stale_ids: set[str] = set()
+
+        for asset_id, asset in assets.items():
+            if not isinstance(asset, dict) or asset.get("active") is False or str(asset_id) == keep_asset_id:
+                continue
+            entities = {_clean(item) for item in asset.get("entity_ids") or [] if _clean(item)}
+            stage = _clean(asset.get("stage"))
+            role = _clean(asset.get("asset_role"))
+            if not (entities & source_entity_ids):
+                continue
+            if stage not in _DOWNSTREAM_STAGES and role not in _REFERENCE_ROLES:
+                continue
+            asset["dependency_state"] = "stale"
+            metadata = asset.setdefault("metadata", {})
+            if isinstance(metadata, dict):
+                metadata["stale_reason"] = "可复用资产设定已更新"
+                metadata["entity_revision_id"] = revision_id
+                metadata["changed_entity_id"] = canonical_entity_id
+                metadata["changed_entity_alias_ids"] = sorted(source_entity_ids)
+            asset["updated_at"] = _now()
+            stale_ids.add(str(asset_id))
+
+        changed = True
+        while changed:
+            changed = False
+            for asset_id, asset in assets.items():
+                if not isinstance(asset, dict) or asset.get("active") is False or str(asset_id) in stale_ids:
+                    continue
+                parents = {_clean(item) for item in asset.get("parent_asset_ids") or [] if _clean(item)}
+                hits = parents & stale_ids
+                if not hits:
+                    continue
+                asset["dependency_state"] = "stale"
+                stale_parents = asset.setdefault("stale_parent_asset_ids", [])
+                for parent_id in sorted(hits):
+                    if parent_id not in stale_parents:
+                        stale_parents.append(parent_id)
+                metadata = asset.setdefault("metadata", {})
+                if isinstance(metadata, dict):
+                    metadata["stale_reason"] = "引用的上游资产版本已更新"
+                    metadata["entity_revision_id"] = revision_id
+                    metadata["changed_entity_id"] = canonical_entity_id
+                asset["updated_at"] = _now()
+                stale_ids.add(str(asset_id))
+                changed = True
+
+        self.production._save(graph)
+        return sorted(stale_ids)
+
+    def update_profile(
+        self,
+        project_id: str,
+        entity_id: str,
+        *,
+        stable_design: str,
+        change_reason: str = "",
+    ) -> dict[str, Any]:
+        self._assert_idle(project_id)
+        canonical, rows = self._group_for_entity(project_id, entity_id)
+        text = _clean(stable_design)
+        if len(text) < 8:
+            raise ValueError("稳定设定过短，请至少写清能够跨镜头保持一致的外观或结构特征")
+
+        canonical_id = _clean(canonical.get("entity_id"))
+        metadata = _copy(canonical.get("metadata") or {}, {})
+        authoring = metadata.get("authoring") if isinstance(metadata.get("authoring"), dict) else {}
+        authoring.update({
+            "stable_design": text,
+            "change_reason": _clean(change_reason),
+            "updated_at": _now(),
+        })
+        metadata["authoring"] = authoring
+        continuity = metadata.get("continuity") if isinstance(metadata.get("continuity"), dict) else {}
+        core_profile = continuity.get("core_profile") if isinstance(continuity.get("core_profile"), dict) else {}
+        core_profile["已确认稳定设定"] = text
+        continuity["core_profile"] = core_profile
+        metadata["continuity"] = continuity
+        self.production.update_entity(project_id, canonical_id, {"metadata": metadata})
+
+        previous = self._active_profile(project_id, canonical_id)
+        canonical, rows = self._group_for_entity(project_id, canonical_id)
+        profile = self._sync_entity_group(project_id, canonical, rows)
+        if profile is None:
+            raise RuntimeError("无法创建新的资产设定版本")
+
+        source_entity_ids = {_clean(item.get("entity_id")) for item in rows if _clean(item.get("entity_id"))}
+        revision_id = f"asset-rev-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}"
+        stale = self._invalidate_alias_dependents(
+            project_id,
+            source_entity_ids,
+            keep_asset_id=_clean(profile.get("asset_id")),
+            revision_id=revision_id,
+            canonical_entity_id=canonical_id,
+        )
+        self.link_existing_dependents(project_id)
+        return {
+            "updated": True,
+            "project_id": project_id,
+            "entity_id": canonical_id,
+            "source_entity_ids": sorted(source_entity_ids),
+            "revision_id": revision_id,
+            "previous_profile_asset_id": _clean((previous or {}).get("asset_id")),
+            "profile_asset_id": _clean(profile.get("asset_id")),
+            "profile_version": int(profile.get("version") or 1),
+            "stale_asset_count": len(stale),
+            "stale_asset_ids": stale,
+            "duplicate_aliases_updated": max(0, len(source_entity_ids) - 1),
         }
 
 

@@ -23,6 +23,7 @@ async def original_workbench_page() -> HTMLResponse:
         '<script src="/v3-static/character-appearance-overlay.js"></script>',
         '<script src="/v3-static/shot-authoring-overlay.js"></script>',
         '<script src="/v3-static/quality-refine-overlay.js"></script>',
+        '<script src="/v3-static/bgm-prefetch-overlay.js"></script>',
         '<script src="/v3-static/workbench-status-localization.js"></script>',
     ]
     missing = [marker for marker in markers if marker not in html]

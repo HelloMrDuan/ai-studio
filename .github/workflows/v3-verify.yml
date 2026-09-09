@@ -25,7 +25,7 @@ jobs:
       - name: Compile V3 modules
         run: >-
           python -m compileall -q
-          app/main.py app/legacy_snapshot.py app/v3
+          app/main.py app/legacy_snapshot.py app/services/production_skills.py app/v3
           scripts/upstream/check_updates.py
           scripts/v3_faceid_prepare.py
           scripts/v3_identity_score.py
@@ -62,6 +62,8 @@ jobs:
           tests.test_v3_authoring_assets
           tests.test_v3_asset_model_refined
           tests.test_v3_shot_authoring
+          tests.test_v3_native_production_skills
+          tests.test_v3_production_runtime_optimization
           tests.test_v3_media_foundation
           tests.test_v3_media_pipeline
           tests.test_v3_branding

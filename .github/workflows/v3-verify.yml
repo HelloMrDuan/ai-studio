@@ -47,6 +47,7 @@ jobs:
           node --check app/v3/static/quality-refine-overlay.js &&
           node --check app/v3/static/bgm-prefetch-overlay.js &&
           node --check app/v3/static/asset-explorer-overlay.js &&
+          node --check app/v3/static/single-pass-stage-overlay.js &&
           node --check app/v3/static/stage-progress-overlay.js &&
           node --check app/v3/static/workbench-status-localization.js
       - name: Run V3 tests

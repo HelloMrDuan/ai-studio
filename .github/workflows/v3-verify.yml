@@ -50,6 +50,7 @@ jobs:
           tests.test_v3_project_management
           tests.test_v3_reference_assets
           tests.test_v3_stage_revision
+          tests.test_v3_front_half_skill_overlay
           tests.test_v3_media_foundation
           tests.test_v3_media_pipeline
           tests.test_v3_branding

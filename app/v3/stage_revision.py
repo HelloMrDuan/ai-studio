@@ -13,6 +13,7 @@ from app.services.skill_runtime import empty_runtime_state
 _STAGE_ORDER = ("01", "02", "03", "04")
 _ACTIVE_STATES = {"starting", "warming", "queued", "switching_gpu", "running", "generating", "persisting"}
 _DOWNSTREAM_MEDIA_STAGES = {"make", "edit", "final"}
+_SOURCE_ROLES = {"source_brief", "source_text", "source_input", "source_upload", "original_source"}
 
 
 def _now() -> str:
@@ -24,7 +25,12 @@ def _clean(value: Any) -> str:
 
 
 class StageRevisionService:
-    """Re-open a confirmed authoring stage while preserving old versions."""
+    """Re-open a confirmed authoring stage while preserving old versions.
+
+    Raw source inputs are immutable project inputs and are never invalidated.
+    Generated outputs from the selected stage onward are kept for history but
+    become stale so they cannot silently drive downstream production.
+    """
 
     def __init__(self, settings: Any, legacy_runtime: Any) -> None:
         self.settings = settings
@@ -90,6 +96,13 @@ class StageRevisionService:
             "revision_id": revision_id,
         }
 
+    @staticmethod
+    def _is_immutable_source(item: dict[str, Any]) -> bool:
+        role = _clean(item.get("asset_role")).lower()
+        source = item.get("source") if isinstance(item.get("source"), dict) else {}
+        source_type = _clean(source.get("type")).lower()
+        return role in _SOURCE_ROLES or source_type in {"source_brief", "source_upload", "original_source"}
+
     def _stale_assets(self, project_id: str, affected_core: set[str], revision_id: str) -> list[str]:
         production = self.director.production
         graph = production.get_graph(project_id)
@@ -99,6 +112,8 @@ class StageRevisionService:
 
         for asset_id, item in assets.items():
             if not isinstance(item, dict) or item.get("active") is False:
+                continue
+            if self._is_immutable_source(item):
                 continue
             if _clean(item.get("stage")) not in affected_stages:
                 continue
@@ -115,6 +130,8 @@ class StageRevisionService:
             changed = False
             for asset_id, item in assets.items():
                 if not isinstance(item, dict) or item.get("active") is False or str(asset_id) in stale_ids:
+                    continue
+                if self._is_immutable_source(item):
                     continue
                 parents = {_clean(value) for value in item.get("parent_asset_ids") or [] if _clean(value)}
                 hits = parents & stale_ids

@@ -17,11 +17,12 @@ REFERENCE_TEMPLATES = {
         role="character_identity_reference",
         positive=(
             "character identity reference, front view, half body and full body consistency, "
-            "fixed age, fixed face shape, fixed hairstyle, fixed clothing, clear identity anchor"
+            "strict age fidelity from the confirmed character profile, visible age must not drift older or younger, "
+            "fixed face shape, fixed hairstyle, fixed clothing, clear identity anchor"
         ),
         negative=(
-            "random model photography, "
-            "identity change, different face"
+            "random model photography, identity change, different face, age drift, "
+            "unintended aged-up appearance, unintended de-aged appearance"
         ),
     ),
     "location": ReferenceTemplate(

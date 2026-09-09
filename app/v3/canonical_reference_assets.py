@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -8,7 +9,6 @@ from fastapi import APIRouter, HTTPException
 from .reference_assets import ReferenceAssetBootstrap, _clean
 
 
-_CANONICAL_TYPES = {"character", "location", "prop"}
 _PRIORITY = {"character": 0, "location": 1, "prop": 2}
 _PROFILE_ROLES = {
     "character": "character_profile",
@@ -45,46 +45,81 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
     def _name_from_profile(profile: dict[str, Any]) -> str:
         value = _clean(profile.get("name"))
         match = re.search(r"[「『](.+?)[」』]", value)
-        return _clean(match.group(1)) if match else ""
+        return _clean(match.group(1)) if match else value.removesuffix("稳定设定").strip()
 
     def _formal_entities(self, project_id: str) -> list[tuple[dict[str, Any], dict[str, Any]]]:
-        entities = {
-            _clean(item.get("entity_id")): dict(item)
-            for item in self.director.production.list_entities(project_id)
-            if _clean(item.get("entity_id"))
-        }
-        latest: dict[tuple[str, str], dict[str, Any]] = {}
-        for asset in self.director.production.list_assets(project_id, active_only=True):
-            role = _clean(asset.get("asset_role"))
-            kind = _KIND_BY_PROFILE_ROLE.get(role, "")
-            if not kind:
-                continue
-            if _clean(asset.get("status")).lower() != "ready":
-                continue
-            if _clean(asset.get("dependency_state")).lower() == "stale":
-                continue
-            for entity_id in [_clean(x) for x in asset.get("entity_ids") or [] if _clean(x)]:
-                key = (kind, entity_id)
-                current = latest.get(key)
-                if current is None or (
-                    int(asset.get("version") or 0), _clean(asset.get("updated_at"))
-                ) > (
-                    int(current.get("version") or 0), _clean(current.get("updated_at"))
-                ):
-                    latest[key] = asset
+        profiles = self._stable_profiles(project_id)
+        rows = self._build_reference_candidates(project_id, profiles)
+        self._validate_reference_candidates(profiles, rows)
+        return rows
 
+    def _stable_profiles(self, project_id: str) -> list[dict[str, Any]]:
+        return [
+            asset for asset in self.director.production.list_assets(project_id, active_only=True)
+            if _clean(asset.get("asset_role")) in _KIND_BY_PROFILE_ROLE
+            and _clean(asset.get("status")).lower() == "ready"
+            and _clean(asset.get("dependency_state")).lower() != "stale"
+        ]
+
+    def _build_reference_candidates(
+        self, project_id: str, profiles: list[dict[str, Any]],
+    ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        # One candidate per formal profile, never per story entity or alias.
         rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
-        for (kind, entity_id), profile in latest.items():
-            entity = dict(entities.get(entity_id) or {"entity_id": entity_id})
-            entity["entity_id"] = entity_id
-            # Formal profile role is authoritative. Do not drop a valid profile
-            # merely because a legacy story entity still carries scene/artifact.
-            entity["entity_type"] = kind
-            if not _clean(entity.get("name")):
-                entity["name"] = self._name_from_profile(profile) or f"未命名{kind}"
+        for profile in profiles:
+            kind = _KIND_BY_PROFILE_ROLE[_clean(profile.get("asset_role"))]
+            raw = self.director.production.read_text_asset(project_id, _clean(profile.get("asset_id")))
+            try:
+                payload = json.loads(raw)
+            except ValueError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            metadata = profile.get("metadata") or {}
+            key = re.fullmatch(r"studio:authoring:(.+):profile", _clean(profile.get("logical_key")))
+            owners = list(dict.fromkeys(_clean(x) for x in profile.get("entity_ids") or [] if _clean(x)))
+            entity_id = (
+                _clean(payload.get("entity_id"))
+                or _clean(metadata.get("canonical_entity_id"))
+                or (key.group(1) if key else "")
+                or (owners[0] if len(owners) == 1 else "")
+            )
+            name = _clean(payload.get("name")) or self._name_from_profile(profile)
+            if not entity_id or not name:
+                raise ValueError(f"缺失参考资产：{name or profile.get('asset_id')}，正式稳定设定缺少名称或唯一归属 ID")
+            entity = {
+                "entity_id": entity_id, "entity_type": kind, "name": name,
+                "metadata": {
+                    "stable_profile": payload.get("stable_profile") or {},
+                    "default_state": payload.get("default_state") or {},
+                    "stable_design": payload.get("stable_design") or raw,
+                },
+                "evidence": [{"source_asset_id": profile["asset_id"]}],
+            }
             rows.append((entity, profile))
         rows.sort(key=lambda pair: (_PRIORITY.get(_clean(pair[0].get("entity_type")), 9), _clean(pair[0].get("name"))))
         return rows
+
+    @staticmethod
+    def _validate_reference_candidates(
+        profiles: list[dict[str, Any]],
+        rows: list[tuple[dict[str, Any], dict[str, Any]]],
+    ) -> None:
+        expected = {_clean(profile.get("asset_id")) for profile in profiles}
+        actual = [_clean(profile.get("asset_id")) for _, profile in rows]
+        if len(profiles) != len(rows) or expected != set(actual) or len(set(actual)) != len(actual):
+            missing = [str(profile.get("name") or profile.get("asset_id")) for profile in profiles
+                       if _clean(profile.get("asset_id")) not in actual]
+            raise ValueError(
+                f"缺失参考资产：{', '.join(missing) or '候选重复或包含非正式资产'}；"
+                f"stable_profile_count={len(profiles)}, reference_candidate_count={len(rows)}"
+            )
+        owners: dict[str, str] = {}
+        for entity, _ in rows:
+            owner = entity["entity_id"]
+            if owner in owners:
+                raise ValueError(f"缺失参考资产：{owners[owner]}、{entity['name']} 的稳定设定归属 ID 冲突：{owner}")
+            owners[owner] = entity["name"]
 
     def _entity(self, project_id: str, entity_id: str) -> dict[str, Any]:
         for entity, _profile in self._formal_entities(project_id):
@@ -95,16 +130,11 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
     def status(self, project_id: str) -> dict[str, Any]:
         project = self.director.get_project(project_id)
         items: list[dict[str, Any]] = []
-        seen: set[tuple[str, str]] = set()
 
         for entity, profile in self._formal_entities(project_id):
             kind = _clean(entity.get("entity_type")).lower()
             entity_id = _clean(entity.get("entity_id"))
             name = _clean(entity.get("name"))
-            identity = (kind, name.casefold())
-            if identity in seen:
-                continue
-            seen.add(identity)
 
             ready = self._ready_reference(project_id, entity)
             target = self._target(project_id, entity)
@@ -149,6 +179,8 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
             "project_id": project_id,
             "items": items,
             "required_count": len(items),
+            "stable_profile_count": len(items),
+            "reference_candidate_count": len(items),
             "ready_count": sum(1 for item in items if item.get("ready")),
             "manual_adoption_required": True,
             "upload_required": False,

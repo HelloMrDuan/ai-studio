@@ -23,32 +23,28 @@ class GenerationContract:
     shot_id: str
     source_text: str
     entity_ids: tuple[str, ...]
-    # Canonical entity references are retained for lineage/continuity audit.
     reference_ids: tuple[str, ...]
-    # References actually sent to the selected provider. For image generation
-    # this normally equals reference_ids. For video generation it is normally
-    # the adopted shot first/last frame, while entity refs remain lineage.
     provider_reference_ids: tuple[str, ...]
     provider_id: str
     model_id: str
     required_capabilities: frozenset[Capability]
-    # Keep the low-level contract backwards-compatible with ShotContract.
-    # Video/frame-first call sites historically omitted camera/action because
-    # those values are encoded in the video prompt; they must still compile to
-    # a valid GenerationContract rather than failing before provider execution.
     camera_direction: str = ""
     action: str = ""
     duration_seconds: float = 3.0
+    # Explicit media parameters are part of the frozen generation contract.
+    # They are defaults for backwards compatibility; provider profiles bind
+    # only the fields they actually support.
+    width: int = 1024
+    height: int = 1024
+    steps: int = 28
+    cfg: float = 5.5
+    seed: int = 0
+    sampler_name: str = "dpmpp_2m"
+    scheduler: str = "karras"
 
 
 class GenerationContractCompiler:
-    """Compile semantic shots into explicit provider capability contracts.
-
-    Image generation is entity-reference-first. Video generation is frame-first:
-    canonical entity references remain part of lineage, but the video provider
-    receives the adopted shot frame(s). This prevents a single-reference H3
-    model from silently dropping character/creature/prop references.
-    """
+    """Compile semantic shots into explicit provider capability contracts."""
 
     def __init__(self, *, continuity: ContinuityRegistry, providers: ProviderRegistry) -> None:
         self.continuity = continuity

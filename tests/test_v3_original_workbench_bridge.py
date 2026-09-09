@@ -16,7 +16,18 @@ class OriginalWorkbenchBridgeContractTests(unittest.TestCase):
         self.assertIn('id="view-make"', original)
         self.assertIn('id="view-final"', original)
         self.assertIn("authoring-continuity-overlay.js", source)
+        self.assertIn("single-pass-stage-overlay.js", source)
         self.assertIn("workbench-status-localization.js", source)
+
+    def test_authoring_stage_driver_is_single_pass_not_legacy_auto_advance(self) -> None:
+        frontend = (ROOT / "app" / "v3" / "static" / "single-pass-stage-overlay.js").read_text(encoding="utf-8")
+        registry = (ROOT / "app" / "v3" / "production_skill_registry.py").read_text(encoding="utf-8")
+        self.assertIn("max_turns: 1", frontend)
+        self.assertNotIn("max_turns: 16", frontend)
+        self.assertIn("不会后台自动推进或重复调用模型", frontend)
+        self.assertIn('"legacy_auto_advance": False', registry)
+        self.assertIn('"kind": "complete_stage"', registry)
+        self.assertIn("旧后台自动推进已禁用", registry)
 
     def test_shot_generation_is_bridged_to_v3_but_manual_adoption_remains(self) -> None:
         source = (ROOT / "app" / "v3" / "legacy_candidate_bridge.py").read_text(encoding="utf-8")

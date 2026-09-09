@@ -28,6 +28,8 @@ from app.v3.postproduction_prefetch import PostProductionPrefetch
 from app.v3.bgm_prefetch import BGMPrefetchService
 from app.v3.shot_continuity_linker import ShotContinuityLinker
 from app.v3.authoring_progress import create_authoring_progress_tracker
+from app.v3.canonical_entity_reconciler import CanonicalEntityReconciler
+from app.v3.authoring_execution_timing import AuthoringExecutionTimingFix
 
 # A web-process restart must not resurrect persisted jobs created by the retired
 # multi-turn authoring driver. Only legacy active records carrying turn_count
@@ -38,7 +40,17 @@ production_skill_registry = ProductionSkillRegistry(legacy_runtime.director)
 production_skill_registry.install()
 production_runtime_optimizer = ProductionRuntimeOptimizer(settings, legacy_runtime.director)
 production_runtime_optimizer.install()
+
+# Old extraction passes may have persisted two IDs for the same visible
+# character/location/prop. Canonicalize them before any authoring/reference UI
+# reads the production graph, and keep the reconciliation active for new writes.
+canonical_entity_reconciler = CanonicalEntityReconciler(settings, legacy_runtime.director)
+canonical_entity_reconciler.install()
+
 stage_progress_tracker = create_authoring_progress_tracker(settings, legacy_runtime.director)
+authoring_execution_timing = AuthoringExecutionTimingFix(stage_progress_tracker)
+authoring_execution_timing.install()
+
 authoring_asset_service = RefinedAuthoringAssetService(settings, legacy_runtime)
 authoring_asset_service.install_confirmation_hook()
 
@@ -104,7 +116,9 @@ __all__ = [
     "legacy_authoring_retirement",
     "production_skill_registry",
     "production_runtime_optimizer",
+    "canonical_entity_reconciler",
     "stage_progress_tracker",
+    "authoring_execution_timing",
     "authoring_asset_service",
     "shot_continuity_linker",
     "postproduction_prefetch",

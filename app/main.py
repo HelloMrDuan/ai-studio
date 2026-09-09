@@ -33,7 +33,6 @@ production_runtime_optimizer.install()
 authoring_asset_service = RefinedAuthoringAssetService(settings, legacy_runtime)
 authoring_asset_service.install_confirmation_hook()
 
-# ④确认后先建立连续镜头继承链，再并行准备不占视觉 GPU 的后期素材。
 shot_continuity_linker = ShotContinuityLinker(settings, legacy_runtime)
 shot_continuity_linker.install_confirmation_hook()
 postproduction_prefetch = PostProductionPrefetch(settings, legacy_runtime)
@@ -54,6 +53,7 @@ from app.v3.stage_revision import create_stage_revision_router
 from app.v3.asset_authoring_refined import create_refined_authoring_asset_router
 from app.v3.shot_authoring import create_shot_authoring_router
 from app.v3.character_appearances import create_character_appearance_router
+from app.v3.shot_refinement import create_shot_refinement_router
 
 _SKIP_V3_PATHS = {"/", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
 _existing_paths = {getattr(route, "path", "") for route in app.router.routes}
@@ -75,6 +75,7 @@ app.include_router(create_stage_revision_router(settings, legacy_runtime))
 app.include_router(create_refined_authoring_asset_router(settings, legacy_runtime))
 app.include_router(create_character_appearance_router(legacy_runtime))
 app.include_router(create_shot_authoring_router(settings, legacy_runtime))
+app.include_router(create_shot_refinement_router(legacy_runtime))
 app.include_router(original_workbench_router)
 app.title = "小段映画 · 漫剧工作台"
 

@@ -127,6 +127,7 @@ class ReferenceAssetWorkflowTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(len(result["submitted_entity_ids"]), 2)
             self.assertEqual(len(calls), 2)
+            self.assertTrue(all(call["params"]["semantic_compile"] == "auto" for call in calls))
             state = service.status(project_id)
             self.assertEqual(state["ready_count"], 0)
 

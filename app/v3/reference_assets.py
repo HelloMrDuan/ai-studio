@@ -326,7 +326,7 @@ class ReferenceAssetBootstrap:
                     "sampler": "dpmpp_2m",
                     "scheduler": "karras",
                     "count": 1,
-                    "semantic_compile": False,
+                    "semantic_compile": "auto",
                 },
             },
         )

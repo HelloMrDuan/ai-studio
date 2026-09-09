@@ -257,7 +257,10 @@ class ShotAuthoringService:
             "fields": sorted(applied),
             "updated_at": _now(),
         }
-        state["storyboard_source_sha256"] = "manual-shot-revision"
+        # Preserve storyboard_source_sha256. It identifies the confirmed Stage04
+        # source asset; keeping it stable means an ordinary continuity refresh
+        # does not overwrite a local shot revision. A true Stage04 rebuild changes
+        # the source hash and correctly replaces the local edit.
         self._save(project_id, state)
 
         entity_ids = self._entity_ids(state, shot)

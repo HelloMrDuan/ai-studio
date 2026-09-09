@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 
 from .asset_authoring_refined import RefinedAuthoringAssetService, _clean, _STAGE_BY_TYPE, _STAGE_ORDER_INDEX
 from .character_appearances import CharacterAppearanceService
+from .character_identity_cleanup import CharacterIdentityCleanupService
 from .stage_asset_materialization import StageOutputAssetMaterializer
 from .stage_asset_materialization_guard import install_stage_asset_materialization_guard
 
@@ -25,6 +26,7 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
     def __init__(self, settings: Any, legacy_runtime: Any) -> None:
         super().__init__(settings, legacy_runtime)
         self.materializer = StageOutputAssetMaterializer(legacy_runtime)
+        self.identity_cleanup = CharacterIdentityCleanupService(legacy_runtime)
         self.appearances = CharacterAppearanceService(legacy_runtime)
 
     @staticmethod
@@ -49,10 +51,13 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
 
     def sync(self, project_id: str) -> dict[str, Any]:
         materialized = self.materializer.materialize(project_id)
+        identity_cleanup = self.identity_cleanup.reconcile_project(project_id)
         result = super().sync(project_id)
 
         # Default appearance v1 is a real asset, not a UI placeholder. Create it
-        # immediately after the Stage② character profile exists.
+        # immediately after the Stage② character profile exists. Because the
+        # identity cleanup runs first, this appearance never inherits shot-only
+        # background/reference instructions.
         appearance_ids: list[str] = []
         project = self.director.get_project(project_id)
         if self._stage_available(project, "character"):
@@ -69,6 +74,7 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
         return {
             **result,
             "stage_output_materialization": materialized,
+            "character_identity_cleanup": identity_cleanup,
             "default_character_appearance_asset_ids": appearance_ids,
             "ready_stage_assets_visible_before_confirmation": True,
             "model_calls_added": 0,
@@ -77,7 +83,7 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
     def status(self, project_id: str) -> dict[str, Any]:
         state = super().status(project_id)
         # super().status() dispatches through self.sync(), so the ready Stage②/③
-        # draft has already been materialized and profiles/default looks exist.
+        # draft has already been materialized, sanitized and versioned.
         return {
             **state,
             "ready_stage_assets_visible_before_confirmation": True,
@@ -97,7 +103,8 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
             except Exception:
                 continue
             materialized = result.get("stage_output_materialization") or {}
-            if bool(materialized.get("materialized")) or result.get("profile_asset_ids"):
+            cleanup = result.get("character_identity_cleanup") or {}
+            if bool(materialized.get("materialized")) or bool(cleanup.get("changed")) or result.get("profile_asset_ids"):
                 changed += 1
         return {"scanned": scanned, "reconciled": changed}
 

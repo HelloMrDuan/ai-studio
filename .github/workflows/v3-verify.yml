@@ -64,6 +64,7 @@ jobs:
           tests.test_v3_shot_authoring
           tests.test_v3_native_production_skills
           tests.test_v3_production_runtime_optimization
+          tests.test_v3_quality_policy
           tests.test_v3_media_foundation
           tests.test_v3_media_pipeline
           tests.test_v3_branding

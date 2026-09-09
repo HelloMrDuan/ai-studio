@@ -146,7 +146,10 @@ def parse_contract_bindings(raw: Any) -> tuple[ComfyContractBinding, ...]:
         return ()
     if not isinstance(raw, list):
         raise ComfyWorkflowBindingError("provider contract_bindings must be an array")
-    allowed = {"shot_id", "source_text", "camera_direction", "action"}
+    allowed = {
+        "shot_id", "source_text", "camera_direction", "action",
+        "width", "height", "steps", "cfg", "seed", "sampler_name", "scheduler",
+    }
     result: list[ComfyContractBinding] = []
     for item in raw:
         if not isinstance(item, dict):
@@ -203,14 +206,18 @@ def bind_comfy_contract(
     contract: GenerationContract,
     bindings: tuple[ComfyContractBinding, ...] | list[ComfyContractBinding],
 ) -> dict[str, Any]:
-    """Inject declared GenerationContract fields into explicit Comfy workflow inputs."""
+    """Inject declared GenerationContract fields without coercing numeric inputs to text."""
     compiled = deepcopy(workflow)
     for binding in bindings:
         node = compiled.get(binding.node_id)
         if not isinstance(node, dict) or not isinstance(node.get("inputs"), dict):
             raise ComfyWorkflowBindingError(f"contract binding node missing: {binding.node_id}")
-        value = str(getattr(contract, binding.contract_field, "") or "").strip()
-        node["inputs"][binding.input_name] = f"{binding.prefix}{value}{binding.suffix}"
+        raw = getattr(contract, binding.contract_field, "")
+        if binding.prefix or binding.suffix:
+            value: Any = f"{binding.prefix}{str(raw or '').strip()}{binding.suffix}"
+        else:
+            value = raw
+        node["inputs"][binding.input_name] = value
     return compiled
 
 

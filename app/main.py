@@ -24,9 +24,9 @@ app.router.routes[:] = [
 
 # ⑤制作：保留原候选/采用 UI，只把镜头图片和视频生产器替换为新版
 # Temporal + ResourceStore。非镜头工具仍走原成熟实现。
-from app.v3.legacy_candidate_bridge import LegacyCandidateV3Bridge
+from app.v3.legacy_reference_bridge import ReferenceAwareLegacyCandidateV3Bridge
 
-legacy_v3_bridge = LegacyCandidateV3Bridge(settings, legacy_runtime)
+legacy_v3_bridge = ReferenceAwareLegacyCandidateV3Bridge(settings, legacy_runtime)
 legacy_v3_bridge.install()
 
 # 新版核心 API 继续保持原 `/api/v3/...` 地址，但不使用新版仪表盘替换主页。

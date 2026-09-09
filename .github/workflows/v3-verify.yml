@@ -29,6 +29,7 @@ jobs:
           scripts/upstream/check_updates.py
           scripts/v3_faceid_prepare.py
           scripts/v3_identity_score.py
+          scripts/v3_multi_reference_acceptance.py
           scripts/configure_comfy_reference_profile.py
           scripts/v3_temporal_worker.py
           scripts/v3_temporal_acceptance.py

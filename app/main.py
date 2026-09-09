@@ -1,23 +1,39 @@
-"""Xiaoduan Studio combined application entrypoint.
+"""小段映画组合应用入口。
 
-The original AI 漫剧工作台 remains the product shell because it already owns
-editable stages, candidate versions, manual adoption and per-shot production.
-V3 is layered underneath/alongside that UI for durable Temporal execution,
-reference-first media generation and the new post-production pipeline.
+产品外壳保留原来的漫剧工作台：阶段编辑、候选版本、人工采用、逐镜头制作
+全部继续使用原交互。新版只替换底层生产链：Temporal、参考图优先、资源版本、
+视频生成、配音、字幕、背景音乐和最终合成。
 """
 
 from __future__ import annotations
 
+from app.config import get_settings
 from app.legacy_snapshot import load_original_workbench_runtime
 
 
+settings = get_settings()
 legacy_runtime = load_original_workbench_runtime()
 app = legacy_runtime.app
 
-# Add V3 API routes without replacing the original `/` workbench page. FastAPI
-# routes are reused directly so their public `/api/v3/...` paths remain stable.
+# 原运行时的根页面路由会直接返回未处理的历史页面。移除这一条根路由，随后
+# 重新挂载“同一份原页面 + 中文呈现桥接”；其他历史接口和页面全部保留。
+app.router.routes[:] = [
+    route for route in app.router.routes
+    if getattr(route, "path", "") != "/"
+]
+
+# ⑤制作：保留原候选/采用 UI，只把镜头图片和视频生产器替换为新版
+# Temporal + ResourceStore。非镜头工具仍走原成熟实现。
+from app.v3.legacy_candidate_bridge import LegacyCandidateV3Bridge
+
+legacy_v3_bridge = LegacyCandidateV3Bridge(settings, legacy_runtime)
+legacy_v3_bridge.install()
+
+# 新版核心 API 继续保持原 `/api/v3/...` 地址，但不使用新版仪表盘替换主页。
 from app.v3.main import app as v3_app
 from app.v3.web_routes import router as web_workflow_router
+from app.v3.legacy_postproduction import router as legacy_postproduction_router
+from app.v3.original_workbench_overlay import router as original_workbench_router
 
 _SKIP_V3_PATHS = {"/", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
 _existing_paths = {getattr(route, "path", "") for route in app.router.routes}
@@ -25,8 +41,6 @@ for route in v3_app.router.routes:
     path = getattr(route, "path", "")
     if path in _SKIP_V3_PATHS:
         continue
-    # V3 paths are namespaced and should normally be unique. Avoid accidental
-    # double-registration if the archived runtime later gains one of them.
     if path and path in _existing_paths:
         continue
     app.router.routes.append(route)
@@ -34,6 +48,8 @@ for route in v3_app.router.routes:
         _existing_paths.add(path)
 
 app.include_router(web_workflow_router)
-app.title = "小段映画 · AI 漫剧工作台"
+app.include_router(legacy_postproduction_router)
+app.include_router(original_workbench_router)
+app.title = "小段映画 · 漫剧工作台"
 
-__all__ = ["app", "legacy_runtime"]
+__all__ = ["app", "legacy_runtime", "legacy_v3_bridge"]

@@ -20,6 +20,7 @@ app.router.routes[:] = [
     if getattr(route, "path", "") != "/"
 ]
 
+from app.v3.legacy_authoring_retirement import retire_legacy_authoring_jobs
 from app.v3.production_skill_registry import ProductionSkillRegistry
 from app.v3.production_runtime_optimization import ProductionRuntimeOptimizer
 from app.v3.asset_authoring_refined import RefinedAuthoringAssetService
@@ -27,6 +28,11 @@ from app.v3.postproduction_prefetch import PostProductionPrefetch
 from app.v3.bgm_prefetch import BGMPrefetchService
 from app.v3.shot_continuity_linker import ShotContinuityLinker
 from app.v3.authoring_progress import create_authoring_progress_tracker
+
+# A web-process restart must not resurrect persisted jobs created by the retired
+# multi-turn authoring driver. Only legacy active records carrying turn_count
+# are stopped; media generation jobs are left untouched.
+legacy_authoring_retirement = retire_legacy_authoring_jobs(settings)
 
 production_skill_registry = ProductionSkillRegistry(legacy_runtime.director)
 production_skill_registry.install()
@@ -93,6 +99,7 @@ app.title = "小段映画 · 漫剧工作台"
 __all__ = [
     "app",
     "legacy_runtime",
+    "legacy_authoring_retirement",
     "production_skill_registry",
     "production_runtime_optimizer",
     "stage_progress_tracker",

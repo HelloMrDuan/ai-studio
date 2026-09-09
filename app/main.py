@@ -2,7 +2,7 @@
 
 产品外壳保留原来的漫剧工作台：阶段编辑、候选版本、人工采用、逐镜头制作
 全部继续使用原交互。底层统一为故事生产上下文、专业生产 Skill、版本资产、
-Temporal、参考图优先、视频生成、配音、字幕、背景音乐和最终合成。
+Temporal、参考图优先、连续镜头、智能质量、媒体复用和完整后期生产。
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from app.v3.production_skill_registry import ProductionSkillRegistry
 from app.v3.production_runtime_optimization import ProductionRuntimeOptimizer
 from app.v3.asset_authoring_refined import RefinedAuthoringAssetService
 from app.v3.postproduction_prefetch import PostProductionPrefetch
+from app.v3.shot_continuity_linker import ShotContinuityLinker
 
 production_skill_registry = ProductionSkillRegistry(legacy_runtime.director)
 production_skill_registry.install()
@@ -32,12 +33,15 @@ production_runtime_optimizer.install()
 authoring_asset_service = RefinedAuthoringAssetService(settings, legacy_runtime)
 authoring_asset_service.install_confirmation_hook()
 
+# ④确认后先建立连续镜头继承链，再并行准备不占视觉 GPU 的后期素材。
+shot_continuity_linker = ShotContinuityLinker(settings, legacy_runtime)
+shot_continuity_linker.install_confirmation_hook()
 postproduction_prefetch = PostProductionPrefetch(settings, legacy_runtime)
 postproduction_prefetch.install_confirmation_hook()
 
-from app.v3.legacy_reference_bridge import ReferenceAwareLegacyCandidateV3Bridge
+from app.v3.production_legacy_bridge import ProductionReadyLegacyBridge
 
-legacy_v3_bridge = ReferenceAwareLegacyCandidateV3Bridge(settings, legacy_runtime)
+legacy_v3_bridge = ProductionReadyLegacyBridge(settings, legacy_runtime)
 legacy_v3_bridge.install()
 
 from app.v3.main import app as v3_app
@@ -80,6 +84,7 @@ __all__ = [
     "production_skill_registry",
     "production_runtime_optimizer",
     "authoring_asset_service",
+    "shot_continuity_linker",
     "postproduction_prefetch",
     "legacy_v3_bridge",
 ]

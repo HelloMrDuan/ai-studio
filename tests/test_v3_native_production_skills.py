@@ -4,11 +4,13 @@ import asyncio
 import hashlib
 import unittest
 
+from app.services import director as director_module
 from app.services.production_skills import (
     STAGE_PRODUCTION_SKILLS,
     WORKFLOW_PRODUCTION_SKILL,
     builtin_production_skill,
 )
+from app.services.skill_runtime import empty_runtime_state
 from app.v3.production_skill_registry import ProductionSkillRegistry
 
 
@@ -93,10 +95,11 @@ class NativeProductionSkillTests(unittest.TestCase):
         self.assertTrue(status["ready"])
         self.assertTrue(status["skill_runtime"]["native_production_skills"])
         self.assertTrue(status["skill_runtime"]["single_pass_authoring"])
+        self.assertTrue(status["skill_runtime"]["local_readiness_completion"])
         self.assertFalse(status["skill_runtime"]["legacy_auto_advance"])
         self.assertFalse(status["skill_runtime"]["external_workflow_required"])
 
-    def test_native_authoring_plan_targets_complete_stage_on_first_call(self):
+    def test_native_authoring_runs_one_step_before_local_completion(self):
         director = _FakeDirector()
         ProductionSkillRegistry(director).install()
         skill_name = "xiaoduan-story-bible"
@@ -120,8 +123,50 @@ class NativeProductionSkillTests(unittest.TestCase):
             previous_step="",
             control_event={"action": "other"},
         )
-        self.assertEqual(target["kind"], "complete_stage")
+        self.assertEqual(target["kind"], "step")
+        self.assertEqual(target["index"], 0)
+        self.assertEqual(target["name"], "生成故事生产圣经与创作计划")
         self.assertTrue(target["single_pass"])
+
+    def test_ready_single_pass_step_is_promoted_without_second_model_turn(self):
+        director = _FakeDirector()
+        ProductionSkillRegistry(director).install()
+        skill_name = "xiaoduan-story-bible"
+        skill_md = director._skill_md(skill_name)
+        plan = asyncio.run(director._ensure_native_plan(
+            skill_name=skill_name,
+            skill_md=skill_md,
+            project={"project_id": "demo", "current_stage": "01"},
+            stage="01",
+            stage_state={},
+            user_text="测试故事",
+        ))
+        target = director._native_target(
+            plan=plan,
+            previous_step="",
+            control_event={"action": "other"},
+        )
+        contract = {
+            "schema_version": "skill_contract_v2",
+            "skill_name": skill_name,
+            "source_sha256": hashlib.sha256(skill_md.encode("utf-8")).hexdigest(),
+            "completion_mode": "native_only",
+            "output_groups": [],
+            "conditional_requirements": [],
+        }
+        result = director_module.apply_asset_completion(
+            contract=contract,
+            runtime_state=empty_runtime_state(),
+            control_runtime={"stage_complete_claim": False},
+            native_target=target,
+            native_plan=plan,
+            asset_readiness={},
+        )
+        self.assertTrue(result["completion"]["ready"])
+        self.assertEqual(target["kind"], "complete_stage")
+        self.assertTrue(target["promoted_after_readiness"])
+        self.assertTrue(plan["completed_locally"])
+        self.assertEqual(plan["current_index"], 0)
 
     def test_legacy_internal_advance_is_rejected_before_second_model_turn(self):
         director = _FakeDirector()

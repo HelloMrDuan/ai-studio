@@ -19,6 +19,7 @@ async def original_workbench_page() -> HTMLResponse:
         '<script src="/v3-static/original-workbench-overlay.js"></script>',
         '<script src="/v3-static/project-delete-overlay.js"></script>',
         '<script src="/v3-static/authoring-continuity-overlay.js"></script>',
+        '<script src="/v3-static/workbench-status-localization.js"></script>',
     ]
     missing = [marker for marker in markers if marker not in html]
     if missing:

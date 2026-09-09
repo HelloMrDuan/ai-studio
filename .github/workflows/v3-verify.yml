@@ -47,6 +47,7 @@ jobs:
           tests.test_v3_web_workflow
           tests.test_v3_full_pipeline
           tests.test_v3_original_workbench_bridge
+          tests.test_v3_project_management
           tests.test_v3_media_foundation
           tests.test_v3_media_pipeline
           tests.test_v3_branding

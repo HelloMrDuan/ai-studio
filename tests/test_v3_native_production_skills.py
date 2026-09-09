@@ -17,6 +17,7 @@ from app.v3.production_skill_registry import ProductionSkillRegistry
 class _FakeDirector:
     def __init__(self) -> None:
         self._skill_calls = []
+        self._contract_calls = 0
         self._plan_calls = 0
         self._message_calls = 0
 
@@ -35,6 +36,10 @@ class _FakeDirector:
 
     def _skill_source_sha256(self, text: str) -> str:
         return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    async def _ensure_skill_contract(self, **kwargs):
+        self._contract_calls += 1
+        return {"completion_mode": "artifact_gate"}
 
     async def _ensure_native_plan(self, **kwargs):
         self._plan_calls += 1
@@ -95,9 +100,27 @@ class NativeProductionSkillTests(unittest.TestCase):
         self.assertTrue(status["ready"])
         self.assertTrue(status["skill_runtime"]["native_production_skills"])
         self.assertTrue(status["skill_runtime"]["single_pass_authoring"])
+        self.assertTrue(status["skill_runtime"]["deterministic_authoring_contract"])
         self.assertTrue(status["skill_runtime"]["local_readiness_completion"])
         self.assertFalse(status["skill_runtime"]["legacy_auto_advance"])
         self.assertFalse(status["skill_runtime"]["external_workflow_required"])
+
+    def test_builtin_contract_does_not_call_legacy_llm_contract_compiler(self):
+        director = _FakeDirector()
+        ProductionSkillRegistry(director).install()
+        skill_name = "xiaoduan-story-bible"
+        skill_md = director._skill_md(skill_name)
+        stage_state = {}
+        contract = asyncio.run(director._ensure_skill_contract(
+            skill_name=skill_name,
+            skill_md=skill_md,
+            stage_state=stage_state,
+        ))
+        self.assertEqual(director._contract_calls, 0)
+        self.assertEqual(contract["completion_mode"], "native_only")
+        self.assertTrue(contract["single_pass"])
+        self.assertFalse(contract["llm_contract_compiler_required"])
+        self.assertEqual(stage_state["skill_contract"], contract)
 
     def test_native_authoring_runs_one_step_before_local_completion(self):
         director = _FakeDirector()
@@ -133,12 +156,18 @@ class NativeProductionSkillTests(unittest.TestCase):
         ProductionSkillRegistry(director).install()
         skill_name = "xiaoduan-story-bible"
         skill_md = director._skill_md(skill_name)
+        stage_state = {}
+        contract = asyncio.run(director._ensure_skill_contract(
+            skill_name=skill_name,
+            skill_md=skill_md,
+            stage_state=stage_state,
+        ))
         plan = asyncio.run(director._ensure_native_plan(
             skill_name=skill_name,
             skill_md=skill_md,
             project={"project_id": "demo", "current_stage": "01"},
             stage="01",
-            stage_state={},
+            stage_state=stage_state,
             user_text="测试故事",
         ))
         target = director._native_target(
@@ -146,14 +175,6 @@ class NativeProductionSkillTests(unittest.TestCase):
             previous_step="",
             control_event={"action": "other"},
         )
-        contract = {
-            "schema_version": "skill_contract_v2",
-            "skill_name": skill_name,
-            "source_sha256": hashlib.sha256(skill_md.encode("utf-8")).hexdigest(),
-            "completion_mode": "native_only",
-            "output_groups": [],
-            "conditional_requirements": [],
-        }
         result = director_module.apply_asset_completion(
             contract=contract,
             runtime_state=empty_runtime_state(),

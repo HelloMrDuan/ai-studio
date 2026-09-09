@@ -23,10 +23,9 @@ def _capabilities(values: list[str] | tuple[str, ...]) -> set[Capability]:
 def _comfy_reference_profile(settings: Settings) -> dict[str, Any] | None:
     """Load an operator-proven Comfy reference workflow profile.
 
-    Image reference capabilities remain disabled until this profile exists and
-    names a real workflow plus explicit reference slots. This keeps local
-    ComfyUI fail-closed while making reference-first execution configurable
-    without hard-coding IPAdapter/PuLID node variants in business code.
+    Static profiles declare every reference slot explicitly. Role-aware profiles
+    instead declare a bounded max reference count and let the executor compile the
+    exact FaceID/IP-Adapter chain for the references actually used by one shot.
     """
     profile_path = Path(settings.data_dir) / "comfyui_reference_profile.v3.json"
     if not profile_path.is_file():
@@ -37,15 +36,24 @@ def _comfy_reference_profile(settings: Settings) -> dict[str, Any] | None:
     workflow_path = Path(str(raw.get("reference_workflow_path") or ""))
     bindings = raw.get("reference_bindings")
     contract_bindings = raw.get("contract_bindings") or []
+    mode = str(raw.get("multi_reference_mode") or "static").strip().lower()
     if not workflow_path.is_file():
         raise ValueError(f"configured Comfy reference workflow does not exist: {workflow_path}")
-    if not isinstance(bindings, list) or not bindings:
-        raise ValueError("Comfy reference profile requires reference_bindings")
+    if not isinstance(bindings, list):
+        raise ValueError("Comfy reference profile reference_bindings must be an array")
     if not isinstance(contract_bindings, list):
         raise ValueError("Comfy reference profile contract_bindings must be an array")
-    max_refs = int(raw.get("max_references") or len(bindings))
-    if max_refs < 1 or len(bindings) < max_refs:
-        raise ValueError("Comfy reference profile has insufficient binding slots")
+    max_refs = int(raw.get("max_references") or len(bindings) or 1)
+    if max_refs < 1:
+        raise ValueError("Comfy reference profile max_references must be positive")
+    if mode == "role_aware_chain":
+        if max_refs < 2:
+            raise ValueError("role-aware multi-reference profile must support at least two references")
+    else:
+        if not bindings:
+            raise ValueError("static Comfy reference profile requires reference_bindings")
+        if len(bindings) < max_refs:
+            raise ValueError("Comfy reference profile has insufficient binding slots")
     return {
         "profile_path": str(profile_path),
         "reference_workflow_path": str(workflow_path),
@@ -54,6 +62,7 @@ def _comfy_reference_profile(settings: Settings) -> dict[str, Any] | None:
         "max_references": max_refs,
         "identity_reference": bool(raw.get("identity_reference")),
         "ip_adapter": bool(raw.get("ip_adapter")),
+        "multi_reference_mode": mode,
     }
 
 

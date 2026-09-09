@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from app.v3.authoring_progress import AuthoringStageProgressTracker
 from app.v3.stage_progress import StageProgressTracker
 
 
@@ -122,6 +124,29 @@ class StageProgressTests(unittest.IsolatedAsyncioTestCase):
             frozen = first["overall_percent"]
             second = tracker.snapshot(director.project["project_id"])
             self.assertEqual(second["overall_percent"], frozen)
+
+    async def test_recovered_waiting_stage_freezes_real_execution_time_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            director = _Director()
+            tracker = AuthoringStageProgressTracker(SimpleNamespace(data_dir=Path(tmp)), director)
+            project_id = director.project["project_id"]
+            tracker.begin(project_id, "01", input_chars=466)
+            record = tracker._read(project_id)
+            self.assertIsNotNone(record)
+            record["started_at"] = "2026-09-09T06:00:00+00:00"
+            record["status"] = "waiting"
+            record["current_phase"] = "waiting_next_internal_step"
+            record["updated_at"] = "2026-09-09T06:02:15+00:00"
+            tracker._path(project_id).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+            tracker.complete(project_id, "01")
+            first = tracker.snapshot(project_id)
+            second = tracker.snapshot(project_id)
+
+            self.assertEqual(first["elapsed_seconds"], 135.0)
+            self.assertEqual(second["elapsed_seconds"], 135.0)
+            self.assertTrue(first["elapsed_is_frozen"])
+            self.assertTrue(first["excluded_idle_wait"])
 
 
 if __name__ == "__main__":

@@ -187,3 +187,10 @@ class ResourceStore:
             for resource_id in logical.get("resource_ids") or []
             if resource_id in data["resources"]
         ]
+
+    def list_all(self, project_id: str) -> list[dict[str, Any]]:
+        """Return every V3 resource version for cross-stage asset inspection."""
+        data = self._load(project_id)
+        rows = [dict(item) for item in data.get("resources", {}).values() if isinstance(item, dict)]
+        rows.sort(key=lambda item: (str(item.get("created_at") or ""), int(item.get("version") or 0)))
+        return rows

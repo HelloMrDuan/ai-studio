@@ -42,8 +42,6 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
         for field in ("character_entity_ids", "prop_entity_ids"):
             result.update(str(item) for item in formal.get(field) or [] if str(item))
 
-        # Narrative scene itself is not a reusable visual asset. Resolve its
-        # canonical location binding only when the project metadata provides it.
         scene_id = str(formal.get("scene_id") or (target.get("metadata") or {}).get("scene_id") or "").strip()
         if scene_id:
             continuity_path = self.settings.data_dir / "story_continuity" / f"{project_id}.json"
@@ -80,6 +78,11 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
         preferred_roles = {
             "character_reference", "character_turnaround", "character_consistency",
             "location_reference", "prop_reference", "item_reference",
+        }
+        entity_types = {
+            str(entity.get("entity_id") or "").strip(): str(entity.get("entity_type") or "").strip().lower()
+            for entity in self.legacy.director.production.list_entities(project_id)
+            if str(entity.get("entity_id") or "").strip()
         }
         rows: list[dict[str, Any]] = []
         for item in self.legacy.director.production.list_assets(project_id, active_only=True):
@@ -136,10 +139,14 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
             ref_id = f"legacy:{project_id}:{asset_id}"
             entities = {str(value) for value in item.get("entity_ids") or [] if str(value)}
             matched = sorted(entities & relevant)
+            entity_id = matched[0] if matched else (sorted(entities)[0] if entities else "")
+            role = str(item.get("asset_role") or "").strip()
             self.references.import_file(
                 ref_id,
                 path,
-                entity_id=matched[0] if matched else (sorted(entities)[0] if entities else ""),
+                entity_id=entity_id,
+                role=role,
+                entity_type=entity_types.get(entity_id, ""),
             )
             refs.append(ref_id)
         return refs
@@ -167,11 +174,6 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
                     try:
                         self._candidate_reference_ids(project_id, target)
                     except ValueError as missing:
-                        # First entry into the image workspace prepares every
-                        # missing canonical reference for the project.  This
-                        # keeps ComfyUI hot and avoids character→Qwen→location
-                        # workspace ping-pong.  Candidates still require manual
-                        # adoption before any shot image is allowed to run.
                         prepared = await self.reference_bootstrap.generate_missing(project_id)
                         submitted = list(prepared.get("submitted_entity_ids") or [])
                         waiting = list(prepared.get("waiting_adoption_entity_ids") or [])

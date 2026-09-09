@@ -9,7 +9,7 @@ from types import MethodType
 from typing import Any
 
 
-_PROFILE_ROLES = {"character_profile", "location_profile", "prop_profile"}
+_PROFILE_ROLES = {"character_profile", "character_appearance", "location_profile", "prop_profile"}
 _REFERENCE_ROLES = {
     "character_reference",
     "character_turnaround",
@@ -226,14 +226,17 @@ class ProjectProductionContext:
             payload["character_facts"] = characters
             payload["input_policy"] = "故事事实 + 角色相关事实；不重新解释视觉或分镜"
         elif stage == "03":
-            payload["character_assets"] = [row for row in profiles if row["role"] == "character_profile"]
+            payload["character_assets"] = [
+                row for row in profiles
+                if row["role"] in {"character_profile", "character_appearance"}
+            ]
             payload["location_facts"] = locations
             payload["prop_facts"] = props
-            payload["input_policy"] = "故事事实 + 已确认角色资产 + 地点/道具事实"
+            payload["input_policy"] = "故事事实 + 已确认角色资产/形象版本 + 地点/道具事实"
         elif stage == "04":
             payload["reusable_assets"] = profiles
             payload["canonical_references"] = self._reference_index(project_id)
-            payload["input_policy"] = "故事事实 + 正式角色/地点/道具版本；镜头不得重新设计资产"
+            payload["input_policy"] = "故事事实 + 正式角色/形象/地点/道具版本；镜头不得重新设计资产"
         elif stage == "01":
             payload["input_policy"] = "仅以用户原故事和明确要求建立事实源"
         else:
@@ -262,9 +265,6 @@ class ProjectProductionContext:
         text = json.dumps(payload, ensure_ascii=False, indent=2)
         if len(text) <= max_chars:
             return text
-        # Preserve identity/version indexes before long story prose when the
-        # context window is tight.  The story is bounded last rather than
-        # blindly truncating asset IDs or versions.
         compact = dict(payload)
         story = _clean(compact.get("story_bible"))
         reserve = max(800, max_chars // 3)
@@ -274,6 +274,7 @@ class ProjectProductionContext:
 
     def asset_manifest(self, project: dict[str, Any], stage: str, max_chars: int = 4000) -> str:
         payload = self.build(project, stage)
+        reusable = payload.get("reusable_assets") or payload.get("character_assets") or []
         slim = {
             "context_hash": payload.get("context_hash"),
             "reusable_asset_versions": [
@@ -283,7 +284,7 @@ class ProjectProductionContext:
                     "version": row.get("version"),
                     "entity_ids": row.get("entity_ids"),
                 }
-                for row in payload.get("reusable_assets", [])
+                for row in reusable
             ],
             "canonical_references": payload.get("canonical_references", []),
         }
@@ -326,9 +327,7 @@ class ProductionRuntimeOptimizer:
         def prior_handoffs(instance: Any, project: dict[str, Any], max_chars: int = 12000) -> str:
             stage = _clean(project.get("current_stage"))
             rendered = context_service.render(project, stage, max_chars=max_chars)
-            if rendered:
-                return rendered
-            return ""
+            return rendered or ""
 
         def prior_asset_manifest(instance: Any, project: dict[str, Any], max_chars: int = 5000) -> str:
             stage = _clean(project.get("current_stage"))

@@ -7,6 +7,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from .character_asset_ownership_repair import CharacterAssetOwnershipRepair
+
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
@@ -26,6 +28,7 @@ class CharacterAppearanceService:
         self.legacy = legacy_runtime
         self.director = legacy_runtime.director
         self.production = self.director.production
+        self.ownership_repair = CharacterAssetOwnershipRepair(legacy_runtime)
 
     def _character(self, project_id: str, entity_id: str) -> dict[str, Any]:
         for entity in self.production.list_entities(project_id):
@@ -41,13 +44,27 @@ class CharacterAppearanceService:
         return f"studio:character:{entity_id}:appearance:{appearance_id}"
 
     def _character_profile(self, project_id: str, entity_id: str) -> dict[str, Any] | None:
-        rows = [
-            item for item in self.production.list_assets(project_id, active_only=True)
-            if _clean(item.get("asset_role")) == "character_profile"
-            and entity_id in {_clean(x) for x in item.get("entity_ids") or []}
-            and _clean(item.get("status")).lower() == "ready"
-            and _clean(item.get("dependency_state")).lower() != "stale"
-        ]
+        character = self._character(project_id, entity_id)
+        expected_name = _clean(character.get("name"))
+        rows = []
+        for item in self.production.list_assets(project_id, active_only=True):
+            if _clean(item.get("asset_role")) != "character_profile":
+                continue
+            if entity_id not in {_clean(x) for x in item.get("entity_ids") or []}:
+                continue
+            if _clean(item.get("status")).lower() != "ready" or _clean(item.get("dependency_state")).lower() == "stale":
+                continue
+            # Reject a historically mis-bound profile even if its entity_ids
+            # still contain this id; the structured payload name is authoritative.
+            try:
+                raw = self.production.read_text_asset(project_id, _clean(item.get("asset_id")), max_chars=20000)
+                parsed = json.loads(raw)
+                owner = _clean(parsed.get("name")) if isinstance(parsed, dict) else ""
+                if owner and owner != expected_name:
+                    continue
+            except Exception:
+                pass
+            rows.append(item)
         rows.sort(key=lambda x: (int(x.get("version") or 0), _clean(x.get("updated_at"))))
         return rows[-1] if rows else None
 
@@ -107,6 +124,7 @@ class CharacterAppearanceService:
 
     def list(self, project_id: str) -> dict[str, Any]:
         self.director.get_project(project_id)
+        repair = self.ownership_repair.reconcile(project_id)
         character_names = {
             _clean(entity.get("entity_id")): _clean(entity.get("name"))
             for entity in self.production.list_entities(project_id, entity_type="character")
@@ -114,7 +132,13 @@ class CharacterAppearanceService:
         }
         for entity_id in list(character_names):
             self.ensure_default(project_id, entity_id)
+        # ensure_default may have superseded a repaired default; normalize once
+        # more so all active rows have the correct owner id and logical key.
+        if character_names:
+            repair = self.ownership_repair.reconcile(project_id)
+
         rows = []
+        seen: set[tuple[str, str]] = set()
         for asset in self.production.list_assets(project_id, active_only=True):
             if _clean(asset.get("asset_role")) != "character_appearance":
                 continue
@@ -130,12 +154,22 @@ class CharacterAppearanceService:
             except Exception:
                 pass
             entity_id = entity_ids[0]
+            if entity_id not in character_names:
+                continue
+            character_name = _clean(content.get("character_name")) or character_names.get(entity_id, "")
+            if character_name != character_names.get(entity_id, ""):
+                continue
+            appearance_id = _clean(content.get("appearance_id") or (asset.get("metadata") or {}).get("appearance_id"))
+            key = (entity_id, appearance_id)
+            if key in seen:
+                continue
+            seen.add(key)
             rows.append({
                 "asset_id": _clean(asset.get("asset_id")),
                 "asset_version": int(asset.get("version") or 1),
                 "character_entity_id": entity_id,
-                "character_name": _clean(content.get("character_name")) or character_names.get(entity_id, ""),
-                "appearance_id": _clean(content.get("appearance_id") or (asset.get("metadata") or {}).get("appearance_id")),
+                "character_name": character_name,
+                "appearance_id": appearance_id,
                 "name": _clean(content.get("name") or asset.get("name")),
                 "stable_design": _clean(content.get("stable_design")),
                 "change_reason": _clean(content.get("change_reason")),
@@ -147,6 +181,7 @@ class CharacterAppearanceService:
             "project_id": project_id,
             "appearances": rows,
             "model": "character_appearance_variants_v1",
+            "ownership_repair": repair,
         }
 
     def save(
@@ -160,6 +195,7 @@ class CharacterAppearanceService:
         change_reason: str,
         effective_story_node_ids: list[str] | None = None,
     ) -> dict[str, Any]:
+        self.ownership_repair.reconcile(project_id)
         character = self._character(project_id, entity_id)
         aid = _safe_id(appearance_id or ("look_" + secrets.token_hex(4)))
         design = _clean(stable_design)
@@ -182,9 +218,7 @@ class CharacterAppearanceService:
             "name": _clean(name) or ("默认造型" if aid == "default" else aid),
             "stable_design": design,
             "change_reason": reason or "角色基础造型",
-            "effective_story_node_ids": [
-                _clean(x) for x in (effective_story_node_ids or []) if _clean(x)
-            ],
+            "effective_story_node_ids": [_clean(x) for x in (effective_story_node_ids or []) if _clean(x)],
             "inherits_identity": True,
         }
         asset = self.production.create_text_asset(

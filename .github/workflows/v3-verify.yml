@@ -73,6 +73,7 @@ jobs:
           tests.test_v3_shot_continuity_linker
           tests.test_v3_shot_refinement
           tests.test_v3_native_production_skills
+          tests.test_v3_legacy_authoring_retirement
           tests.test_v3_production_runtime_optimization
           tests.test_v3_stage_progress
           tests.test_v3_quality_policy

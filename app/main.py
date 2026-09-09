@@ -15,16 +15,11 @@ settings = get_settings()
 legacy_runtime = load_original_workbench_runtime()
 app = legacy_runtime.app
 
-# 原运行时的根页面路由会直接返回未处理的历史页面。移除这一条根路由，随后
-# 重新挂载“同一份原页面 + 中文呈现桥接”；其他历史接口和页面全部保留。
 app.router.routes[:] = [
     route for route in app.router.routes
     if getattr(route, "path", "") != "/"
 ]
 
-# ①②③④不再由一个大一统创作工作流反复解释整个项目。运行时切换到
-# 小段映画自己的故事生产圣经 / 角色资产 / 视觉资产 / 分镜导演 Skill；
-# 下游只读取自己需要的生产上下文切片。相同 LLM 输入使用持久内容哈希缓存。
 from app.v3.production_skill_registry import ProductionSkillRegistry
 from app.v3.production_runtime_optimization import ProductionRuntimeOptimizer
 from app.v3.asset_authoring_refined import RefinedAuthoringAssetService
@@ -37,20 +32,14 @@ production_runtime_optimizer.install()
 authoring_asset_service = RefinedAuthoringAssetService(settings, legacy_runtime)
 authoring_asset_service.install_confirmation_hook()
 
-# ④确认后立即在后台准备配音和字幕。这个任务不占用重型视觉 GPU，
-# 因而可以和⑤参考图/画面/视频生产重叠执行；用户后续仍可修改并重生成。
 postproduction_prefetch = PostProductionPrefetch(settings, legacy_runtime)
 postproduction_prefetch.install_confirmation_hook()
 
-# ⑤制作：保留原候选/采用 UI，只把镜头图片和视频生产器替换为新版
-# Temporal + ResourceStore。参考图严格来自角色 / 地点 / 道具三类正式资产；
-# 缺少时批量创建候选，仍由用户显式采用。
 from app.v3.legacy_reference_bridge import ReferenceAwareLegacyCandidateV3Bridge
 
 legacy_v3_bridge = ReferenceAwareLegacyCandidateV3Bridge(settings, legacy_runtime)
 legacy_v3_bridge.install()
 
-# 新版核心 API 继续保持原 `/api/v3/...` 地址，但不使用新版仪表盘替换主页。
 from app.v3.main import app as v3_app
 from app.v3.web_routes import router as web_workflow_router
 from app.v3.legacy_postproduction import router as legacy_postproduction_router
@@ -60,6 +49,7 @@ from app.v3.canonical_reference_assets import create_canonical_reference_asset_r
 from app.v3.stage_revision import create_stage_revision_router
 from app.v3.asset_authoring_refined import create_refined_authoring_asset_router
 from app.v3.shot_authoring import create_shot_authoring_router
+from app.v3.character_appearances import create_character_appearance_router
 
 _SKIP_V3_PATHS = {"/", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
 _existing_paths = {getattr(route, "path", "") for route in app.router.routes}
@@ -79,6 +69,7 @@ app.include_router(create_project_management_router(settings, legacy_runtime))
 app.include_router(create_canonical_reference_asset_router(legacy_runtime))
 app.include_router(create_stage_revision_router(settings, legacy_runtime))
 app.include_router(create_refined_authoring_asset_router(settings, legacy_runtime))
+app.include_router(create_character_appearance_router(legacy_runtime))
 app.include_router(create_shot_authoring_router(settings, legacy_runtime))
 app.include_router(original_workbench_router)
 app.title = "小段映画 · 漫剧工作台"

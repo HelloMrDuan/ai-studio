@@ -77,6 +77,7 @@ class CharacterAppearanceService:
             "schema_version": "xiaoduan_character_appearance_v1",
             "appearance_id": "default",
             "character_entity_id": entity_id,
+            "character_name": _clean(character.get("name")),
             "name": "默认造型",
             "stable_design": text,
             "change_reason": "角色基础造型",
@@ -98,6 +99,7 @@ class CharacterAppearanceService:
             entity_ids=[entity_id],
             metadata={
                 "appearance_id": "default",
+                "character_name": _clean(character.get("name")),
                 "change_reason": "角色基础造型",
                 "inherits_identity": True,
             },
@@ -105,8 +107,13 @@ class CharacterAppearanceService:
 
     def list(self, project_id: str) -> dict[str, Any]:
         self.director.get_project(project_id)
-        for entity in self.production.list_entities(project_id, entity_type="character"):
-            self.ensure_default(project_id, _clean(entity.get("entity_id")))
+        character_names = {
+            _clean(entity.get("entity_id")): _clean(entity.get("name"))
+            for entity in self.production.list_entities(project_id, entity_type="character")
+            if _clean(entity.get("entity_id"))
+        }
+        for entity_id in list(character_names):
+            self.ensure_default(project_id, entity_id)
         rows = []
         for asset in self.production.list_assets(project_id, active_only=True):
             if _clean(asset.get("asset_role")) != "character_appearance":
@@ -122,10 +129,12 @@ class CharacterAppearanceService:
                     content = parsed
             except Exception:
                 pass
+            entity_id = entity_ids[0]
             rows.append({
                 "asset_id": _clean(asset.get("asset_id")),
                 "asset_version": int(asset.get("version") or 1),
-                "character_entity_id": entity_ids[0],
+                "character_entity_id": entity_id,
+                "character_name": _clean(content.get("character_name")) or character_names.get(entity_id, ""),
                 "appearance_id": _clean(content.get("appearance_id") or (asset.get("metadata") or {}).get("appearance_id")),
                 "name": _clean(content.get("name") or asset.get("name")),
                 "stable_design": _clean(content.get("stable_design")),
@@ -133,7 +142,7 @@ class CharacterAppearanceService:
                 "effective_story_node_ids": list(content.get("effective_story_node_ids") or []),
                 "dependency_state": _clean(asset.get("dependency_state") or "current"),
             })
-        rows.sort(key=lambda x: (x["character_entity_id"], x["appearance_id"], x["asset_version"]))
+        rows.sort(key=lambda x: (x["character_name"], x["appearance_id"], x["asset_version"]))
         return {
             "project_id": project_id,
             "appearances": rows,
@@ -169,6 +178,7 @@ class CharacterAppearanceService:
             "schema_version": "xiaoduan_character_appearance_v1",
             "appearance_id": aid,
             "character_entity_id": entity_id,
+            "character_name": _clean(character.get("name")),
             "name": _clean(name) or ("默认造型" if aid == "default" else aid),
             "stable_design": design,
             "change_reason": reason or "角色基础造型",
@@ -192,6 +202,7 @@ class CharacterAppearanceService:
             entity_ids=[entity_id],
             metadata={
                 "appearance_id": aid,
+                "character_name": _clean(character.get("name")),
                 "change_reason": payload["change_reason"],
                 "inherits_identity": True,
             },

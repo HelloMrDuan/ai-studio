@@ -23,7 +23,8 @@ app.router.routes[:] = [
 ]
 
 # ⑤制作：保留原候选/采用 UI，只把镜头图片和视频生产器替换为新版
-# Temporal + ResourceStore。非镜头工具仍走原成熟实现。
+# Temporal + ResourceStore。参考图从已采用的角色/场景/道具资产中解析；
+# 缺少时自动创建参考图候选，仍由用户显式采用。
 from app.v3.legacy_reference_bridge import ReferenceAwareLegacyCandidateV3Bridge
 
 legacy_v3_bridge = ReferenceAwareLegacyCandidateV3Bridge(settings, legacy_runtime)
@@ -36,6 +37,7 @@ from app.v3.legacy_postproduction import router as legacy_postproduction_router
 from app.v3.original_workbench_overlay import router as original_workbench_router
 from app.v3.project_management import create_project_management_router
 from app.v3.reference_assets import create_reference_asset_router
+from app.v3.stage_revision import create_stage_revision_router
 
 _SKIP_V3_PATHS = {"/", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
 _existing_paths = {getattr(route, "path", "") for route in app.router.routes}
@@ -53,6 +55,7 @@ app.include_router(web_workflow_router)
 app.include_router(legacy_postproduction_router)
 app.include_router(create_project_management_router(settings, legacy_runtime))
 app.include_router(create_reference_asset_router(legacy_runtime))
+app.include_router(create_stage_revision_router(settings, legacy_runtime))
 app.include_router(original_workbench_router)
 app.title = "小段映画 · 漫剧工作台"
 

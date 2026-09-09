@@ -45,7 +45,13 @@ MoneyPrinterTurbo MIT license text:
 - Repository: https://github.com/waooAI/waoowaoo
 - License: Elastic License 2.0
 - Reviewed upstream baseline: `6cbbe22cc6492159e0f649d507e4e21a9aec3074`
-- Status so far: architecture and contracts studied, especially Creative Skills, resource lineage and Temporal durable execution. Current V3 foundation/workflow code is independently implemented rather than copied verbatim from waoowaoo source.
-- Any direct reuse must be separately reviewed against Elastic License 2.0 and preserve required notices and modification disclosures.
+- Architecture/contracts studied rather than copied verbatim:
+  - Creative Skill separation between script development, creative direction, reusable asset development and video direction.
+  - `asset-development` discipline: only reusable character/location/prop identities become persistent reference assets; stable identity/space/object design is separated from momentary shot action.
+  - Generated reusable media enters a review checkpoint before becoming the adopted version consumed downstream.
+  - Resource versions and lineage remain explicit so an upstream revision invalidates downstream work instead of silently overwriting it.
+  - Temporal durable-execution and resource-lineage concepts used by the independently implemented V3 workflow layer.
+- Xiaoduan independently implements those concepts in `app/v3/front_half_skill_overlay.py`, `app/v3/reference_assets.py`, `app/v3/stage_revision.py`, the V3 ResourceStore and Temporal workflow code. No waoowaoo implementation file is copied into this repository.
+- Any future direct reuse must be separately reviewed against Elastic License 2.0 and preserve required notices and modification disclosures.
 
 Tracked baselines are machine-readable in `config/upstreams.json` and are checked by `.github/workflows/upstream-watch.yml`.

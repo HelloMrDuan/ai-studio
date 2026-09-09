@@ -34,6 +34,7 @@ from app.v3.main import app as v3_app
 from app.v3.web_routes import router as web_workflow_router
 from app.v3.legacy_postproduction import router as legacy_postproduction_router
 from app.v3.original_workbench_overlay import router as original_workbench_router
+from app.v3.project_management import create_project_management_router
 
 _SKIP_V3_PATHS = {"/", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
 _existing_paths = {getattr(route, "path", "") for route in app.router.routes}
@@ -49,6 +50,7 @@ for route in v3_app.router.routes:
 
 app.include_router(web_workflow_router)
 app.include_router(legacy_postproduction_router)
+app.include_router(create_project_management_router(settings, legacy_runtime))
 app.include_router(original_workbench_router)
 app.title = "小段映画 · 漫剧工作台"
 

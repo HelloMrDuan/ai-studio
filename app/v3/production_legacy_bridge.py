@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+from pathlib import Path
 from typing import Any
+
+from temporalio.client import Client
 
 from app.models import TaskStatus
 from app.v3.legacy_reference_bridge import ReferenceAwareLegacyCandidateV3Bridge
 from app.v3.quality_policy import apply_smart_candidate_params, infer_quality_tier, profile_for_shot
 from app.v3.workflow.contracts import ProductionStep, ProductionWorkflowInput
+from app.v3.workflow.temporal import ProductionWorkflow
 
 
 _ASPECT_SIZES: dict[str, tuple[int, int]] = {
@@ -20,12 +24,7 @@ _ASPECT_SIZES: dict[str, tuple[int, int]] = {
 
 
 class ProductionReadyLegacyBridge(ReferenceAwareLegacyCandidateV3Bridge):
-    """Original workbench UX backed by the production-quality V3 media path.
-
-    The old page still owns candidate/reject/adopt interaction.  This bridge is
-    the single place that translates its controls into the frozen V3 generation
-    contract, so no visible control is allowed to be decorative.
-    """
+    """Original workbench UX backed by the production-quality V3 media path."""
 
     @staticmethod
     def _image_dimensions(params: dict[str, Any]) -> tuple[int, int]:
@@ -42,12 +41,6 @@ class ProductionReadyLegacyBridge(ReferenceAwareLegacyCandidateV3Bridge):
     ) -> dict[str, Any]:
         next_payload = dict(payload)
         raw = dict(payload.get("params") or {}) if isinstance(payload.get("params"), dict) else {}
-
-        # The archived page used model-specific defaults for its previous image
-        # backend.  The V3 provider is a different explicit FaceID workflow, so
-        # those old automatic defaults must not masquerade as user overrides.
-        # A final-refine request is the only path that deliberately freezes the
-        # higher-quality generation parameters.
         if capability == "image" and str(raw.get("quality_stage") or "preview") != "final":
             for key in ("steps", "cfg", "sampler", "sampler_name", "scheduler"):
                 raw.pop(key, None)
@@ -239,12 +232,87 @@ class ProductionReadyLegacyBridge(ReferenceAwareLegacyCandidateV3Bridge):
             "quality_stage": str(params.get("quality_stage") or "preview"),
         }
 
-    async def _run_v3(self, **kwargs: Any) -> None:
-        """Keep user-facing failures Chinese; internal exception classes stay in logs."""
+    async def _run_v3(
+        self,
+        *,
+        project_id: str,
+        candidate_id: str,
+        task_id: str,
+        request: ProductionWorkflowInput,
+        logical_key: str,
+        step_key: str,
+    ) -> None:
         try:
-            await super()._run_v3(**kwargs)
-        except Exception:
-            raise
+            self.legacy.store.update(
+                task_id,
+                status=TaskStatus.running,
+                progress=5,
+                message="正在生成候选",
+            )
+            client = await Client.connect(self.temporal_address, namespace=self.temporal_namespace)
+            handle = await client.start_workflow(
+                ProductionWorkflow.run,
+                request,
+                id=request.workflow_id,
+                task_queue=self.task_queue,
+            )
+            result = await handle.result()
+            if result.status != "completed":
+                raise RuntimeError(result.message or result.error_code or "工作流生成失败")
+
+            versions = self.resources.list_versions(project_id, logical_key)
+            resource = next(
+                (
+                    item for item in reversed(versions)
+                    if str(item.get("generation_task_id") or "") == step_key
+                ),
+                None,
+            )
+            if resource is None:
+                raise RuntimeError("工作流完成但没有找到对应候选资源")
+            metadata = resource.get("metadata") if isinstance(resource.get("metadata"), dict) else {}
+            path = Path(str(metadata.get("artifact_path") or ""))
+            if not path.is_file() or path.stat().st_size <= 0:
+                raise FileNotFoundError("候选媒体文件不存在")
+            output_url = self._url_for_path(path)
+            self.legacy.store.update(
+                task_id,
+                status=TaskStatus.completed,
+                progress=100,
+                message="候选生成完成，等待你预览并采用",
+                output_files=[output_url],
+                error=None,
+            )
+            self._update_candidate(
+                project_id,
+                candidate_id,
+                status="completed",
+                progress=100,
+                message="候选生成完成，等待你预览并采用",
+                output_files=[output_url],
+                v3_resource_id=str(resource.get("resource_id") or ""),
+            )
+        except Exception as exc:
+            detail = str(exc).strip() or "未知错误"
+            message = f"候选生成失败：{detail}"
+            try:
+                self.legacy.store.update(
+                    task_id,
+                    status=TaskStatus.failed,
+                    progress=100,
+                    message="候选生成失败",
+                    error=message,
+                )
+            except Exception:
+                pass
+            self._update_candidate(
+                project_id,
+                candidate_id,
+                status="failed",
+                progress=100,
+                message="候选生成失败",
+                error=message,
+            )
 
 
 __all__ = ["ProductionReadyLegacyBridge"]

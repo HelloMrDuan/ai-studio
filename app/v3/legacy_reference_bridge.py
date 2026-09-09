@@ -7,16 +7,11 @@ from app.v3.contracts import Capability
 from app.v3.legacy_candidate_bridge import LegacyCandidateV3Bridge
 from app.v3.provider_catalog import build_provider_registry
 from app.v3.reference_assets import ReferenceAssetBootstrap
+from app.v3.shot_authoring import ShotAuthoringService
 
 
 class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
-    """Resolve shot references from the adopted reusable asset set.
-
-    The original bridge only looked at the ephemeral shot target's entity id.
-    Stage04, however, stores the reusable character/prop ids on the formal Shot.
-    This class consumes those canonical ids, matching the reference/version
-    discipline used by the referenced creative-asset architecture.
-    """
+    """Resolve adopted reusable assets and local shot revisions for V3 generation."""
 
     def __init__(self, settings: Settings, legacy: Any) -> None:
         super().__init__(settings, legacy)
@@ -25,6 +20,7 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
             legacy,
             submit_candidate=self.original_execute,
         )
+        self.shot_authoring = ShotAuthoringService(settings, legacy)
 
     def _relevant_entity_ids(self, project_id: str, target: dict[str, Any]) -> set[str]:
         result = {str(item) for item in target.get("entity_ids") or [] if str(item)}
@@ -81,8 +77,6 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
             entities = {str(value) for value in item.get("entity_ids") or [] if str(value)}
             if relevant and entities and not (relevant & entities):
                 continue
-            # Do not silently use an unrelated reference when the asset is
-            # explicitly bound to a different reusable entity.
             if relevant and not entities:
                 metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
                 declared = str(metadata.get("reference_entity_id") or "").strip()
@@ -136,28 +130,32 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
     async def execute_candidate(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         capability = str(payload.get("capability") or "").strip().lower()
         target_asset_id = str(payload.get("target_asset_id") or "").strip()
-        if capability == "image" and target_asset_id:
+        if target_asset_id:
             target = self.legacy.director.production.get_asset(project_id, target_asset_id)
             if self._shot_id(target):
-                try:
-                    self._candidate_reference_ids(project_id, target)
-                except ValueError as missing:
-                    relevant = self._relevant_entity_ids(project_id, target)
-                    prepared = await self.reference_bootstrap.generate_first_missing_for_entities(
-                        project_id,
-                        sorted(relevant),
-                    )
-                    if prepared is not None:
-                        candidate = prepared.get("candidate") if isinstance(prepared, dict) else None
-                        state = str((candidate or {}).get("status") or "").strip().lower()
-                        if state == "completed":
+                # When the user has edited one shot, every future image/video
+                # candidate receives that exact manual contract as a parent.
+                target = self.shot_authoring.bind_active_contract_to_target(project_id, target)
+                if capability == "image":
+                    try:
+                        self._candidate_reference_ids(project_id, target)
+                    except ValueError as missing:
+                        relevant = self._relevant_entity_ids(project_id, target)
+                        prepared = await self.reference_bootstrap.generate_first_missing_for_entities(
+                            project_id,
+                            sorted(relevant),
+                        )
+                        if prepared is not None:
+                            candidate = prepared.get("candidate") if isinstance(prepared, dict) else None
+                            state = str((candidate or {}).get("status") or "").strip().lower()
+                            if state == "completed":
+                                raise ValueError(
+                                    "一致性参考图候选已经生成，请先预览并点击“采用”，然后再次生成分镜画面。"
+                                ) from missing
                             raise ValueError(
-                                "一致性参考图候选已经生成，请先预览并点击“采用”，然后再次生成分镜画面。"
+                                "当前镜头缺少已采用参考图，系统已自动开始生成一致性参考图候选。候选完成后先点击“采用”，再生成分镜画面。"
                             ) from missing
-                        raise ValueError(
-                            "当前镜头缺少已采用参考图，系统已自动开始生成一致性参考图候选。候选完成后先点击“采用”，再生成分镜画面。"
-                        ) from missing
-                    raise
+                        raise
         return await super().execute_candidate(project_id, payload)
 
 

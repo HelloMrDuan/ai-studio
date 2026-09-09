@@ -35,6 +35,12 @@ jobs:
           scripts/v3_temporal_e2e.py
           scripts/v3_temporal_visual_e2e.py
           scripts/v3_temporal_h3_resume.py
+      - name: Check original workbench overlay syntax
+        run: >-
+          node --check app/v3/static/original-workbench-overlay.js &&
+          node --check app/v3/static/project-delete-overlay.js &&
+          node --check app/v3/static/authoring-continuity-overlay.js &&
+          node --check app/v3/static/workbench-status-localization.js
       - name: Run V3 tests
         run: >-
           python -m unittest -v

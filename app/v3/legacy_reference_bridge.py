@@ -7,11 +7,12 @@ from app.v3.contracts import Capability
 from app.v3.legacy_candidate_bridge import LegacyCandidateV3Bridge
 from app.v3.provider_catalog import build_provider_registry
 from app.v3.canonical_reference_assets import CanonicalReferenceAssetBootstrap
+from app.v3.quality_policy import apply_smart_candidate_params, infer_quality_tier
 from app.v3.shot_authoring import ShotAuthoringService
 
 
 class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
-    """Resolve adopted reusable assets and local shot revisions for V3 generation."""
+    """Resolve adopted reusable assets, smart quality and local shot revisions."""
 
     def __init__(self, settings: Settings, legacy: Any) -> None:
         super().__init__(settings, legacy)
@@ -22,17 +23,22 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
         )
         self.shot_authoring = ShotAuthoringService(settings, legacy)
 
-    def _relevant_entity_ids(self, project_id: str, target: dict[str, Any]) -> set[str]:
-        result = {str(item) for item in target.get("entity_ids") or [] if str(item)}
+    def _formal_shot(self, project_id: str, target: dict[str, Any]) -> dict[str, Any]:
         shot_id = self._shot_id(target)
-        formal: dict[str, Any] = {}
         loader = getattr(self.legacy, "_studio_formal_shot", None)
         if shot_id and callable(loader):
             try:
                 raw = loader(project_id, shot_id)
-                formal = raw if isinstance(raw, dict) else {}
+                if isinstance(raw, dict):
+                    return dict(raw)
             except Exception:
-                formal = {}
+                pass
+        metadata = target.get("metadata") if isinstance(target.get("metadata"), dict) else {}
+        return dict(metadata)
+
+    def _relevant_entity_ids(self, project_id: str, target: dict[str, Any]) -> set[str]:
+        result = {str(item) for item in target.get("entity_ids") or [] if str(item)}
+        formal = self._formal_shot(project_id, target)
         for field in ("character_entity_ids", "prop_entity_ids"):
             result.update(str(item) for item in formal.get(field) or [] if str(item))
 
@@ -105,7 +111,7 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
         )
         if not rows:
             raise ValueError(
-                "当前镜头没有已采用的一致性参考图。可以不上传参考图：系统会先自动生成角色、地点或道具参考图候选，采用后再生成分镜画面。"
+                "当前镜头没有已采用的一致性参考图。可以不上传参考图：系统会批量生成缺失的角色、地点和道具参考图候选，采用后再生成分镜画面。"
             )
 
         limit = self._reference_limit()
@@ -141,31 +147,45 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
     async def execute_candidate(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         capability = str(payload.get("capability") or "").strip().lower()
         target_asset_id = str(payload.get("target_asset_id") or "").strip()
+        next_payload = dict(payload)
         if target_asset_id:
             target = self.legacy.director.production.get_asset(project_id, target_asset_id)
             if self._shot_id(target):
                 target = self.shot_authoring.bind_active_contract_to_target(project_id, target)
+                formal = self._formal_shot(project_id, target)
+                next_payload["params"] = apply_smart_candidate_params(
+                    payload.get("params") if isinstance(payload.get("params"), dict) else {},
+                    shot=formal,
+                    capability=capability,
+                )
+                next_payload.setdefault("metadata", {})
+                if isinstance(next_payload["metadata"], dict):
+                    next_payload["metadata"]["quality_tier"] = infer_quality_tier(formal)
+                    next_payload["metadata"]["quality_mode"] = "smart"
+
                 if capability == "image":
                     try:
                         self._candidate_reference_ids(project_id, target)
                     except ValueError as missing:
-                        relevant = self._relevant_entity_ids(project_id, target)
-                        prepared = await self.reference_bootstrap.generate_first_missing_for_entities(
-                            project_id,
-                            sorted(relevant),
-                        )
-                        if prepared is not None:
-                            candidate = prepared.get("candidate") if isinstance(prepared, dict) else None
-                            state = str((candidate or {}).get("status") or "").strip().lower()
-                            if state == "completed":
-                                raise ValueError(
-                                    "一致性参考图候选已经生成，请先预览并点击“采用”，然后再次生成分镜画面。"
-                                ) from missing
+                        # First entry into the image workspace prepares every
+                        # missing canonical reference for the project.  This
+                        # keeps ComfyUI hot and avoids character→Qwen→location
+                        # workspace ping-pong.  Candidates still require manual
+                        # adoption before any shot image is allowed to run.
+                        prepared = await self.reference_bootstrap.generate_missing(project_id)
+                        submitted = list(prepared.get("submitted_entity_ids") or [])
+                        waiting = list(prepared.get("waiting_adoption_entity_ids") or [])
+                        if submitted:
                             raise ValueError(
-                                "当前镜头缺少已采用参考图，系统已自动开始生成一致性参考图候选。候选完成后先点击“采用”，再生成分镜画面。"
+                                f"当前作品缺少已采用参考图，系统已批量开始生成 {len(submitted)} 个一致性参考候选。"
+                                "候选完成后统一预览并采用，再生成分镜画面。"
+                            ) from missing
+                        if waiting:
+                            raise ValueError(
+                                f"当前有 {len(waiting)} 个一致性参考候选等待采用。请先统一预览并采用，再生成分镜画面。"
                             ) from missing
                         raise
-        return await super().execute_candidate(project_id, payload)
+        return await super().execute_candidate(project_id, next_payload)
 
 
 __all__ = ["ReferenceAwareLegacyCandidateV3Bridge"]

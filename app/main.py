@@ -24,6 +24,7 @@ from app.v3.production_skill_registry import ProductionSkillRegistry
 from app.v3.production_runtime_optimization import ProductionRuntimeOptimizer
 from app.v3.asset_authoring_refined import RefinedAuthoringAssetService
 from app.v3.postproduction_prefetch import PostProductionPrefetch
+from app.v3.bgm_prefetch import BGMPrefetchService
 from app.v3.shot_continuity_linker import ShotContinuityLinker
 
 production_skill_registry = ProductionSkillRegistry(legacy_runtime.director)
@@ -37,6 +38,8 @@ shot_continuity_linker = ShotContinuityLinker(settings, legacy_runtime)
 shot_continuity_linker.install_confirmation_hook()
 postproduction_prefetch = PostProductionPrefetch(settings, legacy_runtime)
 postproduction_prefetch.install_confirmation_hook()
+bgm_prefetch = BGMPrefetchService(settings, legacy_runtime)
+bgm_prefetch.install_confirmation_hook()
 
 from app.v3.production_legacy_bridge import ProductionReadyLegacyBridge
 
@@ -54,6 +57,7 @@ from app.v3.asset_authoring_refined import create_refined_authoring_asset_router
 from app.v3.shot_authoring import create_shot_authoring_router
 from app.v3.character_appearances import create_character_appearance_router
 from app.v3.shot_refinement import create_shot_refinement_router
+from app.v3.bgm_prefetch import create_bgm_prefetch_router
 
 _SKIP_V3_PATHS = {"/", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
 _existing_paths = {getattr(route, "path", "") for route in app.router.routes}
@@ -76,6 +80,7 @@ app.include_router(create_refined_authoring_asset_router(settings, legacy_runtim
 app.include_router(create_character_appearance_router(legacy_runtime))
 app.include_router(create_shot_authoring_router(settings, legacy_runtime))
 app.include_router(create_shot_refinement_router(legacy_runtime))
+app.include_router(create_bgm_prefetch_router(settings, legacy_runtime))
 app.include_router(original_workbench_router)
 app.title = "小段映画 · 漫剧工作台"
 
@@ -87,5 +92,6 @@ __all__ = [
     "authoring_asset_service",
     "shot_continuity_linker",
     "postproduction_prefetch",
+    "bgm_prefetch",
     "legacy_v3_bridge",
 ]

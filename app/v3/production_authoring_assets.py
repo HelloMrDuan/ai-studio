@@ -70,6 +70,16 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
             "model_calls_added": 0,
         }
 
+    def status(self, project_id: str) -> dict[str, Any]:
+        state = super().status(project_id)
+        # super().status() dispatches through self.sync(), so the ready Stage②/③
+        # draft has already been materialized and profiles/default looks exist.
+        return {
+            **state,
+            "ready_stage_assets_visible_before_confirmation": True,
+            "model_calls_added": 0,
+        }
+
     def reconcile_existing_projects(self) -> dict[str, int]:
         scanned = 0
         changed = 0

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -14,15 +15,17 @@ _PROFILE_ROLES = {
     "location": "location_profile",
     "prop": "prop_profile",
 }
+_KIND_BY_PROFILE_ROLE = {role: kind for kind, role in _PROFILE_ROLES.items()}
 
 
 class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
-    """Reference workflow for confirmed reusable character/location/prop assets.
+    """Reference workflow driven by formal stable authoring profiles.
 
-    Stage① story entities are discovery facts, not stable visual identities. A
-    reference candidate is therefore exposed only after the corresponding
-    authoring profile exists and is READY: character profiles come from ②,
-    location/prop profiles from ③. Narrative scene records remain excluded.
+    Story discovery entities are deliberately not authoritative here. A reusable
+    reference exists only when Stage②/③ has produced a READY character/location/
+    prop profile. This also makes the reference UI resilient to legacy entity
+    type names such as ``scene`` or ``artifact``: the formal profile role is the
+    source of truth for the reusable kind.
     """
 
     def _profile_asset(self, project_id: str, entity_id: str, kind: str) -> dict[str, Any] | None:
@@ -38,56 +41,126 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
         rows.sort(key=lambda item: (int(item.get("version") or 0), _clean(item.get("updated_at"))))
         return rows[-1] if rows else None
 
-    def _entity(self, project_id: str, entity_id: str) -> dict[str, Any]:
-        for item in self.director.production.list_entities(project_id):
-            if _clean(item.get("entity_id")) != _clean(entity_id):
+    @staticmethod
+    def _name_from_profile(profile: dict[str, Any]) -> str:
+        value = _clean(profile.get("name"))
+        match = re.search(r"[「『](.+?)[」』]", value)
+        return _clean(match.group(1)) if match else ""
+
+    def _formal_entities(self, project_id: str) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        entities = {
+            _clean(item.get("entity_id")): dict(item)
+            for item in self.director.production.list_entities(project_id)
+            if _clean(item.get("entity_id"))
+        }
+        latest: dict[tuple[str, str], dict[str, Any]] = {}
+        for asset in self.director.production.list_assets(project_id, active_only=True):
+            role = _clean(asset.get("asset_role"))
+            kind = _KIND_BY_PROFILE_ROLE.get(role, "")
+            if not kind:
                 continue
-            kind = _clean(item.get("entity_type")).lower()
-            if kind not in _CANONICAL_TYPES:
-                raise ValueError("当前故事元素不是可复用角色、地点或道具参考资产")
-            if self._profile_asset(project_id, entity_id, kind) is None:
-                raise ValueError("当前元素还没有经过②角色/③视觉形成稳定设定，暂不能生成一致性参考图")
-            return item
-        raise FileNotFoundError(f"故事元素不存在：{entity_id}")
+            if _clean(asset.get("status")).lower() != "ready":
+                continue
+            if _clean(asset.get("dependency_state")).lower() == "stale":
+                continue
+            for entity_id in [_clean(x) for x in asset.get("entity_ids") or [] if _clean(x)]:
+                key = (kind, entity_id)
+                current = latest.get(key)
+                if current is None or (
+                    int(asset.get("version") or 0), _clean(asset.get("updated_at"))
+                ) > (
+                    int(current.get("version") or 0), _clean(current.get("updated_at"))
+                ):
+                    latest[key] = asset
+
+        rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for (kind, entity_id), profile in latest.items():
+            entity = dict(entities.get(entity_id) or {"entity_id": entity_id})
+            entity["entity_id"] = entity_id
+            # Formal profile role is authoritative. Do not drop a valid profile
+            # merely because a legacy story entity still carries scene/artifact.
+            entity["entity_type"] = kind
+            if not _clean(entity.get("name")):
+                entity["name"] = self._name_from_profile(profile) or f"未命名{kind}"
+            rows.append((entity, profile))
+        rows.sort(key=lambda pair: (_PRIORITY.get(_clean(pair[0].get("entity_type")), 9), _clean(pair[0].get("name"))))
+        return rows
+
+    def _entity(self, project_id: str, entity_id: str) -> dict[str, Any]:
+        for entity, _profile in self._formal_entities(project_id):
+            if _clean(entity.get("entity_id")) == _clean(entity_id):
+                return entity
+        raise ValueError("当前元素还没有经过②角色/③视觉形成稳定设定，暂不能生成一致性参考图")
 
     def status(self, project_id: str) -> dict[str, Any]:
         project = self.director.get_project(project_id)
-        raw = super().status(project_id)
         items: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
-        for item in raw.get("items") or []:
-            kind = _clean(item.get("entity_type")).lower()
-            if kind not in _CANONICAL_TYPES:
-                continue
-            entity_id = _clean(item.get("entity_id"))
-            profile = self._profile_asset(project_id, entity_id, kind)
-            if profile is None:
-                continue
-            # Older story extraction may contain repeated logical entities.
-            # Once stable profiles exist, expose one canonical card per kind+name
-            # instead of asking the user to generate duplicate references.
-            identity = (kind, _clean(item.get("name")).casefold())
+
+        for entity, profile in self._formal_entities(project_id):
+            kind = _clean(entity.get("entity_type")).lower()
+            entity_id = _clean(entity.get("entity_id"))
+            name = _clean(entity.get("name"))
+            identity = (kind, name.casefold())
             if identity in seen:
                 continue
             seen.add(identity)
-            row = dict(item)
-            row["profile_asset_id"] = _clean(profile.get("asset_id"))
-            row["profile_version"] = int(profile.get("version") or 0)
-            items.append(row)
+
+            ready = self._ready_reference(project_id, entity)
+            target = self._target(project_id, entity)
+            prompt_asset = self._prompt_asset(project_id, entity_id)
+            candidate = None
+            if target is not None:
+                candidate = next(
+                    (
+                        row for row in self._candidate_rows(project_id, _clean(target.get("asset_id")))
+                        if not _clean(row.get("confirmed_asset_id"))
+                        and _clean(row.get("status")).lower() not in {"rejected", "failed"}
+                    ),
+                    None,
+                )
+
+            prompt_text = self._reference_prompt(entity)
+            if prompt_asset is not None:
+                try:
+                    prompt_text = self.director.production.read_text_asset(project_id, _clean(prompt_asset.get("asset_id")))
+                except Exception:
+                    pass
+
+            items.append({
+                "entity_id": entity_id,
+                "entity_type": kind,
+                "label": {"character": "角色", "location": "场景", "prop": "道具"}[kind],
+                "name": name,
+                "ready": ready is not None,
+                "reference_asset_id": _clean((ready or {}).get("asset_id")),
+                "reference_url": _clean(((ready or {}).get("storage") or {}).get("url")),
+                "target_asset_id": _clean((target or {}).get("asset_id")),
+                "prompt_asset_id": _clean((prompt_asset or {}).get("asset_id")),
+                "prompt_text": prompt_text,
+                "candidate": candidate,
+                "profile_asset_id": _clean(profile.get("asset_id")),
+                "profile_version": int(profile.get("version") or 0),
+            })
 
         completed = {_clean(value) for value in project.get("completed_stages") or []}
         current_stage = _clean(project.get("current_stage"))
         return {
-            **raw,
+            "project_id": project_id,
             "items": items,
             "required_count": len(items),
             "ready_count": sum(1 for item in items if item.get("ready")),
+            "manual_adoption_required": True,
+            "upload_required": False,
+            "generation_backend": "existing_workbench_txt2img",
+            "asset_policy": "formal_profile_then_reference_candidate_then_manual_adoption",
             "canonical_asset_kinds": ["character", "location", "prop"],
             "stable_profile_required": True,
             "stage01_story_entities_exposed": False,
+            "profile_roles_are_authoritative": True,
             "waiting_for_stable_assets": not items and current_stage in {"01", "02", "03"},
             "gate_message": (
-                "先完成并确认②角色、③视觉的稳定资产；故事解析阶段的粗实体不会提前生成参考图。"
+                "先完成②角色、③视觉的稳定资产；故事解析阶段的粗实体不会提前生成参考图。"
                 if not items and not ({"02", "03"} & completed)
                 else ""
             ),
@@ -95,17 +168,9 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
 
     async def generate_first_missing_for_entities(self, project_id: str, entity_ids: list[str]) -> dict[str, Any] | None:
         wanted = {_clean(value) for value in entity_ids if _clean(value)}
-        entities = []
-        for item in self.director.production.list_entities(project_id):
-            entity_id = _clean(item.get("entity_id"))
-            kind = _clean(item.get("entity_type")).lower()
-            if entity_id not in wanted or kind not in _CANONICAL_TYPES:
+        for entity, _profile in self._formal_entities(project_id):
+            if _clean(entity.get("entity_id")) not in wanted:
                 continue
-            if self._profile_asset(project_id, entity_id, kind) is None:
-                continue
-            entities.append(item)
-        entities.sort(key=lambda item: (_PRIORITY.get(_clean(item.get("entity_type")).lower(), 9), _clean(item.get("name"))))
-        for entity in entities:
             if self._ready_reference(project_id, entity) is None:
                 return await self.generate_candidate(project_id, _clean(entity.get("entity_id")))
         return None

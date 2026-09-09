@@ -20,6 +20,7 @@ async def original_workbench_page() -> HTMLResponse:
         '<script src="/v3-static/project-delete-overlay.js"></script>',
         '<script src="/v3-static/authoring-continuity-overlay.js"></script>',
         '<script src="/v3-static/asset-authoring-overlay.js"></script>',
+        '<script src="/v3-static/character-appearance-overlay.js"></script>',
         '<script src="/v3-static/shot-authoring-overlay.js"></script>',
         '<script src="/v3-static/workbench-status-localization.js"></script>',
     ]

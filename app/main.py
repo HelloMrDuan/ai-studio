@@ -34,8 +34,8 @@ authoring_asset_service = RefinedAuthoringAssetService(settings, legacy_runtime)
 authoring_asset_service.install_confirmation_hook()
 
 # ⑤制作：保留原候选/采用 UI，只把镜头图片和视频生产器替换为新版
-# Temporal + ResourceStore。参考图从已采用的角色/地点/道具资产中解析；
-# 缺少时自动创建参考图候选，仍由用户显式采用。
+# Temporal + ResourceStore。参考图严格来自角色 / 地点 / 道具三类正式资产；
+# 缺少时自动创建候选，仍由用户显式采用。
 from app.v3.legacy_reference_bridge import ReferenceAwareLegacyCandidateV3Bridge
 
 legacy_v3_bridge = ReferenceAwareLegacyCandidateV3Bridge(settings, legacy_runtime)
@@ -47,7 +47,7 @@ from app.v3.web_routes import router as web_workflow_router
 from app.v3.legacy_postproduction import router as legacy_postproduction_router
 from app.v3.original_workbench_overlay import router as original_workbench_router
 from app.v3.project_management import create_project_management_router
-from app.v3.reference_assets import create_reference_asset_router
+from app.v3.canonical_reference_assets import create_canonical_reference_asset_router
 from app.v3.stage_revision import create_stage_revision_router
 from app.v3.asset_authoring_refined import create_refined_authoring_asset_router
 from app.v3.shot_authoring import create_shot_authoring_router
@@ -67,7 +67,7 @@ for route in v3_app.router.routes:
 app.include_router(web_workflow_router)
 app.include_router(legacy_postproduction_router)
 app.include_router(create_project_management_router(settings, legacy_runtime))
-app.include_router(create_reference_asset_router(legacy_runtime))
+app.include_router(create_canonical_reference_asset_router(legacy_runtime))
 app.include_router(create_stage_revision_router(settings, legacy_runtime))
 app.include_router(create_refined_authoring_asset_router(settings, legacy_runtime))
 app.include_router(create_shot_authoring_router(settings, legacy_runtime))

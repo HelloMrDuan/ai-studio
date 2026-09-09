@@ -25,6 +25,8 @@ class ReferenceAsset:
     sha256: str
     mime_type: str
     entity_id: str = ""
+    role: str = ""
+    entity_type: str = ""
 
 
 class ReferenceAssetStore:
@@ -57,7 +59,15 @@ class ReferenceAssetStore:
             raise ValueError("invalid reference_id")
         return ref
 
-    def import_file(self, reference_id: str, source: Path | str, *, entity_id: str = "") -> ReferenceAsset:
+    def import_file(
+        self,
+        reference_id: str,
+        source: Path | str,
+        *,
+        entity_id: str = "",
+        role: str = "",
+        entity_type: str = "",
+    ) -> ReferenceAsset:
         ref = self._safe_id(reference_id)
         src = Path(source)
         if not src.is_file() or src.stat().st_size <= 0:
@@ -77,6 +87,8 @@ class ReferenceAssetStore:
             "sha256": digest,
             "mime_type": mime,
             "entity_id": str(entity_id or "").strip(),
+            "role": str(role or "").strip(),
+            "entity_type": str(entity_type or "").strip().lower(),
         }
         self._save(data)
         return self.resolve(ref)
@@ -98,6 +110,8 @@ class ReferenceAssetStore:
             sha256=digest,
             mime_type=str(record.get("mime_type") or "application/octet-stream"),
             entity_id=str(record.get("entity_id") or ""),
+            role=str(record.get("role") or ""),
+            entity_type=str(record.get("entity_type") or "").lower(),
         )
 
     def resolve_many(self, reference_ids: tuple[str, ...] | list[str]) -> tuple[ReferenceAsset, ...]:
@@ -221,6 +235,119 @@ def bind_comfy_contract(
     return compiled
 
 
+_CHARACTER_ROLES = {
+    "character_reference",
+    "character_turnaround",
+    "character_consistency",
+    "character_identity",
+}
+
+
+def _is_character_reference(asset: ReferenceAsset) -> bool:
+    return asset.entity_type == "character" or asset.role.lower() in _CHARACTER_ROLES
+
+
+def _next_node_id(workflow: dict[str, Any]) -> int:
+    numeric = [int(key) for key in workflow if str(key).isdigit()]
+    return (max(numeric) + 1) if numeric else 20
+
+
+def compile_role_aware_reference_chain(
+    workflow: dict[str, Any],
+    uploaded_names: tuple[str, ...] | list[str],
+    assets: tuple[ReferenceAsset, ...] | list[ReferenceAsset],
+) -> dict[str, Any]:
+    """Build the exact multi-reference graph for one shot.
+
+    Character identities are chained through FaceID. Location/prop references are
+    then chained through the generic SDXL IP-Adapter. The output KSampler always
+    consumes the last model in the chain, so every uploaded reference is part of
+    the executable graph rather than merely being uploaded.
+    """
+    names = tuple(str(item or "").strip() for item in uploaded_names)
+    refs = tuple(assets)
+    if not names or len(names) != len(refs):
+        raise ComfyWorkflowBindingError("role-aware reference names/assets must be non-empty and aligned")
+    if any(not name for name in names):
+        raise ComfyWorkflowBindingError("uploaded reference name cannot be empty")
+
+    compiled = deepcopy(workflow)
+    for node_id in ("3", "4", "11", "12", "16"):
+        node = compiled.get(node_id)
+        if not isinstance(node, dict) or not isinstance(node.get("inputs"), dict):
+            raise ComfyWorkflowBindingError(f"role-aware workflow is missing required node {node_id}")
+
+    pairs = list(zip(names, refs))
+    characters = [item for item in pairs if _is_character_reference(item[1])]
+    generic = [item for item in pairs if not _is_character_reference(item[1])]
+    next_id = _next_node_id(compiled)
+    current_model: list[Any] = ["4", 0]
+
+    if characters:
+        # The unified FaceID loader applies its LoRA to the base model once; all
+        # character identity adapters then share that loaded FaceID model stack.
+        compiled["12"]["inputs"]["model"] = ["4", 0]
+        current_model = ["12", 0]
+        for ordinal, (name, _asset) in enumerate(characters):
+            load_id = str(next_id)
+            face_id = str(next_id + 1)
+            next_id += 2
+            compiled[load_id] = {
+                "class_type": "LoadImage",
+                "inputs": {"image": name},
+            }
+            compiled[face_id] = {
+                "class_type": "IPAdapterFaceID",
+                "inputs": {
+                    "model": current_model,
+                    "ipadapter": ["12", 1],
+                    "image": [load_id, 0],
+                    "weight": 1.0 if ordinal == 0 else 0.9,
+                    "weight_faceidv2": 2.0 if ordinal == 0 else 1.8,
+                    "weight_type": "linear",
+                    "combine_embeds": "concat",
+                    "start_at": 0.0,
+                    "end_at": 1.0,
+                    "embeds_scaling": "V only",
+                },
+            }
+            current_model = [face_id, 0]
+
+    for name, asset in generic:
+        load_id = str(next_id)
+        apply_id = str(next_id + 1)
+        next_id += 2
+        role = asset.role.lower()
+        weight = 0.72 if role in {"location_reference", "scene_reference"} or asset.entity_type == "location" else 0.78
+        compiled[load_id] = {
+            "class_type": "LoadImage",
+            "inputs": {"image": name},
+        }
+        compiled[apply_id] = {
+            "class_type": "IPAdapterAdvanced",
+            "inputs": {
+                "model": current_model,
+                "ipadapter": ["16", 0],
+                "image": [load_id, 0],
+                "weight": weight,
+                "weight_type": "linear",
+                "combine_embeds": "concat",
+                "start_at": 0.0,
+                "end_at": 1.0,
+                "embeds_scaling": "V only",
+                "clip_vision": ["11", 0],
+            },
+        }
+        current_model = [apply_id, 0]
+
+    compiled["3"]["inputs"]["model"] = current_model
+    serialized = json.dumps(compiled, ensure_ascii=False)
+    missing = [name for name in names if name not in serialized]
+    if missing:
+        raise ComfyWorkflowBindingError(f"role-aware workflow dropped references: {missing}")
+    return compiled
+
+
 @dataclass(frozen=True)
 class GenerationExecutionReceipt:
     prompt_id: str
@@ -237,17 +364,10 @@ class ReferenceFirstComfyExecutor:
         self.adapter = adapter
         self.references = references
 
-    async def execute(
+    async def _upload(
         self,
-        contract: GenerationContract,
-        *,
-        workflow: dict[str, Any],
-        reference_bindings: tuple[ComfyReferenceBinding, ...] | list[ComfyReferenceBinding],
-        contract_bindings: tuple[ComfyContractBinding, ...] | list[ComfyContractBinding] = (),
-    ) -> GenerationExecutionReceipt:
-        if contract.provider_id != self.adapter.spec.provider_id or contract.model_id != self.adapter.spec.model_id:
-            raise RuntimeError("generation contract/provider adapter mismatch")
-        resolved = self.references.resolve_many(contract.provider_reference_ids)
+        resolved: tuple[ReferenceAsset, ...],
+    ) -> tuple[str, ...]:
         uploaded: list[str] = []
         for asset in resolved:
             response = await self.adapter.upload_reference(
@@ -259,6 +379,20 @@ class ReferenceFirstComfyExecutor:
             subfolder = str(response.get("subfolder") or "xiaoduan-v3").strip("/")
             name = str(response.get("name") or "").strip()
             uploaded.append(f"{subfolder}/{name}" if subfolder else name)
+        return tuple(uploaded)
+
+    async def execute(
+        self,
+        contract: GenerationContract,
+        *,
+        workflow: dict[str, Any],
+        reference_bindings: tuple[ComfyReferenceBinding, ...] | list[ComfyReferenceBinding],
+        contract_bindings: tuple[ComfyContractBinding, ...] | list[ComfyContractBinding] = (),
+    ) -> GenerationExecutionReceipt:
+        if contract.provider_id != self.adapter.spec.provider_id or contract.model_id != self.adapter.spec.model_id:
+            raise RuntimeError("generation contract/provider adapter mismatch")
+        resolved = self.references.resolve_many(contract.provider_reference_ids)
+        uploaded = await self._upload(resolved)
         compiled = bind_comfy_references(workflow, uploaded, reference_bindings)
         compiled = bind_comfy_contract(compiled, contract, contract_bindings)
         queued = await self.adapter.queue_workflow(compiled)
@@ -267,11 +401,11 @@ class ReferenceFirstComfyExecutor:
             provider_id=contract.provider_id,
             model_id=contract.model_id,
             provider_reference_ids=tuple(contract.provider_reference_ids),
-            uploaded_reference_names=tuple(uploaded),
+            uploaded_reference_names=uploaded,
         )
 
     async def execute_provider_profile(self, contract: GenerationContract) -> GenerationExecutionReceipt:
-        """Load the provider's declared workflow/bindings; never guess reference or prompt nodes."""
+        """Load the provider-declared workflow and compile every reference into it."""
         metadata = self.adapter.spec.metadata
         path = Path(str(metadata.get("reference_workflow_path") or ""))
         if not path.is_file():
@@ -281,8 +415,24 @@ class ReferenceFirstComfyExecutor:
         workflow = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(workflow, dict) or not workflow:
             raise ComfyWorkflowBindingError("reference workflow must be a non-empty Comfy API workflow object")
-        reference_bindings = parse_reference_bindings(metadata.get("reference_bindings"))
         contract_bindings = parse_contract_bindings(metadata.get("contract_bindings"))
+        mode = str(metadata.get("multi_reference_mode") or "static").strip().lower()
+        if mode == "role_aware_chain":
+            if contract.provider_id != self.adapter.spec.provider_id or contract.model_id != self.adapter.spec.model_id:
+                raise RuntimeError("generation contract/provider adapter mismatch")
+            resolved = self.references.resolve_many(contract.provider_reference_ids)
+            uploaded = await self._upload(resolved)
+            compiled = compile_role_aware_reference_chain(workflow, uploaded, resolved)
+            compiled = bind_comfy_contract(compiled, contract, contract_bindings)
+            queued = await self.adapter.queue_workflow(compiled)
+            return GenerationExecutionReceipt(
+                prompt_id=str(queued["prompt_id"]),
+                provider_id=contract.provider_id,
+                model_id=contract.model_id,
+                provider_reference_ids=tuple(contract.provider_reference_ids),
+                uploaded_reference_names=uploaded,
+            )
+        reference_bindings = parse_reference_bindings(metadata.get("reference_bindings"))
         return await self.execute(
             contract,
             workflow=workflow,

@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 from typing import Any
+from dataclasses import asdict
 
 from app.services.generation_contract import GenerationContract
 from app.services.prompt_compiler import PromptCompiler
-from app.services.reference_templates import get_reference_template
 from app.services.visual_direction import VisualDirection
 
 
 class VisualAssetInheritance:
     """Bridge project visual rules into existing production asset graph.
 
-    This adapter keeps ProductionAssetService unchanged while making every
-    generated asset inherit project-level visual constraints.
+    ProductionAssetService owns persistence; this adapter uses its metadata.
     """
 
     def build_contract(
@@ -24,7 +23,10 @@ class VisualAssetInheritance:
         return GenerationContract(
             asset_id=str(asset.get("asset_id") or ""),
             asset_version=str(asset.get("version") or ""),
-            visual_direction=direction,
+            prompt="",
+            visual_direction=asdict(direction),
+            visual_context=dict((asset.get("metadata") or {}).get("visual_context") or {}),
+            entity_ids=tuple(asset.get("entity_ids") or []),
         )
 
     def compile_asset_prompt(
@@ -34,12 +36,11 @@ class VisualAssetInheritance:
         description: str,
         direction: VisualDirection,
     ) -> dict[str, str]:
-        template = get_reference_template(
-            str(asset.get("asset_role") or "generic")
-        )
         contract = self.build_contract(asset=asset, direction=direction)
-        return PromptCompiler().compile(
+        kind = contract.visual_context.get("asset_identity_type") or str(asset.get("asset_role") or "").split("_")[0]
+        return asdict(PromptCompiler().compile(
+            asset_kind=kind,
             asset_description=description,
-            template=template,
+            visual_direction=direction,
             contract=contract,
-        )
+        ))

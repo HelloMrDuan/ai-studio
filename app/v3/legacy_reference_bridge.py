@@ -85,6 +85,8 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
             if str(entity.get("entity_id") or "").strip()
         }
         rows: list[dict[str, Any]] = []
+        selections = {row["character_id"]: row["appearance_version"]
+                      for row in (target.get("metadata") or {}).get("character_appearances") or []}
         for item in self.legacy.director.production.list_assets(project_id, active_only=True):
             if str(item.get("asset_type") or "").upper() != "IMAGE":
                 continue
@@ -95,6 +97,11 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
             if str(item.get("asset_role") or "") not in preferred_roles:
                 continue
             entities = {str(value) for value in item.get("entity_ids") or [] if str(value)}
+            context = (item.get("metadata") or {}).get("visual_context") or {}
+            if str(item.get("asset_role") or "").startswith("character_"):
+                version = context.get("appearance_version") or "v1"
+                if not any(selections.get(eid, "v1") == version for eid in entities & relevant):
+                    continue
             if relevant and entities and not (relevant & entities):
                 continue
             if relevant and not entities:

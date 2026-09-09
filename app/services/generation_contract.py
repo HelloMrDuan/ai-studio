@@ -9,6 +9,10 @@ class GenerationContract:
     asset_version: str
     prompt: str
     visual_direction: dict[str, object] = field(default_factory=dict)
+    visual_context: dict[str, str] = field(default_factory=dict)
+    entity_ids: tuple[str, ...] = ()
+    character_appearances: tuple[dict[str, str], ...] = ()
+    identity_anchors: str = ""
 
     def validate(self) -> None:
         if not self.asset_id:

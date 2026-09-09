@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.v3.contracts import Capability
-from app.v3.generation_contract import GenerationContract
+from app.v3.generation_contract import GenerationContract, visual_contract_fields
 from app.v3.generation_executor import ReferenceFirstComfyExecutor
 
 from .contracts import StepActivityInput, StepActivityResult
@@ -78,6 +78,7 @@ class SmartMaterializedDomainExecutor(MaterializedDomainExecutor):
             contract = GenerationContract(
                 shot_id=self._required(payload, "shot_id"),
                 source_text=self._required(payload, "source_text"),
+                **visual_contract_fields(payload),
                 entity_ids=tuple(self._strings(payload, "entity_ids")),
                 reference_ids=tuple(references),
                 provider_reference_ids=tuple(references),
@@ -110,6 +111,7 @@ class SmartMaterializedDomainExecutor(MaterializedDomainExecutor):
                     "model_id": receipt.model_id,
                     "reference_ids": list(receipt.provider_reference_ids),
                     "contract": {
+                        **visual_contract_fields(payload),
                         "width": contract.width,
                         "height": contract.height,
                         "steps": contract.steps,

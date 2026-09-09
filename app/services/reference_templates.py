@@ -20,7 +20,7 @@ REFERENCE_TEMPLATES = {
             "fixed age, fixed face shape, fixed hairstyle, fixed clothing, clear identity anchor"
         ),
         negative=(
-            "random model photography, western fashion model, modern hairstyle, "
+            "random model photography, "
             "identity change, different face"
         ),
     ),
@@ -31,7 +31,7 @@ REFERENCE_TEMPLATES = {
             "location identity reference, architectural structure, spatial layout, "
             "environment details, lighting condition, world building consistency"
         ),
-        negative="random background, unrelated architecture, modern environment",
+        negative="random background, unrelated architecture",
     ),
     "prop": ReferenceTemplate(
         asset_type="PROP",

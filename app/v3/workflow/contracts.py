@@ -20,6 +20,7 @@ class ProductionStep:
     operation: str
     payload_ref: str
     idempotency_key: str
+    depends_on: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         _required(self.step_id, "step_id")
@@ -35,6 +36,10 @@ class ProductionWorkflowInput:
     project_id: str
     steps: tuple[ProductionStep, ...]
 
+    def ready_steps(self, completed: tuple[str, ...] | list[str]) -> tuple[ProductionStep, ...]:
+        done = set(completed)
+        return tuple(step for step in self.steps if step.step_id not in done and set(step.depends_on or ()) <= done)
+
     def __post_init__(self) -> None:
         _required(self.workflow_id, "workflow_id")
         _required(self.project_id, "project_id")
@@ -46,6 +51,17 @@ class ProductionWorkflowInput:
         keys = [step.idempotency_key for step in self.steps]
         if len(keys) != len(set(keys)):
             raise ValueError("production idempotency_key values must be unique")
+        if any(step.depends_on is not None for step in self.steps):
+            if any(step.depends_on is None for step in self.steps):
+                raise ValueError("production DAG requires explicit dependencies for every step")
+            resolved: set[str] = set()
+            pending = list(self.steps)
+            while pending:
+                ready = [step for step in pending if set(step.depends_on or ()) <= resolved]
+                if not ready:
+                    raise ValueError("production DAG has missing dependencies or a cycle")
+                resolved.update(step.step_id for step in ready)
+                pending = [step for step in pending if step not in ready]
 
 
 @dataclass(frozen=True)

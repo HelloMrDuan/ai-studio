@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields, replace
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -41,6 +42,36 @@ class GenerationContract:
     seed: int = 0
     sampler_name: str = "dpmpp_2m"
     scheduler: str = "karras"
+    visual_context: dict[str, str] = field(default_factory=dict)
+    visual_direction: dict[str, Any] = field(default_factory=dict)
+    generation_contract_id: str = ""
+    character_appearances: tuple[dict[str, str], ...] = ()
+    positive_prompt: str = ""
+    negative_prompt: str = ""
+
+    def compile_prompts(self) -> GenerationContract:
+        from app.services.prompt_compiler import PromptCompiler
+        from app.services.visual_direction import VisualDirection
+        if self.positive_prompt:
+            return self
+        direction = VisualDirection(**{f.name: self.visual_direction[f.name]
+                                       for f in fields(VisualDirection) if f.name in self.visual_direction})
+        compiled = PromptCompiler().compile(
+            asset_kind=self.visual_context.get("asset_identity_type", ""),
+            asset_description=self.source_text, visual_direction=direction, reference=False,
+            contract_context=f"身份: {self.entity_ids}; 固定视觉锚点: {self.reference_ids}; 形象版本: {self.character_appearances}",
+            provider_negative=self.negative_prompt,
+        )
+        return replace(self, positive_prompt=compiled.positive_prompt, negative_prompt=compiled.negative_prompt)
+
+
+def visual_contract_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    return {"visual_context": dict(payload.get("visual_context") or {}),
+            "visual_direction": dict(payload.get("visual_direction") or {}),
+            "generation_contract_id": str(payload.get("generation_contract_id") or ""),
+            "character_appearances": tuple(payload.get("character_appearances") or []),
+            "positive_prompt": str(payload.get("positive_prompt") or ""),
+            "negative_prompt": str(payload.get("negative_prompt") or "")}
 
 
 class GenerationContractCompiler:

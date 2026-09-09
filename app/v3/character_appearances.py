@@ -45,7 +45,6 @@ class CharacterAppearanceService:
 
     def _character_profile(self, project_id: str, entity_id: str) -> dict[str, Any] | None:
         character = self._character(project_id, entity_id)
-        expected_name = _clean(character.get("name"))
         rows = []
         for item in self.production.list_assets(project_id, active_only=True):
             if _clean(item.get("asset_role")) != "character_profile":
@@ -54,13 +53,12 @@ class CharacterAppearanceService:
                 continue
             if _clean(item.get("status")).lower() != "ready" or _clean(item.get("dependency_state")).lower() == "stale":
                 continue
-            # Reject a historically mis-bound profile even if its entity_ids
-            # still contain this id; the structured payload name is authoritative.
+            # Ownership uses stable IDs; display names may change independently.
             try:
                 raw = self.production.read_text_asset(project_id, _clean(item.get("asset_id")), max_chars=20000)
                 parsed = json.loads(raw)
-                owner = _clean(parsed.get("name")) if isinstance(parsed, dict) else ""
-                if owner and owner != expected_name:
+                owner = _clean(parsed.get("entity_id")) if isinstance(parsed, dict) else ""
+                if owner and owner != entity_id:
                     continue
             except Exception:
                 pass
@@ -94,6 +92,8 @@ class CharacterAppearanceService:
             "schema_version": "xiaoduan_character_appearance_v1",
             "appearance_id": "default",
             "character_entity_id": entity_id,
+            "character_id": entity_id,
+            "appearance_version": "v1",
             "character_name": _clean(character.get("name")),
             "name": "默认造型",
             "stable_design": text,
@@ -156,9 +156,7 @@ class CharacterAppearanceService:
             entity_id = entity_ids[0]
             if entity_id not in character_names:
                 continue
-            character_name = _clean(content.get("character_name")) or character_names.get(entity_id, "")
-            if character_name != character_names.get(entity_id, ""):
-                continue
+            character_name = character_names[entity_id]
             appearance_id = _clean(content.get("appearance_id") or (asset.get("metadata") or {}).get("appearance_id"))
             key = (entity_id, appearance_id)
             if key in seen:
@@ -168,6 +166,8 @@ class CharacterAppearanceService:
                 "asset_id": _clean(asset.get("asset_id")),
                 "asset_version": int(asset.get("version") or 1),
                 "character_entity_id": entity_id,
+                "character_id": entity_id,
+                "appearance_version": (asset.get("metadata", {}).get("visual_context") or {}).get("appearance_version", "v1"),
                 "character_name": character_name,
                 "appearance_id": appearance_id,
                 "name": _clean(content.get("name") or asset.get("name")),
@@ -214,6 +214,8 @@ class CharacterAppearanceService:
             "schema_version": "xiaoduan_character_appearance_v1",
             "appearance_id": aid,
             "character_entity_id": entity_id,
+            "character_id": entity_id,
+            "appearance_version": "v1" if aid == "default" else aid,
             "character_name": _clean(character.get("name")),
             "name": _clean(name) or ("默认造型" if aid == "default" else aid),
             "stable_design": design,

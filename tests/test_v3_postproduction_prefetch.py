@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.v3.postproduction_prefetch import PostProductionPrefetch
+from app.config import Settings
 
 
 class _Adapter:
@@ -68,7 +69,7 @@ class PostProductionPrefetchTests(unittest.IsolatedAsyncioTestCase):
             )
             director = _Director(project_id)
             service = PostProductionPrefetch(
-                SimpleNamespace(data_dir=root),
+                Settings(data_dir=root),
                 _Legacy(director),
                 adapter_factory=lambda spec: _Adapter(),
             )
@@ -95,7 +96,7 @@ class PostProductionPrefetchTests(unittest.IsolatedAsyncioTestCase):
             )
             director = _Director(project_id)
             service = PostProductionPrefetch(
-                SimpleNamespace(data_dir=root),
+                Settings(data_dir=root),
                 _Legacy(director),
                 adapter_factory=lambda spec: _Adapter(),
             )

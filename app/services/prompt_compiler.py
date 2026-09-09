@@ -12,6 +12,9 @@ class CompiledPrompt:
     positive_prompt: str
     negative_prompt: str
 
+    def __getitem__(self, key: str) -> str:
+        return getattr(self, key)
+
 
 class PromptCompiler:
     """Unified media prompt compilation entry.
@@ -32,8 +35,17 @@ class PromptCompiler:
         visual_direction: VisualDirection,
         contract_context: str = "",
         provider_negative: str = "",
+        contract: Any = None,
+        reference: bool = True,
     ) -> CompiledPrompt:
-        template = get_reference_template(asset_kind)
+        template = get_reference_template(asset_kind) if reference else None
+        if contract is not None:
+            contract.validate()
+            contract_context = "\n".join(filter(None, [
+                contract_context, f"Asset {contract.asset_id} version {contract.asset_version}",
+                f"身份引用: {contract.entity_ids}; 形象版本: {contract.character_appearances}",
+                "固定视觉锚点: " + (contract.identity_anchors or "遵循已确认设定，不添加未确认外观"),
+            ]))
 
         compiled = self.visual_compiler.compile(
             asset_description=asset_description,
@@ -44,7 +56,7 @@ class PromptCompiler:
         positive = ", ".join(
             part
             for part in (
-                template.positive,
+                template.positive if template else "shot production, preserve established identities and visual anchors",
                 compiled["positive_prompt"],
             )
             if part
@@ -53,7 +65,7 @@ class PromptCompiler:
         negative = ", ".join(
             part
             for part in (
-                template.negative,
+                template.negative if template else "identity change, inconsistent visual anchors",
                 compiled["negative_prompt"],
                 provider_negative,
             )

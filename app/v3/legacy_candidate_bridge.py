@@ -9,6 +9,7 @@ from temporalio.client import Client
 
 from app.config import Settings
 from app.models import TaskStatus
+from app.services.media_generation_pipeline import MediaGenerationPipeline
 from app.v3.generation_executor import ReferenceAssetStore
 from app.v3.resource_store import ResourceStore, ResourceStoreError
 from app.v3.workflow.contracts import ProductionStep, ProductionWorkflowInput
@@ -305,6 +306,8 @@ class LegacyCandidateV3Bridge:
             return await self.original_execute(project_id, payload)
 
         target = self.legacy.director.production.get_asset(project_id, target_asset_id)
+        if capability == "image":
+            payload = MediaGenerationPipeline().prepare_candidate(self.legacy.director.production, project_id, payload)
         shot_id = self._shot_id(target)
         if not shot_id:
             # Non-shot image/video tools keep their mature original implementation.
@@ -328,6 +331,12 @@ class LegacyCandidateV3Bridge:
                 "model_id": "configured-image-workflow",
                 "shot_id": shot_id,
                 "source_text": prompt,
+                "positive_prompt": params.get("positive_prompt", prompt),
+                "negative_prompt": params.get("negative_prompt", ""),
+                "visual_context": payload.get("visual_context", {}),
+                "visual_direction": payload.get("visual_direction", {}),
+                "generation_contract_id": payload.get("generation_contract_id", ""),
+                "character_appearances": payload.get("character_appearances", []),
                 "reference_ids": reference_ids,
                 "entity_ids": [str(x) for x in target.get("entity_ids") or [] if str(x)],
                 "camera_direction": str((target.get("metadata") or {}).get("camera_direction") or ""),

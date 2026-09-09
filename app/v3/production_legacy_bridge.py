@@ -8,6 +8,8 @@ from typing import Any
 from temporalio.client import Client
 
 from app.models import TaskStatus
+from app.services.media_generation_pipeline import MediaGenerationPipeline
+from app.v3.generation_contract import visual_contract_fields
 from app.v3.legacy_reference_bridge import ReferenceAwareLegacyCandidateV3Bridge
 from app.v3.quality_policy import apply_smart_candidate_params, infer_quality_tier, profile_for_shot
 from app.v3.workflow.contracts import ProductionStep, ProductionWorkflowInput
@@ -82,6 +84,8 @@ class ProductionReadyLegacyBridge(ReferenceAwareLegacyCandidateV3Bridge):
         target = self.legacy.director.production.get_asset(project_id, target_asset_id)
         shot_id = self._shot_id(target)
         if not shot_id:
+            if capability == "image":
+                payload = MediaGenerationPipeline().prepare_candidate(self.legacy.director.production, project_id, payload)
             return await self.original_execute(project_id, payload)
 
         target = self.shot_authoring.bind_active_contract_to_target(project_id, target)
@@ -106,6 +110,8 @@ class ProductionReadyLegacyBridge(ReferenceAwareLegacyCandidateV3Bridge):
                     ) from missing
                 raise
 
+        if capability == "image":
+            next_payload = MediaGenerationPipeline().prepare_candidate(self.legacy.director.production, project_id, next_payload)
         prompt_asset_id = str(next_payload.get("prompt_asset_id") or "").strip()
         prompt = self._prompt_text(project_id, prompt_asset_id)
         params = next_payload.get("params") if isinstance(next_payload.get("params"), dict) else {}
@@ -139,6 +145,7 @@ class ProductionReadyLegacyBridge(ReferenceAwareLegacyCandidateV3Bridge):
                 "model_id": "configured-image-workflow",
                 "shot_id": shot_id,
                 "source_text": prompt,
+                **visual_contract_fields({**next_payload, **params}),
                 "reference_ids": reference_ids,
                 "entity_ids": [str(x) for x in target.get("entity_ids") or [] if str(x)],
                 "camera_direction": str((target.get("metadata") or {}).get("camera_direction") or ""),

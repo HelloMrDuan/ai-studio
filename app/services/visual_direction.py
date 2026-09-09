@@ -23,11 +23,13 @@ class VisualDirection:
     negative_constraints: list[str] = field(default_factory=list)
 
     def compile_context(self) -> str:
+        vocabulary = {"xianxia": "东方仙侠 xianxia", "chinese": "中国东方文化 chinese",
+                      "ancient": "古代 ancient"}
         parts = [
-            self.world_style,
-            self.culture,
-            self.era,
-            self.art_style,
+            "世界观: " + vocabulary.get(self.world_style, self.world_style or "未指定"),
+            "文化背景: " + vocabulary.get(self.culture, self.culture or "未指定"),
+            "时代: " + vocabulary.get(self.era, self.era or "未指定"),
+            "美术风格: " + (self.art_style or "未指定，遵循已确认视觉锚点"),
         ]
         rules = []
         for group in (
@@ -39,7 +41,13 @@ class VisualDirection:
         return ", ".join(item for item in [*parts, *rules] if item)
 
     def compile_negative_prompt(self) -> str:
-        return ", ".join(item for item in self.negative_constraints if item)
+        constraints = list(self.negative_constraints)
+        # Project fields define these rules; character names never participate.
+        if self.world_style == "xianxia" and self.culture == "chinese":
+            constraints.extend(["western face", "european features"])
+        if self.era == "ancient":
+            constraints.append("modern hairstyle")
+        return ", ".join(dict.fromkeys(item for item in constraints if item))
 
 
 class VisualDirectionCompiler:

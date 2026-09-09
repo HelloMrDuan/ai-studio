@@ -11,7 +11,7 @@ from app.config import Settings
 from app.v3.adapters.comfyui import ComfyUIAdapter
 from app.v3.adapters.h3 import H3ReferenceFirstExecutor, H3WorkflowCompiler, H3WorkflowConfig
 from app.v3.contracts import Capability
-from app.v3.generation_contract import GenerationContract
+from app.v3.generation_contract import GenerationContract, visual_contract_fields
 from app.v3.generation_executor import (
     ComfyWorkflowBindingError,
     ReferenceAssetError,
@@ -190,6 +190,41 @@ class DomainStepExecutor:
         self.tts_root = Path(settings.data_dir) / "v3" / "media" / "tts"
         self.tts_root.mkdir(parents=True, exist_ok=True)
 
+    def prepare_image_payload(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        from app.services.production_assets import ProductionAssetService
+        from app.services.media_generation_pipeline import MediaGenerationPipeline
+        if payload.get("generation_contract_id") and payload.get("positive_prompt"):
+            return payload
+        # Standalone V3 API jobs retain their existing non-Director project IDs;
+        # their GenerationContract is still compiled at the Comfy boundary.
+        if not re.fullmatch(r"[a-f0-9]{24}", project_id):
+            return payload
+        production = ProductionAssetService(self.settings.data_dir)
+        target_id = (payload.get("metadata") or {}).get("legacy_target_asset_id") or payload.get("asset_id")
+        if not target_id:
+            logical = str(payload.get("logical_key") or payload.get("shot_id") or "image")
+            target = next((a for a in production.list_assets(project_id, active_only=True)
+                           if a.get("logical_key") == logical), None)
+            if target is None:
+                target = production.declare_asset(
+                    project_id, stage="05", skill="v3-image-generation", logical_key=logical,
+                    asset_type="IMAGE", asset_role="shot_keyframe", name=str(payload.get("shot_id") or logical),
+                    entity_ids=list(payload.get("entity_ids") or []), metadata={"visual_context": payload.get("visual_context") or {}},
+                )
+            target_id = target["asset_id"]
+        target = production.ensure_visual_context(project_id, target_id)
+        source = production.create_text_asset(
+            project_id, stage="05", skill="v3-image-generation", logical_key=f"{target_id}:source-prompt",
+            asset_role="image_prompt", name="已确认图片生成要求", content=str(payload.get("source_text") or ""),
+            entity_ids=list(payload.get("entity_ids") or []),
+            metadata={"visual_context": target["metadata"]["visual_context"]},
+        )
+        prepared = MediaGenerationPipeline().prepare_candidate(production, project_id, {
+            "target_asset_id": target_id, "prompt_asset_id": source["asset_id"],
+            "params": {"negative_prompt": payload.get("negative_prompt", "")},
+        })
+        return {**payload, **visual_contract_fields({**prepared, **prepared["params"]})}
+
     async def __call__(self, input: StepActivityInput) -> StepActivityResult:
         step = input.step
         cached = self.results.get(input.project_id, step.idempotency_key)
@@ -364,6 +399,7 @@ class DomainStepExecutor:
         )
 
     async def _image_queue(self, input: StepActivityInput, payload: dict[str, Any]) -> StepActivityResult:
+        payload = self.prepare_image_payload(input.project_id, payload)
         references = _string_list(payload, "reference_ids", required=True)
         required = {Capability.image_generation, Capability.image_reference}
         if len(references) > 1:
@@ -377,6 +413,7 @@ class DomainStepExecutor:
         contract = GenerationContract(
             shot_id=_required(payload, "shot_id"),
             source_text=_required(payload, "source_text"),
+            **visual_contract_fields(payload),
             entity_ids=tuple(_string_list(payload, "entity_ids")),
             reference_ids=tuple(references),
             provider_reference_ids=tuple(references),

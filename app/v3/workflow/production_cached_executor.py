@@ -7,7 +7,7 @@ from typing import Any
 
 from app.config import Settings
 from app.v3.contracts import Capability
-from app.v3.generation_contract import GenerationContract
+from app.v3.generation_contract import GenerationContract, visual_contract_fields
 from app.v3.generation_executor import ReferenceFirstComfyExecutor
 
 from .contracts import StepActivityInput, StepActivityResult
@@ -152,9 +152,15 @@ class CachedMaterializedDomainExecutor(MaterializedDomainExecutor):
             return None
 
         if operation == "generation.image.generate_candidate":
+            payload = self.base.prepare_image_payload(project_id, payload)
             references = [self._reference_signature(str(ref)) for ref in payload.get("reference_ids") or []]
             signature = {
-                "schema": "xiaoduan_image_signature_v2",
+                "schema": "xiaoduan_image_signature_v3",
+                "visual_context": payload.get("visual_context", {}),
+                "visual_direction": payload.get("visual_direction", {}),
+                "character_appearances": payload.get("character_appearances", []),
+                "positive_prompt": payload.get("positive_prompt", ""),
+                "negative_prompt": payload.get("negative_prompt", ""),
                 "kind": "image",
                 "provider_id": str(payload.get("provider_id") or "local-comfyui-image"),
                 "model_id": str(payload.get("model_id") or "configured-image-workflow"),
@@ -336,6 +342,7 @@ class CachedMaterializedDomainExecutor(MaterializedDomainExecutor):
             contract = GenerationContract(
                 shot_id=self._required(payload, "shot_id"),
                 source_text=self._required(payload, "source_text"),
+                **visual_contract_fields(payload),
                 entity_ids=tuple(self._strings(payload, "entity_ids")),
                 reference_ids=tuple(references),
                 provider_reference_ids=tuple(references),
@@ -368,6 +375,7 @@ class CachedMaterializedDomainExecutor(MaterializedDomainExecutor):
                     "model_id": receipt.model_id,
                     "reference_ids": list(receipt.provider_reference_ids),
                     "generation_params": {
+                        **visual_contract_fields(payload),
                         "width": contract.width,
                         "height": contract.height,
                         "steps": contract.steps,

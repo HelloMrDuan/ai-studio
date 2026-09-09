@@ -104,7 +104,10 @@ class ReferenceAssetWorkflowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(captured["project"], project_id)
             self.assertEqual(captured["payload"]["params"]["aspect_ratio"], "4:3")
             prompt_asset_id = captured["payload"]["prompt_asset_id"]
-            self.assertEqual(director.production.read_text_asset(project_id, prompt_asset_id), override)
+            self.assertIn(override, director.production.read_text_asset(project_id, prompt_asset_id))
+            compiled = director.production.get_asset(project_id, prompt_asset_id)
+            original_id = compiled["metadata"]["source_prompt_asset_id"]
+            self.assertEqual(director.production.read_text_asset(project_id, original_id), override)
             target = director.production.get_asset(project_id, captured["payload"]["target_asset_id"])
             self.assertEqual(target["asset_role"], "character_reference")
             self.assertTrue(target["metadata"]["manual_adoption_required"])

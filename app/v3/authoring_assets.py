@@ -127,6 +127,9 @@ class AuthoringAssetService:
 
     def _story_payload(self, project_id: str) -> dict[str, Any] | None:
         project = self.director.get_project(project_id)
+        visual = project.get("visual_direction") or (project.get("metadata") or {}).get("visual_direction")
+        if isinstance(visual, dict) and visual:
+            self.production.set_visual_direction(project_id, visual)
         confirmed = (project.get("confirmed_outputs") or {}).get("01") or {}
         handoff = _clean(confirmed.get("handoff"))
         if not handoff:

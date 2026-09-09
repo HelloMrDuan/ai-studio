@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import json
 import os
 import re
@@ -88,14 +90,41 @@ class FullPipelineArtifactStore:
 
     def patch_manifest(self, project_id: str, workflow_id: str, **updates: Any) -> dict[str, Any]:
         path = self.manifest_path(project_id, workflow_id)
-        current: dict[str, Any] = read_json(path) if path.is_file() else {
-            "schema_version": "xiaoduan_full_pipeline_v1",
-            "project_id": project_id,
-            "workflow_id": workflow_id,
-        }
-        current.update(updates)
-        atomic_write_json(path, current)
+        with self._manifest_lock(path):
+            current: dict[str, Any] = read_json(path) if path.is_file() else {
+                "schema_version": "xiaoduan_full_pipeline_v1",
+                "project_id": project_id,
+                "workflow_id": workflow_id,
+            }
+            current.update(updates)
+            atomic_write_json(path, current)
         return current
+
+    @staticmethod
+    @contextmanager
+    def _manifest_lock(path: Path):
+        """Serialize manifest read/modify/write across parallel Activities."""
+        import os
+        with path.with_suffix(".lock").open("a+b") as handle:
+            if os.name == "nt":
+                import msvcrt
+                handle.seek(0, 2)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if os.name == "nt":
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def manifest(self, project_id: str, workflow_id: str) -> dict[str, Any]:
         path = self.manifest_path(project_id, workflow_id)

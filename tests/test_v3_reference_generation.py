@@ -89,7 +89,7 @@ class ReferenceFirstGenerationTests(unittest.IsolatedAsyncioTestCase):
             queued = adapter.queued[0]
             self.assertEqual(queued["10"]["inputs"]["image"], receipt.uploaded_reference_names[0])
             self.assertEqual(queued["11"]["inputs"]["image"], receipt.uploaded_reference_names[1])
-            self.assertEqual(queued["6"]["inputs"]["text"], "少年遇到守护神兽, cinematic")
+            self.assertEqual(queued["6"]["inputs"]["text"], contract.compile_prompts().positive_prompt + ", cinematic")
             self.assertNotEqual(receipt.uploaded_reference_names[0], receipt.uploaded_reference_names[1])
             self.assertTrue(all(name.startswith("xiaoduan-v3/") for name in receipt.uploaded_reference_names))
 

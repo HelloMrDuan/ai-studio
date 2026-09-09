@@ -48,6 +48,10 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
         return _clean(match.group(1)) if match else value.removesuffix("稳定设定").strip()
 
     def _formal_entities(self, project_id: str) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        project = self.director.get_project(project_id)
+        visual = project.get("visual_direction") or (project.get("metadata") or {}).get("visual_direction")
+        if isinstance(visual, dict) and visual:
+            self.director.production.set_visual_direction(project_id, visual)
         profiles = self._stable_profiles(project_id)
         rows = self._build_reference_candidates(project_id, profiles)
         self._validate_reference_candidates(profiles, rows)
@@ -126,6 +130,21 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
             if _clean(entity.get("entity_id")) == _clean(entity_id):
                 return entity
         raise ValueError("当前元素还没有经过②角色/③视觉形成稳定设定，暂不能生成一致性参考图")
+
+    def _appearance_entity(self, project_id: str, entity: dict[str, Any], version: str) -> dict[str, Any]:
+        if entity["entity_type"] != "character":
+            raise ValueError("只有角色支持形象版本")
+        for asset in self.director.production.list_assets(project_id, active_only=True):
+            context = (asset.get("metadata") or {}).get("visual_context") or {}
+            if (asset.get("asset_role") == "character_appearance" and asset.get("status") == "ready"
+                and asset.get("dependency_state") != "stale"
+                and entity["entity_id"] in (asset.get("entity_ids") or [])
+                and context.get("appearance_version") == version):
+                payload = json.loads(self.director.production.read_text_asset(project_id, asset["asset_id"]))
+                return {**entity, "appearance_version": version,
+                        "metadata": {"stable_design": payload.get("stable_design", "")},
+                        "evidence": [{"source_asset_id": asset["asset_id"]}]}
+        raise ValueError(f"角色 {entity['entity_id']} 缺少正式形象版本 {version}")
 
     def status(self, project_id: str) -> dict[str, Any]:
         project = self.director.get_project(project_id)
@@ -229,6 +248,7 @@ def create_canonical_reference_asset_router(legacy_runtime: Any) -> APIRouter:
                 entity_id,
                 force=bool((payload or {}).get("force")),
                 prompt_override=_clean((payload or {}).get("prompt")),
+                appearance_version=_clean((payload or {}).get("appearance_version")) or "v1",
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

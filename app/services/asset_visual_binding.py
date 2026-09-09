@@ -19,24 +19,28 @@ class AssetVisualBinding:
         visual_direction: dict[str, Any] | None = None,
         appearance_version: str = "",
         generation_contract_id: str = "",
+        asset_identity_type: str = "",
     ) -> dict[str, Any]:
         metadata = asset.setdefault("metadata", {})
-        metadata["visual_binding"] = {
+        metadata["visual_context"] = {
             "visual_direction_id": visual_direction_id,
             "appearance_version": appearance_version,
-            "generation_contract_id": generation_contract_id,
-            "visual_direction": visual_direction or {},
+            "asset_identity_type": asset_identity_type,
         }
+        if generation_contract_id:
+            asset["contract_artifact_id"] = generation_contract_id
         return asset
 
     def build_generation_context(self, asset: dict[str, Any]) -> dict[str, Any]:
         metadata = asset.get("metadata") or {}
-        binding = metadata.get("visual_binding") or {}
+        binding = metadata.get("visual_context") or metadata.get("visual_binding") or {}
         return {
             "asset_id": asset.get("asset_id", ""),
             "asset_version": asset.get("version", ""),
             "asset_role": asset.get("asset_role", ""),
             "visual_direction_id": binding.get("visual_direction_id", ""),
             "visual_direction": binding.get("visual_direction", {}),
-            "generation_contract_id": binding.get("generation_contract_id", ""),
+            "generation_contract_id": asset.get("contract_artifact_id") or binding.get("generation_contract_id", ""),
+            "appearance_version": binding.get("appearance_version", ""),
+            "asset_identity_type": binding.get("asset_identity_type", ""),
         }

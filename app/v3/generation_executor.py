@@ -163,6 +163,7 @@ def parse_contract_bindings(raw: Any) -> tuple[ComfyContractBinding, ...]:
     allowed = {
         "shot_id", "source_text", "camera_direction", "action",
         "width", "height", "steps", "cfg", "seed", "sampler_name", "scheduler",
+        "positive_prompt", "negative_prompt",
     }
     result: list[ComfyContractBinding] = []
     for item in raw:
@@ -226,12 +227,33 @@ def bind_comfy_contract(
         node = compiled.get(binding.node_id)
         if not isinstance(node, dict) or not isinstance(node.get("inputs"), dict):
             raise ComfyWorkflowBindingError(f"contract binding node missing: {binding.node_id}")
-        raw = getattr(contract, binding.contract_field, "")
+        raw = (contract.positive_prompt if binding.contract_field == "source_text" and contract.positive_prompt
+               else getattr(contract, binding.contract_field, ""))
         if binding.prefix or binding.suffix:
             value: Any = f"{binding.prefix}{str(raw or '').strip()}{binding.suffix}"
         else:
             value = raw
         node["inputs"][binding.input_name] = value
+    if contract.negative_prompt:
+        # Follow actual negative conditioning links, independent of node IDs.
+        pending = [node.get("inputs", {}).get("negative") for node in compiled.values()
+                   if isinstance(node, dict) and "negative" in node.get("inputs", {})]
+        seen = set()
+        while pending:
+            link = pending.pop()
+            if not isinstance(link, list) or len(link) != 2 or str(link[0]) in seen:
+                continue
+            node_id = str(link[0])
+            seen.add(node_id)
+            node = compiled.get(node_id, {})
+            inputs = node.get("inputs", {})
+            if node.get("class_type", "").startswith("CLIPTextEncode"):
+                for key in ("text", "text_g", "text_l"):
+                    if key in inputs:
+                        existing = str(inputs[key] or "")
+                        inputs[key] = ", ".join(filter(None, [existing, contract.negative_prompt]))
+            else:
+                pending.extend(value for value in inputs.values() if isinstance(value, list))
     return compiled
 
 
@@ -389,6 +411,7 @@ class ReferenceFirstComfyExecutor:
         reference_bindings: tuple[ComfyReferenceBinding, ...] | list[ComfyReferenceBinding],
         contract_bindings: tuple[ComfyContractBinding, ...] | list[ComfyContractBinding] = (),
     ) -> GenerationExecutionReceipt:
+        contract = contract.compile_prompts()
         if contract.provider_id != self.adapter.spec.provider_id or contract.model_id != self.adapter.spec.model_id:
             raise RuntimeError("generation contract/provider adapter mismatch")
         resolved = self.references.resolve_many(contract.provider_reference_ids)
@@ -406,6 +429,7 @@ class ReferenceFirstComfyExecutor:
 
     async def execute_provider_profile(self, contract: GenerationContract) -> GenerationExecutionReceipt:
         """Load the provider-declared workflow and compile every reference into it."""
+        contract = contract.compile_prompts()
         metadata = self.adapter.spec.metadata
         path = Path(str(metadata.get("reference_workflow_path") or ""))
         if not path.is_file():

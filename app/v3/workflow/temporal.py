@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import asyncio
+from dataclasses import replace
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -37,6 +39,41 @@ class ProductionWorkflow:
 
     @workflow.run
     async def run(self, input: ProductionWorkflowInput) -> ProductionWorkflowResult:
+        if all(step.depends_on is None for step in input.steps):
+            return await self._run_sequence(input)
+        completed: list[str] = []
+        outputs: list[str] = []
+        running: dict[str, asyncio.Task] = {}
+        try:
+            while len(completed) < len(input.steps):
+                for step in input.ready_steps(completed):
+                    if step.step_id not in running:
+                        running[step.step_id] = asyncio.create_task(self._run_sequence(
+                            ProductionWorkflowInput(input.workflow_id, input.project_id, (replace(step, depends_on=None),))
+                        ))
+                await workflow.wait(list(running.values()), return_when=asyncio.FIRST_COMPLETED)
+                # Traverse declaration order, never the unordered completed set.
+                for step in input.steps:
+                    task = running.get(step.step_id)
+                    if task is None or not task.done():
+                        continue
+                    result = task.result()
+                    del running[step.step_id]
+                    completed.extend(result.completed_step_ids)
+                    outputs.extend(result.output_refs)
+                    if result.status != "completed":
+                        return ProductionWorkflowResult(
+                            status=result.status, completed_step_ids=tuple(completed), output_refs=tuple(outputs),
+                            failed_step_id=result.failed_step_id, error_code=result.error_code, message=result.message,
+                        )
+        finally:
+            for task in running.values():
+                task.cancel()
+            if running:
+                await asyncio.gather(*running.values(), return_exceptions=True)
+        return ProductionWorkflowResult(status="completed", completed_step_ids=tuple(completed), output_refs=tuple(outputs))
+
+    async def _run_sequence(self, input: ProductionWorkflowInput) -> ProductionWorkflowResult:
         completed: list[str] = []
         output_refs: list[str] = []
 

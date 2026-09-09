@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, HTTPException
+from app.services.media_generation_pipeline import MediaGenerationPipeline
 
 
 SubmitCandidate = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -88,6 +89,10 @@ class ReferenceAssetBootstrap:
                 continue
             if entity_id not in {_clean(value) for value in item.get("entity_ids") or []}:
                 continue
+            if role == "character_reference":
+                version = ((item.get("metadata") or {}).get("visual_context") or {}).get("appearance_version") or "v1"
+                if version != (entity.get("appearance_version") or "v1"):
+                    continue
             if _clean(item.get("status")).lower() != "ready":
                 continue
             if _clean(item.get("dependency_state")).lower() == "stale":
@@ -108,6 +113,8 @@ class ReferenceAssetBootstrap:
 
     def _target(self, project_id: str, entity: dict[str, Any]) -> dict[str, Any] | None:
         key = self._logical_key(_clean(entity.get("entity_id")))
+        if entity.get("appearance_version") not in {None, "", "v1"}:
+            key += f":appearance:{entity['appearance_version']}"
         rows = [
             item for item in self.director.production.list_assets(project_id, active_only=True)
             if _clean(item.get("logical_key")) == key
@@ -180,25 +187,29 @@ class ReferenceAssetBootstrap:
         kind = _clean(entity.get("entity_type")).lower()
         name = _clean(entity.get("name")) or _REFERENCE_LABEL[kind]
         role = _REFERENCE_ROLE[kind]
+        version = entity.get("appearance_version") or "v1"
+        suffix = f":appearance:{version}" if kind == "character" and version != "v1" else ""
         target = self._target(project_id, entity)
         if target is None or _clean(target.get("status")).lower() in {"archived", "superseded"}:
             target = self.director.production.declare_asset(
                 project_id,
                 stage="03",
                 skill="xiaoduan-consistency-reference",
-                logical_key=self._logical_key(entity_id),
+                logical_key=self._logical_key(entity_id) + suffix,
                 asset_type="IMAGE",
                 asset_role=role,
                 name=f"{name} · 一致性参考图",
                 status="planned",
                 source={"type": "auto_consistency_reference", "entity_id": entity_id},
-                parent_asset_ids=[],
+                parent_asset_ids=[_clean(row.get("source_asset_id")) for row in entity.get("evidence") or []
+                                  if _clean(row.get("source_asset_id"))],
                 entity_ids=[entity_id],
                 metadata={
                     "reference_asset": True,
                     "reference_kind": kind,
                     "manual_adoption_required": True,
-                    "design_source": "project_entity_facts",
+                    "design_source": "formal_stable_profile",
+                    "visual_context": {"appearance_version": version if kind == "character" else ""},
                 },
             )
 
@@ -211,7 +222,7 @@ class ReferenceAssetBootstrap:
             project_id,
             stage="03",
             skill="xiaoduan-consistency-reference",
-            logical_key=self._prompt_key(entity_id),
+            logical_key=self._prompt_key(entity_id) + suffix,
             asset_role=f"{role}_prompt",
             name=f"{name} · 一致性参考图生成要求",
             content=content,
@@ -291,9 +302,12 @@ class ReferenceAssetBootstrap:
         *,
         force: bool = False,
         prompt_override: str = "",
+        appearance_version: str = "v1",
     ) -> dict[str, Any]:
         self.director.get_project(project_id)
         entity = self._entity(project_id, entity_id)
+        if appearance_version not in {"", "v1", "default"}:
+            entity = self._appearance_entity(project_id, entity, appearance_version)
         ready = self._ready_reference(project_id, entity)
         if ready is not None and not force:
             return {"already_ready": True, "asset": ready, "status": self.status(project_id)}
@@ -310,9 +324,8 @@ class ReferenceAssetBootstrap:
             if not _clean(row.get("confirmed_asset_id")) and state in _PENDING and not force:
                 return {"already_pending": True, "candidate": row, "status": self.status(project_id)}
 
-        response = await self.submit_candidate(
-            project_id,
-            {
+        generation_payload = MediaGenerationPipeline().prepare_candidate(
+            self.director.production, project_id, {
                 "target_asset_id": _clean(target.get("asset_id")),
                 "capability": "image",
                 "mode": "txt2img",
@@ -330,7 +343,11 @@ class ReferenceAssetBootstrap:
                 },
             },
         )
+        response = await self.submit_candidate(project_id, generation_payload)
         return {"submitted": True, **dict(response or {}), "status": self.status(project_id)}
+
+    def _appearance_entity(self, project_id: str, entity: dict[str, Any], version: str) -> dict[str, Any]:
+        raise ValueError("当前参考图入口不支持此形象版本")
 
     async def generate_missing(self, project_id: str) -> dict[str, Any]:
         state = self.status(project_id)

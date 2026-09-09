@@ -14,7 +14,7 @@ from app.config import Settings
 from app.v3.adapters.comfyui import ComfyUIAdapter
 from app.v3.adapters.h3 import H3ReferenceFirstExecutor, H3WorkflowCompiler, H3WorkflowConfig
 from app.v3.contracts import Capability, ProviderModelSpec
-from app.v3.generation_contract import GenerationContract
+from app.v3.generation_contract import GenerationContract, visual_contract_fields
 from app.v3.generation_executor import (
     ComfyWorkflowBindingError,
     ReferenceAssetError,
@@ -134,6 +134,7 @@ class MaterializedDomainExecutor:
         try:
             payload = self.base.payloads.resolve(input.project_id, input.step.payload_ref)
             if operation == "generation.image.generate_candidate":
+                payload = self.base.prepare_image_payload(input.project_id, payload)
                 result = await self._image_generate_candidate(input, payload)
             else:
                 result = await self._h3_generate_candidate(input, payload)
@@ -361,6 +362,7 @@ class MaterializedDomainExecutor:
             contract = GenerationContract(
                 shot_id=self._required(payload, "shot_id"),
                 source_text=self._required(payload, "source_text"),
+                **visual_contract_fields(payload),
                 entity_ids=tuple(self._strings(payload, "entity_ids")),
                 reference_ids=tuple(references),
                 provider_reference_ids=tuple(references),

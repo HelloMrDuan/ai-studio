@@ -4,6 +4,7 @@ import json
 import os
 import re
 import secrets
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -229,6 +230,14 @@ class FullMovieWorkflowService:
                 self._step("composition", "composition", "full.composition.render", composition, workflow_id),
             ),
         )
+        dependencies = {
+            "screenplay": (), "characters": ("screenplay",), "storyboard": ("characters",),
+            "image-generate": ("storyboard",), "tts": ("storyboard",), "bgm": ("storyboard",),
+            "image-audit": ("image-generate",), "image-adopt": ("image-audit",),
+            "h3-generate": ("image-adopt",), "h3-audit": ("h3-generate",), "h3-adopt": ("h3-audit",),
+            "subtitle": ("h3-adopt", "tts"), "composition": ("subtitle", "bgm"),
+        }
+        request = replace(request, steps=tuple(replace(step, depends_on=dependencies[step.step_id]) for step in request.steps))
         record = {
             "workflow_id": workflow_id,
             "project_id": project_id,
@@ -285,23 +294,23 @@ class FullMovieWorkflowService:
     def _stage(manifest: dict[str, Any], image: dict[str, Any] | None, video: dict[str, Any] | None) -> str:
         if manifest.get("final_path"):
             return "completed"
-        if manifest.get("bgm_path"):
-            return "composition"
-        if manifest.get("subtitle_path"):
-            return "bgm"
-        if manifest.get("voice_path"):
-            return "subtitle"
-        if video:
-            return "tts"
-        if image:
-            return "h3"
-        if manifest.get("storyboard_path"):
-            return "image"
-        if manifest.get("characters_path"):
-            return "storyboard"
-        if manifest.get("screenplay_path"):
+        if not manifest.get("screenplay_path"):
+            return "screenplay"
+        if not manifest.get("characters_path"):
             return "characters"
-        return "screenplay"
+        if not manifest.get("storyboard_path"):
+            return "storyboard"
+        if not image:
+            return "image"
+        if not video:
+            return "h3"
+        if not manifest.get("voice_path"):
+            return "tts"
+        if not manifest.get("subtitle_path"):
+            return "subtitle"
+        if not manifest.get("bgm_path"):
+            return "bgm"
+        return "composition"
 
     async def status(self, workflow_id: str) -> dict[str, Any]:
         record = self._read(workflow_id)

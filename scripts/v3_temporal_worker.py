@@ -13,12 +13,12 @@ if str(REPO_ROOT) not in sys.path:
 from app.config import get_settings
 from app.v3.workflow.activities import ProductionActivities
 from app.v3.workflow.contracts import StepActivityInput, StepActivityResult
-from app.v3.workflow.production_cached_executor import ProductionCachedFullPipelineExecutor
+from app.v3.workflow.production_worker_executor import ProductionWorkerExecutor
 from app.v3.workflow.worker import run_worker
 
 
 settings = get_settings()
-domain_executor = ProductionCachedFullPipelineExecutor(settings)
+domain_executor = ProductionWorkerExecutor(settings)
 
 
 async def execute_step(input: StepActivityInput) -> StepActivityResult:

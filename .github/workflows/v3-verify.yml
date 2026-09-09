@@ -49,6 +49,7 @@ jobs:
           node --check app/v3/static/asset-explorer-overlay.js &&
           node --check app/v3/static/single-pass-stage-overlay.js &&
           node --check app/v3/static/stage-progress-overlay.js &&
+          node --check app/v3/static/stage-state-overlay.js &&
           node --check app/v3/static/workbench-status-localization.js
       - name: Run V3 tests
         run: >-
@@ -78,6 +79,7 @@ jobs:
           tests.test_v3_legacy_authoring_retirement
           tests.test_v3_production_runtime_optimization
           tests.test_v3_stage_progress
+          tests.test_v3_cleanup_regressions
           tests.test_v3_quality_policy
           tests.test_v3_production_bridge_quality
           tests.test_v3_media_content_cache

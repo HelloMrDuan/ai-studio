@@ -7,6 +7,10 @@ from fastapi import APIRouter, HTTPException
 from .asset_authoring_refined import RefinedAuthoringAssetService, _clean, _STAGE_BY_TYPE, _STAGE_ORDER_INDEX
 from .character_appearances import CharacterAppearanceService
 from .stage_asset_materialization import StageOutputAssetMaterializer
+from .stage_asset_materialization_guard import install_stage_asset_materialization_guard
+
+
+install_stage_asset_materialization_guard()
 
 
 class ProductionAuthoringAssetService(RefinedAuthoringAssetService):

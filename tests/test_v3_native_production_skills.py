@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import unittest
 
 from app.services.production_skills import (
@@ -13,6 +15,8 @@ from app.v3.production_skill_registry import ProductionSkillRegistry
 class _FakeDirector:
     def __init__(self) -> None:
         self._skill_calls = []
+        self._plan_calls = 0
+        self._message_calls = 0
 
     def _skill_md(self, name: str) -> str:
         self._skill_calls.append(name)
@@ -26,6 +30,27 @@ class _FakeDirector:
 
     def source_status(self):
         return {"ready": False, "skill_runtime": {"legacy": True}}
+
+    def _skill_source_sha256(self, text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    async def _ensure_native_plan(self, **kwargs):
+        self._plan_calls += 1
+        return {"mode": "dynamic", "steps": []}
+
+    def _native_target(self, **kwargs):
+        return {"kind": "legacy"}
+
+    def get_project(self, project_id: str):
+        return {"project_id": project_id, "current_stage": "01"}
+
+    async def message(self, project_id: str, user_text: str, *, native_control_action: str = ""):
+        self._message_calls += 1
+        return {
+            "project_id": project_id,
+            "user_text": user_text,
+            "native_control_action": native_control_action,
+        }
 
 
 class NativeProductionSkillTests(unittest.TestCase):
@@ -67,7 +92,51 @@ class NativeProductionSkillTests(unittest.TestCase):
         status = director.source_status()
         self.assertTrue(status["ready"])
         self.assertTrue(status["skill_runtime"]["native_production_skills"])
+        self.assertTrue(status["skill_runtime"]["single_pass_authoring"])
+        self.assertFalse(status["skill_runtime"]["legacy_auto_advance"])
         self.assertFalse(status["skill_runtime"]["external_workflow_required"])
+
+    def test_native_authoring_plan_targets_complete_stage_on_first_call(self):
+        director = _FakeDirector()
+        ProductionSkillRegistry(director).install()
+        skill_name = "xiaoduan-story-bible"
+        skill_md = director._skill_md(skill_name)
+        state = {}
+        plan = asyncio.run(director._ensure_native_plan(
+            skill_name=skill_name,
+            skill_md=skill_md,
+            project={"project_id": "demo", "current_stage": "01"},
+            stage="01",
+            stage_state=state,
+            user_text="测试故事",
+        ))
+        self.assertEqual(director._plan_calls, 0)
+        self.assertEqual(plan["mode"], "sequential")
+        self.assertTrue(plan["single_pass"])
+        self.assertEqual(plan["legacy_auto_advance"], False)
+        self.assertEqual(plan["steps"], ["生成故事生产圣经与创作计划"])
+        target = director._native_target(
+            plan=plan,
+            previous_step="",
+            control_event={"action": "other"},
+        )
+        self.assertEqual(target["kind"], "complete_stage")
+        self.assertTrue(target["single_pass"])
+
+    def test_legacy_internal_advance_is_rejected_before_second_model_turn(self):
+        director = _FakeDirector()
+        ProductionSkillRegistry(director).install()
+        with self.assertRaisesRegex(RuntimeError, "旧后台自动推进已禁用"):
+            asyncio.run(director.message(
+                "demo-project",
+                "",
+                native_control_action="advance",
+            ))
+        self.assertEqual(director._message_calls, 0)
+
+        result = asyncio.run(director.message("demo-project", "真实故事输入"))
+        self.assertEqual(director._message_calls, 1)
+        self.assertEqual(result["user_text"], "真实故事输入")
 
 
 if __name__ == "__main__":

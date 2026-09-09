@@ -66,9 +66,15 @@ bgm_prefetch = BGMPrefetchService(settings, legacy_runtime)
 bgm_prefetch.install_confirmation_hook()
 
 from app.v3.production_legacy_bridge import ProductionReadyLegacyBridge
+from app.v3.reference_generation_optimization import (
+    ReferenceGenerationOptimizer,
+    create_reference_generation_optimization_router,
+)
 
 legacy_v3_bridge = ProductionReadyLegacyBridge(settings, legacy_runtime)
 legacy_v3_bridge.install()
+reference_generation_optimizer = ReferenceGenerationOptimizer(legacy_v3_bridge, max_concurrency=2)
+reference_generation_optimizer.install()
 
 from app.v3.main import app as v3_app
 from app.v3.web_routes import router as web_workflow_router
@@ -102,6 +108,7 @@ app.include_router(web_workflow_router)
 app.include_router(legacy_postproduction_router)
 app.include_router(create_project_management_router(settings, legacy_runtime))
 app.include_router(create_canonical_reference_asset_router(legacy_runtime))
+app.include_router(create_reference_generation_optimization_router(reference_generation_optimizer))
 app.include_router(create_stage_revision_router(settings, legacy_runtime))
 app.include_router(create_production_authoring_asset_router(settings, legacy_runtime))
 app.include_router(create_character_appearance_router(legacy_runtime))
@@ -129,4 +136,5 @@ __all__ = [
     "postproduction_prefetch",
     "bgm_prefetch",
     "legacy_v3_bridge",
+    "reference_generation_optimizer",
 ]

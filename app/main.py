@@ -50,6 +50,7 @@ from app.v3.project_management import create_project_management_router
 from app.v3.reference_assets import create_reference_asset_router
 from app.v3.stage_revision import create_stage_revision_router
 from app.v3.authoring_assets import create_authoring_asset_router
+from app.v3.shot_authoring import create_shot_authoring_router
 
 _SKIP_V3_PATHS = {"/", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
 _existing_paths = {getattr(route, "path", "") for route in app.router.routes}
@@ -69,6 +70,7 @@ app.include_router(create_project_management_router(settings, legacy_runtime))
 app.include_router(create_reference_asset_router(legacy_runtime))
 app.include_router(create_stage_revision_router(settings, legacy_runtime))
 app.include_router(create_authoring_asset_router(settings, legacy_runtime))
+app.include_router(create_shot_authoring_router(settings, legacy_runtime))
 app.include_router(original_workbench_router)
 app.title = "小段映画 · 漫剧工作台"
 

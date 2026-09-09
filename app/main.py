@@ -23,18 +23,18 @@ app.router.routes[:] = [
 ]
 
 # ①②③继续复用原成熟 Skill，同时叠加经过开源项目验证的可复用资产规则。
-# 这里不复制 waoowaoo 实现，而是把角色/场景/道具落实成小段现有
-# ProductionAssetService 的版本化资产，并在阶段确认后自动同步。
+# 可复用资产严格收敛到角色 / 地点 / 道具；剧情场次只负责组织故事，不再
+# 重复生成一套视觉身份。同步按内容幂等，页面刷新不会偷偷升版本。
 from app.v3.front_half_skill_overlay import FrontHalfSkillOverlay
-from app.v3.authoring_assets import AuthoringAssetService
+from app.v3.asset_authoring_refined import RefinedAuthoringAssetService
 
 front_half_skill_overlay = FrontHalfSkillOverlay(legacy_runtime.director)
 front_half_skill_overlay.install()
-authoring_asset_service = AuthoringAssetService(settings, legacy_runtime)
+authoring_asset_service = RefinedAuthoringAssetService(settings, legacy_runtime)
 authoring_asset_service.install_confirmation_hook()
 
 # ⑤制作：保留原候选/采用 UI，只把镜头图片和视频生产器替换为新版
-# Temporal + ResourceStore。参考图从已采用的角色/场景/道具资产中解析；
+# Temporal + ResourceStore。参考图从已采用的角色/地点/道具资产中解析；
 # 缺少时自动创建参考图候选，仍由用户显式采用。
 from app.v3.legacy_reference_bridge import ReferenceAwareLegacyCandidateV3Bridge
 
@@ -49,7 +49,7 @@ from app.v3.original_workbench_overlay import router as original_workbench_route
 from app.v3.project_management import create_project_management_router
 from app.v3.reference_assets import create_reference_asset_router
 from app.v3.stage_revision import create_stage_revision_router
-from app.v3.authoring_assets import create_authoring_asset_router
+from app.v3.asset_authoring_refined import create_refined_authoring_asset_router
 from app.v3.shot_authoring import create_shot_authoring_router
 
 _SKIP_V3_PATHS = {"/", "/openapi.json", "/docs", "/docs/oauth2-redirect", "/redoc"}
@@ -69,7 +69,7 @@ app.include_router(legacy_postproduction_router)
 app.include_router(create_project_management_router(settings, legacy_runtime))
 app.include_router(create_reference_asset_router(legacy_runtime))
 app.include_router(create_stage_revision_router(settings, legacy_runtime))
-app.include_router(create_authoring_asset_router(settings, legacy_runtime))
+app.include_router(create_refined_authoring_asset_router(settings, legacy_runtime))
 app.include_router(create_shot_authoring_router(settings, legacy_runtime))
 app.include_router(original_workbench_router)
 app.title = "小段映画 · 漫剧工作台"

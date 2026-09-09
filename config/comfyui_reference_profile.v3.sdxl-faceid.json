@@ -16,6 +16,41 @@
       "node_id": "6",
       "input_name": "text",
       "suffix": ", preserve the canonical character identity while following the requested scene, wardrobe, pose, camera framing and lighting, cinematic still, detailed, coherent anatomy"
+    },
+    {
+      "contract_field": "width",
+      "node_id": "5",
+      "input_name": "width"
+    },
+    {
+      "contract_field": "height",
+      "node_id": "5",
+      "input_name": "height"
+    },
+    {
+      "contract_field": "seed",
+      "node_id": "3",
+      "input_name": "seed"
+    },
+    {
+      "contract_field": "steps",
+      "node_id": "3",
+      "input_name": "steps"
+    },
+    {
+      "contract_field": "cfg",
+      "node_id": "3",
+      "input_name": "cfg"
+    },
+    {
+      "contract_field": "sampler_name",
+      "node_id": "3",
+      "input_name": "sampler_name"
+    },
+    {
+      "contract_field": "scheduler",
+      "node_id": "3",
+      "input_name": "scheduler"
     }
   ]
 }

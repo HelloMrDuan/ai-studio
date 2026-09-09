@@ -9,9 +9,11 @@ from .character_appearances import CharacterAppearanceService
 from .character_identity_cleanup import CharacterIdentityCleanupService
 from .stage_asset_materialization import StageOutputAssetMaterializer
 from .stage_asset_materialization_guard import install_stage_asset_materialization_guard
+from .stage_visual_asset_alias_recovery import install_stage_visual_asset_alias_recovery
 
 
 install_stage_asset_materialization_guard()
+install_stage_visual_asset_alias_recovery()
 
 
 class ProductionAuthoringAssetService(RefinedAuthoringAssetService):

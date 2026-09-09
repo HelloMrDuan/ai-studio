@@ -71,6 +71,7 @@ jobs:
           tests.test_v3_native_production_skills
           tests.test_v3_production_runtime_optimization
           tests.test_v3_quality_policy
+          tests.test_v3_production_bridge_quality
           tests.test_v3_media_content_cache
           tests.test_v3_bgm_prefetch
           tests.test_v3_media_foundation

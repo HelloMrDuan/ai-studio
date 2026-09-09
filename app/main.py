@@ -28,6 +28,7 @@ app.router.routes[:] = [
 from app.v3.production_skill_registry import ProductionSkillRegistry
 from app.v3.production_runtime_optimization import ProductionRuntimeOptimizer
 from app.v3.asset_authoring_refined import RefinedAuthoringAssetService
+from app.v3.postproduction_prefetch import PostProductionPrefetch
 
 production_skill_registry = ProductionSkillRegistry(legacy_runtime.director)
 production_skill_registry.install()
@@ -36,9 +37,14 @@ production_runtime_optimizer.install()
 authoring_asset_service = RefinedAuthoringAssetService(settings, legacy_runtime)
 authoring_asset_service.install_confirmation_hook()
 
+# ④确认后立即在后台准备配音和字幕。这个任务不占用重型视觉 GPU，
+# 因而可以和⑤参考图/画面/视频生产重叠执行；用户后续仍可修改并重生成。
+postproduction_prefetch = PostProductionPrefetch(settings, legacy_runtime)
+postproduction_prefetch.install_confirmation_hook()
+
 # ⑤制作：保留原候选/采用 UI，只把镜头图片和视频生产器替换为新版
 # Temporal + ResourceStore。参考图严格来自角色 / 地点 / 道具三类正式资产；
-# 缺少时自动创建候选，仍由用户显式采用。
+# 缺少时批量创建候选，仍由用户显式采用。
 from app.v3.legacy_reference_bridge import ReferenceAwareLegacyCandidateV3Bridge
 
 legacy_v3_bridge = ReferenceAwareLegacyCandidateV3Bridge(settings, legacy_runtime)
@@ -83,5 +89,6 @@ __all__ = [
     "production_skill_registry",
     "production_runtime_optimizer",
     "authoring_asset_service",
+    "postproduction_prefetch",
     "legacy_v3_bridge",
 ]

@@ -101,14 +101,7 @@ class RefinedAssetModelTests(unittest.TestCase):
             project_id = "b" * 24
             director, hero, location, prop, scene = self._setup(root, project_id)
             legacy = _Legacy(director)
-
-            # References are intentionally gated behind stable authoring
-            # profiles. A completed ②/③ project must materialize those profiles
-            # first; raw Stage① discovery entities are not reference-ready.
-            authoring = RefinedAuthoringAssetService(
-                type("S", (), {"data_dir": root})(),
-                legacy,
-            )
+            authoring = RefinedAuthoringAssetService(type("S", (), {"data_dir": root})(), legacy)
             authoring.status(project_id)
 
             service = CanonicalReferenceAssetBootstrap(legacy, submit_candidate=lambda *_: None)
@@ -118,6 +111,61 @@ class RefinedAssetModelTests(unittest.TestCase):
             self.assertEqual(state["required_count"], 3)
             self.assertEqual(state["canonical_asset_kinds"], ["character", "location", "prop"])
             self.assertTrue(state["stable_profile_required"])
+            self.assertFalse(state["stage01_story_entities_exposed"])
+
+    def test_same_type_same_name_entities_merge_into_one_current_card(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            project_id = "c" * 24
+            director = _Director(root, project_id)
+            p = director.production
+            suyao_a = p.create_entity(
+                project_id,
+                entity_type="character",
+                name="苏瑶",
+                metadata={"continuity": {"core_profile": {"年龄": "16"}}},
+            )
+            suyao_b = p.create_entity(
+                project_id,
+                entity_type="character",
+                name="苏瑶",
+                metadata={"continuity": {"core_profile": {"外观": "红衣，高马尾，腰间青玉坠"}}},
+            )
+            p.create_entity(project_id, entity_type="location", name="苍梧山顶", metadata={"spatial_facts": "积雪、石阶"})
+            p.create_entity(project_id, entity_type="location", name="苍梧山顶", metadata={"fixed_anchor": "废弃山门"})
+            p.create_entity(project_id, entity_type="prop", name="古剑", metadata={"type": "武器"})
+            p.create_entity(project_id, entity_type="prop", name="古剑", metadata={"function": "剧情关键道具"})
+
+            service = RefinedAuthoringAssetService(type("S", (), {"data_dir": root})(), _Legacy(director))
+            state = service.status(project_id)
+
+            keys = [(item["entity_type"], item["name"]) for item in state["items"]]
+            self.assertEqual(keys.count(("character", "苏瑶")), 1)
+            self.assertEqual(keys.count(("location", "苍梧山顶")), 1)
+            self.assertEqual(keys.count(("prop", "古剑")), 1)
+            suyao = next(item for item in state["items"] if item["entity_type"] == "character")
+            self.assertEqual(suyao["duplicate_source_count"], 2)
+            self.assertEqual(set(suyao["source_entity_ids"]), {suyao_a["entity_id"], suyao_b["entity_id"]})
+            self.assertIn("16", suyao["stable_design"])
+            self.assertIn("高马尾", suyao["stable_design"])
+            self.assertGreaterEqual(state["duplicate_groups_merged"], 3)
+
+    def test_stage01_discovery_entities_do_not_show_as_stable_asset_cards(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            project_id = "d" * 24
+            director = _Director(root, project_id)
+            director.project["current_stage"] = "01"
+            director.project["completed_stages"] = []
+            director.project["confirmed_outputs"] = {}
+            director.production.create_entity(project_id, entity_type="character", name="苏瑶", metadata={"age": 16})
+            director.production.create_entity(project_id, entity_type="location", name="苍梧山顶", metadata={"snow": True})
+            director.production.create_entity(project_id, entity_type="prop", name="古剑", metadata={"type": "武器"})
+
+            service = RefinedAuthoringAssetService(type("S", (), {"data_dir": root})(), _Legacy(director))
+            state = service.status(project_id)
+
+            self.assertEqual(state["items"], [])
             self.assertFalse(state["stage01_story_entities_exposed"])
 
 

@@ -1,21 +1,16 @@
 {
-  "reference_workflow_path": "/root/autodl-tmp/ai-studio/platform-v2/workflows/xiaoduan_faceid_reference_api.json",
-  "max_references": 1,
+  "reference_workflow_path": "/root/autodl-tmp/ai-studio/platform-v2/workflows/xiaoduan_multi_reference_faceid_api.json",
+  "max_references": 4,
   "identity_reference": true,
   "ip_adapter": true,
-  "reference_bindings": [
-    {
-      "reference_index": 0,
-      "node_id": "10",
-      "input_name": "image"
-    }
-  ],
+  "multi_reference_mode": "role_aware_chain",
+  "reference_bindings": [],
   "contract_bindings": [
     {
       "contract_field": "source_text",
       "node_id": "6",
       "input_name": "text",
-      "suffix": ", preserve the canonical character identity while following the requested scene, wardrobe, pose, camera framing and lighting, cinematic still, detailed, coherent anatomy"
+      "suffix": ", preserve every bound character identity, keep each character visually distinct, preserve bound location and prop design, follow the requested scene, wardrobe, pose, camera framing and lighting, cinematic still, detailed, coherent anatomy"
     },
     {
       "contract_field": "width",

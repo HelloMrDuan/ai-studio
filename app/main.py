@@ -1,8 +1,8 @@
 """小段映画组合应用入口。
 
 产品外壳保留原来的漫剧工作台：阶段编辑、候选版本、人工采用、逐镜头制作
-全部继续使用原交互。底层统一为资产驱动的前半段、Temporal、参考图优先、
-资源版本、视频生成、配音、字幕、背景音乐和最终合成。
+全部继续使用原交互。底层统一为故事生产上下文、专业生产 Skill、版本资产、
+Temporal、参考图优先、视频生成、配音、字幕、背景音乐和最终合成。
 """
 
 from __future__ import annotations
@@ -22,14 +22,17 @@ app.router.routes[:] = [
     if getattr(route, "path", "") != "/"
 ]
 
-# ①②③继续复用原成熟 Skill，同时叠加经过开源项目验证的可复用资产规则。
-# 可复用资产严格收敛到角色 / 地点 / 道具；剧情场次只负责组织故事，不再
-# 重复生成一套视觉身份。同步按内容幂等，页面刷新不会偷偷升版本。
-from app.v3.front_half_skill_overlay import FrontHalfSkillOverlay
+# ①②③④不再由一个大一统创作工作流反复解释整个项目。运行时切换到
+# 小段映画自己的故事生产圣经 / 角色资产 / 视觉资产 / 分镜导演 Skill；
+# 下游只读取自己需要的生产上下文切片。相同 LLM 输入使用持久内容哈希缓存。
+from app.v3.production_skill_registry import ProductionSkillRegistry
+from app.v3.production_runtime_optimization import ProductionRuntimeOptimizer
 from app.v3.asset_authoring_refined import RefinedAuthoringAssetService
 
-front_half_skill_overlay = FrontHalfSkillOverlay(legacy_runtime.director)
-front_half_skill_overlay.install()
+production_skill_registry = ProductionSkillRegistry(legacy_runtime.director)
+production_skill_registry.install()
+production_runtime_optimizer = ProductionRuntimeOptimizer(settings, legacy_runtime.director)
+production_runtime_optimizer.install()
 authoring_asset_service = RefinedAuthoringAssetService(settings, legacy_runtime)
 authoring_asset_service.install_confirmation_hook()
 
@@ -77,7 +80,8 @@ app.title = "小段映画 · 漫剧工作台"
 __all__ = [
     "app",
     "legacy_runtime",
-    "front_half_skill_overlay",
+    "production_skill_registry",
+    "production_runtime_optimizer",
     "authoring_asset_service",
     "legacy_v3_bridge",
 ]

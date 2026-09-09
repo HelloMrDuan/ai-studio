@@ -6,7 +6,7 @@ from app.config import Settings
 from app.v3.contracts import Capability
 from app.v3.legacy_candidate_bridge import LegacyCandidateV3Bridge
 from app.v3.provider_catalog import build_provider_registry
-from app.v3.reference_assets import ReferenceAssetBootstrap
+from app.v3.canonical_reference_assets import CanonicalReferenceAssetBootstrap
 from app.v3.shot_authoring import ShotAuthoringService
 
 
@@ -16,7 +16,7 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
     def __init__(self, settings: Settings, legacy: Any) -> None:
         super().__init__(settings, legacy)
         self.providers = build_provider_registry(settings)
-        self.reference_bootstrap = ReferenceAssetBootstrap(
+        self.reference_bootstrap = CanonicalReferenceAssetBootstrap(
             legacy,
             submit_candidate=self.original_execute,
         )
@@ -36,19 +36,30 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
         for field in ("character_entity_ids", "prop_entity_ids"):
             result.update(str(item) for item in formal.get(field) or [] if str(item))
 
-        # Scene IDs in StoryContinuity are not guaranteed to equal production
-        # entity IDs. Resolve only explicit metadata bindings; never name-guess.
+        # Narrative scene itself is not a reusable visual asset. Resolve its
+        # canonical location binding only when the project metadata provides it.
         scene_id = str(formal.get("scene_id") or (target.get("metadata") or {}).get("scene_id") or "").strip()
         if scene_id:
-            for entity in self.legacy.director.production.list_entities(project_id):
-                metadata = entity.get("metadata") if isinstance(entity.get("metadata"), dict) else {}
-                if (
-                    str(entity.get("entity_id") or "").strip() == scene_id
-                    or str(metadata.get("scene_id") or "").strip() == scene_id
-                    or str(metadata.get("continuity_scene_id") or "").strip() == scene_id
-                ):
-                    result.add(str(entity.get("entity_id") or "").strip())
-        return {item for item in result if item}
+            continuity_path = self.settings.data_dir / "story_continuity" / f"{project_id}.json"
+            try:
+                import json
+                state = json.loads(continuity_path.read_text(encoding="utf-8"))
+                scene = next(
+                    (row for row in state.get("scenes") or [] if str(row.get("scene_id") or "").strip() == scene_id),
+                    {},
+                )
+                location_id = str(scene.get("location_entity_id") or "").strip()
+                if location_id:
+                    result.add(location_id)
+            except Exception:
+                pass
+        canonical = set()
+        for entity in self.legacy.director.production.list_entities(project_id):
+            entity_id = str(entity.get("entity_id") or "").strip()
+            kind = str(entity.get("entity_type") or "").strip().lower()
+            if entity_id in result and kind in {"character", "location", "prop"}:
+                canonical.add(entity_id)
+        return canonical
 
     def _reference_limit(self) -> int:
         selected = self.providers.resolve(
@@ -62,7 +73,7 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
         relevant = self._relevant_entity_ids(project_id, target)
         preferred_roles = {
             "character_reference", "character_turnaround", "character_consistency",
-            "scene_reference", "location_reference", "prop_reference", "item_reference",
+            "location_reference", "prop_reference", "item_reference",
         }
         rows: list[dict[str, Any]] = []
         for item in self.legacy.director.production.list_assets(project_id, active_only=True):
@@ -94,7 +105,7 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
         )
         if not rows:
             raise ValueError(
-                "当前镜头没有已采用的一致性参考图。可以不上传参考图：系统会先自动生成角色/场景参考图候选，采用后再生成分镜画面。"
+                "当前镜头没有已采用的一致性参考图。可以不上传参考图：系统会先自动生成角色、地点或道具参考图候选，采用后再生成分镜画面。"
             )
 
         limit = self._reference_limit()
@@ -133,8 +144,6 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
         if target_asset_id:
             target = self.legacy.director.production.get_asset(project_id, target_asset_id)
             if self._shot_id(target):
-                # When the user has edited one shot, every future image/video
-                # candidate receives that exact manual contract as a parent.
                 target = self.shot_authoring.bind_active_contract_to_target(project_id, target)
                 if capability == "image":
                     try:

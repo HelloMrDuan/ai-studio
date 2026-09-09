@@ -21,14 +21,12 @@ class ProductionSkillRegistry:
     source. Built-in Skills have no external reference files, so only their
     exact checked-in definitions participate in contract compilation.
 
-    Native authoring stages are deliberately single-pass. The historical
-    workbench used ``run-stage`` as an internal auto-advance driver and could
-    call ``Director.message(..., native_control_action="advance")`` many times.
-    That execution model is invalid for Xiaoduan's current ①-④ Skills: every
-    Skill already declares one complete production deliverable. We therefore
-    compile that sole step deterministically and target ``complete_stage`` on
-    the first call. Any later legacy ``advance`` request is rejected before it
-    can reach the LLM.
+    Native authoring stages are deliberately single-pass. A stage first runs
+    its one real production step exactly once. After the produced content,
+    entities and contract receipts have been materialized, the platform
+    deterministically re-evaluates readiness. Only a genuinely ready stage is
+    promoted locally to ``complete_stage``. No second content-generation turn
+    and no legacy ``advance`` call is allowed.
     """
 
     def __init__(self, director: Any) -> None:
@@ -55,6 +53,93 @@ class ProductionSkillRegistry:
             raise RuntimeError("小段生产 Skill 的唯一步骤无法回溯到原文")
         return value
 
+    @staticmethod
+    def _install_single_pass_completion_promotion() -> None:
+        """Promote a ready single-pass step to terminal locally.
+
+        Director.message() intentionally materializes the generated turn,
+        entities and contract receipts before calling apply_asset_completion.
+        That is the first point where readiness can be known truthfully. The
+        old implementation targeted complete_stage before this point and could
+        therefore fail with ``complete_stage_must_be_ready`` even though the
+        content itself had been produced successfully.
+        """
+        if getattr(
+            director_module,
+            "_xiaoduan_single_pass_completion_promotion_installed",
+            False,
+        ):
+            return
+
+        original_apply = director_module.apply_asset_completion
+
+        def apply_asset_completion(
+            *,
+            contract: dict[str, Any],
+            runtime_state: dict[str, Any],
+            control_runtime: dict[str, Any] | None,
+            native_target: dict[str, Any],
+            native_plan: dict[str, Any],
+            asset_readiness: dict[str, list[str]],
+        ) -> dict[str, Any]:
+            if (
+                bool(native_plan.get("single_pass"))
+                and str(native_target.get("kind") or "") == "step"
+            ):
+                steps = list(native_plan.get("steps") or [])
+                terminal_target = {
+                    "kind": "complete_stage",
+                    "index": len(steps),
+                    "name": "",
+                    "single_pass": True,
+                    "promoted_after_readiness": True,
+                }
+                terminal_state = original_apply(
+                    contract=contract,
+                    runtime_state=runtime_state,
+                    control_runtime=control_runtime,
+                    native_target=terminal_target,
+                    native_plan=native_plan,
+                    asset_readiness=asset_readiness,
+                )
+                completion = terminal_state.get("completion") or {}
+                if completion.get("ready") is True:
+                    # Mutate the original target because Director.message()
+                    # later persists and mechanically validates this same dict.
+                    native_target.clear()
+                    native_target.update(terminal_target)
+                    if steps:
+                        native_plan["current_index"] = len(steps) - 1
+                    native_plan["completed_locally"] = True
+                    native_plan["completion_mode"] = (
+                        "single_pass_after_materialization"
+                    )
+                    return terminal_state
+
+                # The one production call did not satisfy its contract. Keep
+                # the stage non-terminal and expose the actual missing items;
+                # never trigger another hidden Qwen turn.
+                return original_apply(
+                    contract=contract,
+                    runtime_state=terminal_state,
+                    control_runtime=control_runtime,
+                    native_target=native_target,
+                    native_plan=native_plan,
+                    asset_readiness=asset_readiness,
+                )
+
+            return original_apply(
+                contract=contract,
+                runtime_state=runtime_state,
+                control_runtime=control_runtime,
+                native_target=native_target,
+                native_plan=native_plan,
+                asset_readiness=asset_readiness,
+            )
+
+        director_module.apply_asset_completion = apply_asset_completion
+        director_module._xiaoduan_single_pass_completion_promotion_installed = True
+
     def install(self) -> None:
         if getattr(self.director, "_xiaoduan_native_production_skills_installed", False):
             return
@@ -64,6 +149,7 @@ class ProductionSkillRegistry:
         # the legacy project/session implementation.
         director_module.STAGE_SKILLS = dict(STAGE_PRODUCTION_SKILLS)
         director_module.WORKFLOW_SKILL = WORKFLOW_PRODUCTION_SKILL
+        self._install_single_pass_completion_promotion()
 
         original_skill_md = self._original_skill_md
         original_available_files = self._original_available_files
@@ -103,13 +189,14 @@ class ProductionSkillRegistry:
                 "story_bible": True,
                 "typed_stage_boundaries": True,
                 "single_pass_authoring": True,
+                "local_readiness_completion": True,
                 "legacy_auto_advance": False,
                 "external_workflow_required": False,
             })
             return {
                 "ready": True,
                 "manifest": {
-                    "schema_version": "xiaoduan-production-skills-v2-single-pass",
+                    "schema_version": "xiaoduan-production-skills-v3-single-pass-readiness",
                     "workflow_skill": WORKFLOW_PRODUCTION_SKILL,
                     "stage_order": [
                         {"stage": stage, "skill": skill}
@@ -148,7 +235,10 @@ class ProductionSkillRegistry:
                         "mode": "sequential",
                         "steps": [step],
                         "current_index": -1,
-                        "reason": "小段①-④专业 Skill 单次生成完整阶段产物，不使用后台自动推进",
+                        "reason": (
+                            "小段①-④专业 Skill 单次生成完整阶段产物；"
+                            "产物落库后由本地 readiness 决定是否完成阶段"
+                        ),
                         "source_sha256": source_sha,
                         "single_pass": True,
                         "legacy_auto_advance": False,
@@ -179,14 +269,15 @@ class ProductionSkillRegistry:
                 control_event: dict[str, Any],
             ) -> dict[str, Any]:
                 if bool(plan.get("single_pass")):
-                    # The current Skill has one terminal deliverable. Generate
-                    # it once and evaluate normal contract/asset completion in
-                    # the same Director turn; never execute an intermediate
-                    # step followed by a second model call just to "advance".
+                    steps = list(plan.get("steps") or [])
+                    if not steps:
+                        raise RuntimeError("小段单次生产计划缺少唯一步骤")
+                    # First run the sole real production step. It may only be
+                    # promoted to complete_stage after assets/receipts exist.
                     return {
-                        "kind": "complete_stage",
-                        "index": len(plan.get("steps") or []),
-                        "name": "",
+                        "kind": "step",
+                        "index": 0,
+                        "name": steps[0],
                         "single_pass": True,
                     }
                 return original_native_target(

@@ -64,6 +64,7 @@ jobs:
           tests.test_v3_original_workbench_bridge
           tests.test_v3_project_management
           tests.test_v3_reference_assets
+          tests.test_v3_reference_gating
           tests.test_v3_stage_revision
           tests.test_v3_front_half_skill_overlay
           tests.test_v3_authoring_assets
@@ -73,6 +74,7 @@ jobs:
           tests.test_v3_shot_continuity_linker
           tests.test_v3_shot_refinement
           tests.test_v3_native_production_skills
+          tests.test_v3_single_pass_finalizer
           tests.test_v3_legacy_authoring_retirement
           tests.test_v3_production_runtime_optimization
           tests.test_v3_stage_progress

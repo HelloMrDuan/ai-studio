@@ -29,16 +29,27 @@ _STOP_NAMES = {
     "角色参考图生成要求", "参考图生成要求", "形象版本", "形象版本列表",
     "原文事实", "设计补全", "稳定身份", "完成条件", "质量规则",
 }
+_FIELD_HEADING_TOKENS = {
+    "年龄", "身份", "脸部", "面部", "辨识特征", "发型", "发色", "肤色", "体型", "身高感",
+    "服装", "常态服装", "服装分层", "鞋履", "固定配饰", "配饰", "主辅配色", "配色",
+    "身份锚点", "固定身份锚点", "允许变化项", "形象版本", "参考图生成要求", "原文证据", "来源说明",
+    "空间边界", "布局", "地形", "建筑结构", "主要材质", "固定陈设", "前景", "中景", "后景", "视觉锚点",
+    "完整轮廓", "比例", "结构组成", "材质", "颜色", "纹样", "磨损", "尺度关系", "剧情功能",
+}
+_RETIRABLE_PROFILE_ROLES = {
+    "character_profile", "character_appearance", "character_reference", "character_turnaround", "character_consistency",
+    "location_profile", "scene_reference", "location_reference", "prop_profile", "prop_reference", "item_reference",
+}
 
 
 class StageOutputAssetMaterializer:
     """Turn a ready Stage②/③ authoring draft into durable reusable assets.
 
     This is deliberately local and deterministic: it consumes the already
-    generated stage text and never calls an LLM. New Xiaoduan Skills are asked
-    to emit explicit ``角色资产：名字`` / ``地点资产：名字`` /
-    ``道具资产：名字`` headings, while older drafts are recovered through
-    conservative heading/field heuristics and existing story entities.
+    generated stage text and never calls an LLM. New Xiaoduan Skills emit
+    explicit ``角色资产：名字`` / ``地点资产：名字`` / ``道具资产：名字``
+    headings. Older drafts are recovered conservatively, but field headings are
+    never allowed to become fake entities.
     """
 
     def __init__(self, legacy_runtime: Any) -> None:
@@ -97,9 +108,29 @@ class StageOutputAssetMaterializer:
         return None
 
     @staticmethod
-    def _simple_heading_name(title: str) -> str:
+    def _looks_like_field_heading(title: str) -> bool:
+        value = _norm_name(title)
+        if not value:
+            return True
+        # A list of schema fields is never a person/place/prop name. This is the
+        # exact class of bug that produced fake characters such as
+        # “发型、发色、肤色、体型、身高感”.
+        if any(mark in value for mark in ("、", ",", "，", "/", "／")):
+            parts = [part.strip() for part in re.split(r"[、,，/／]", value) if part.strip()]
+            if len(parts) >= 2 and sum(1 for part in parts if part in _FIELD_HEADING_TOKENS) >= 1:
+                return True
+        if value in _FIELD_HEADING_TOKENS:
+            return True
+        if any(value.startswith(token) for token in _FIELD_HEADING_TOKENS if len(token) >= 3):
+            return True
+        return False
+
+    @classmethod
+    def _simple_heading_name(cls, title: str) -> str:
         value = _norm_name(title)
         if value in _STOP_NAMES or len(value) < 2 or len(value) > 24:
+            return ""
+        if cls._looks_like_field_heading(value):
             return ""
         if any(token in value for token in ("必须", "原则", "规则", "说明", "要求", "列表", "项目")):
             return ""
@@ -151,36 +182,41 @@ class StageOutputAssetMaterializer:
         blocks = self._heading_blocks(text)
         found: dict[tuple[str, str], dict[str, str]] = {}
 
+        # 1) Explicit production headings are authoritative.
         for title, body in blocks:
             explicit = self._explicit_kind_name(title)
             if explicit and explicit[0] in allowed:
                 kind, name = explicit
-                if name and name not in _STOP_NAMES:
+                if name and name not in _STOP_NAMES and not self._looks_like_field_heading(name):
                     found[(kind, _name_key(name))] = {
                         "kind": kind,
                         "name": name,
                         "design": (f"{title}\n{body}" if body else title).strip()[:7000],
                     }
-                    continue
 
+        # 2) Legacy drafts may use a bare person/place/prop name as a heading.
+        # Keep this only when the title itself looks like an entity name. Field
+        # headings are rejected before body scoring.
+        for title, body in blocks:
             simple = self._simple_heading_name(title)
             if not simple:
                 continue
             if stage == "02" and self._body_score("character", body) >= 3:
-                found[("character", _name_key(simple))] = {
+                found.setdefault(("character", _name_key(simple)), {
                     "kind": "character", "name": simple,
                     "design": (f"{title}\n{body}" if body else title).strip()[:7000],
-                }
+                })
             elif stage == "03":
                 location_score = self._body_score("location", body)
                 prop_score = self._body_score("prop", body)
                 if max(location_score, prop_score) >= 3:
                     kind = "location" if location_score >= prop_score else "prop"
-                    found[(kind, _name_key(simple))] = {
+                    found.setdefault((kind, _name_key(simple)), {
                         "kind": kind, "name": simple,
                         "design": (f"{title}\n{body}" if body else title).strip()[:7000],
-                    }
+                    })
 
+        # 3) Explicit name fields are safe legacy anchors.
         for kind in allowed:
             for name in self._field_names(text, kind):
                 key = (kind, _name_key(name))
@@ -190,8 +226,9 @@ class StageOutputAssetMaterializer:
                     "design": self._context_for_name(text, name, blocks),
                 })
 
-        # Existing story entities are useful anchors for legacy drafts that did
-        # not yet use the explicit materialization headings.
+        # 4) Existing story entities may anchor older drafts. Never create a new
+        # entity from an arbitrary section title merely because its body contains
+        # several role-design words.
         for entity in self.production.list_entities(project_id):
             kind = _clean(entity.get("entity_type")).lower()
             if kind == "scene" and stage == "03":
@@ -199,7 +236,7 @@ class StageOutputAssetMaterializer:
             if kind not in allowed:
                 continue
             name = _norm_name(entity.get("name"))
-            if not name or name not in text:
+            if not name or self._looks_like_field_heading(name) or name not in text:
                 continue
             key = (kind, _name_key(name))
             context = self._context_for_name(text, name, blocks)
@@ -207,6 +244,69 @@ class StageOutputAssetMaterializer:
                 found.setdefault(key, {"kind": kind, "name": name, "design": context})
 
         return [row for row in found.values() if _name_key(row.get("name"))]
+
+    def _retire_invalid_materialized_entities(
+        self,
+        project_id: str,
+        stage: str,
+        valid_rows: list[dict[str, str]],
+    ) -> list[str]:
+        """Retire fake entities created by older over-broad heading parsing.
+
+        Only entities previously created by this materializer are eligible. Raw
+        story entities are never deleted here. Associated derived profiles,
+        appearance versions and reference assets are archived so they disappear
+        from every normal active view on the same refresh.
+        """
+        valid = {(row["kind"], _name_key(row["name"])) for row in valid_rows}
+        graph = self.production.get_graph(project_id)
+        entities = graph.get("entities") or {}
+        retired_ids: set[str] = set()
+        now_stage = _clean(stage)
+
+        for entity_id, entity in entities.items():
+            if not isinstance(entity, dict):
+                continue
+            kind = _clean(entity.get("entity_type")).lower()
+            metadata = entity.get("metadata") if isinstance(entity.get("metadata"), dict) else {}
+            authoring = metadata.get("authoring") if isinstance(metadata.get("authoring"), dict) else {}
+            if not bool(authoring.get("materialized_from_stage_output")):
+                continue
+            if _clean(authoring.get("source_stage")) != now_stage:
+                continue
+            name = _norm_name(entity.get("name"))
+            key = (kind, _name_key(name))
+            invalid = key not in valid and self._looks_like_field_heading(name)
+            if not invalid:
+                continue
+            entity["entity_type"] = "retired_fragment"
+            entity["stage"] = now_stage
+            metadata["retired_materialized_fragment"] = True
+            metadata["retired_reason"] = "字段标题曾被旧版解析器误识别为可复用实体"
+            entity["metadata"] = metadata
+            retired_ids.add(str(entity_id))
+
+        if not retired_ids:
+            return []
+
+        assets = graph.get("assets") or {}
+        for asset in assets.values():
+            if not isinstance(asset, dict) or asset.get("active") is False:
+                continue
+            entity_ids = {_clean(item) for item in asset.get("entity_ids") or [] if _clean(item)}
+            if not (entity_ids & retired_ids):
+                continue
+            if _clean(asset.get("asset_role")) not in _RETIRABLE_PROFILE_ROLES:
+                continue
+            asset["active"] = False
+            asset["status"] = "archived"
+            asset["dependency_state"] = "stale"
+            metadata = asset.setdefault("metadata", {})
+            if isinstance(metadata, dict):
+                metadata["retired_reason"] = "上游假实体已被资产物化器清理"
+
+        self.production._save(graph)
+        return sorted(retired_ids)
 
     def _upsert(self, project_id: str, stage: str, row: dict[str, str]) -> dict[str, Any]:
         kind = row["kind"]
@@ -262,6 +362,7 @@ class StageOutputAssetMaterializer:
     def materialize(self, project_id: str) -> dict[str, Any]:
         project = self.director.get_project(project_id)
         created_or_updated: list[str] = []
+        retired: list[str] = []
         stages: list[str] = []
         for stage in ("02", "03"):
             if not self._stage_ready(project, stage):
@@ -273,6 +374,7 @@ class StageOutputAssetMaterializer:
             if not rows:
                 continue
             stages.append(stage)
+            retired.extend(self._retire_invalid_materialized_entities(project_id, stage, rows))
             for row in rows:
                 entity = self._upsert(project_id, stage, row)
                 entity_id = _clean(entity.get("entity_id"))
@@ -283,6 +385,7 @@ class StageOutputAssetMaterializer:
             "materialized": bool(created_or_updated),
             "stages": stages,
             "entity_ids": list(dict.fromkeys(created_or_updated)),
+            "retired_invalid_entity_ids": list(dict.fromkeys(retired)),
             "model_calls": 0,
         }
 

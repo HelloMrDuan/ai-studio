@@ -31,6 +31,10 @@ class _Legacy:
         return list(self.rows)
 
 
+async def _inert_submit(project, payload):
+    raise AssertionError("status-only test must not submit generation")
+
+
 class ReferenceAssetWorkflowTests(unittest.IsolatedAsyncioTestCase):
     async def test_status_only_exposes_reusable_asset_types_and_upload_is_optional(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -58,7 +62,7 @@ class ReferenceAssetWorkflowTests(unittest.IsolatedAsyncioTestCase):
             )
             p.create_entity(project_id, entity_type="shot", name="镜头001")
 
-            state = ReferenceAssetBootstrap(_Legacy(director)).status(project_id)
+            state = ReferenceAssetBootstrap(_Legacy(director), submit_candidate=_inert_submit).status(project_id)
 
             self.assertFalse(state["upload_required"])
             self.assertTrue(state["manual_adoption_required"])

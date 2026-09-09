@@ -41,6 +41,7 @@ jobs:
           node --check app/v3/static/project-delete-overlay.js &&
           node --check app/v3/static/authoring-continuity-overlay.js &&
           node --check app/v3/static/asset-authoring-overlay.js &&
+          node --check app/v3/static/shot-authoring-overlay.js &&
           node --check app/v3/static/workbench-status-localization.js
       - name: Run V3 tests
         run: >-
@@ -59,6 +60,7 @@ jobs:
           tests.test_v3_stage_revision
           tests.test_v3_front_half_skill_overlay
           tests.test_v3_authoring_assets
+          tests.test_v3_shot_authoring
           tests.test_v3_media_foundation
           tests.test_v3_media_pipeline
           tests.test_v3_branding

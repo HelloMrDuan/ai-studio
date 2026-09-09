@@ -73,12 +73,14 @@ class OriginalWorkbenchBridgeContractTests(unittest.TestCase):
         ):
             self.assertIn(text, frontend)
 
-    def test_original_root_not_replaced_by_v3_dashboard(self) -> None:
+    def test_original_root_uses_native_production_runtime_without_replacing_page(self) -> None:
         entry = (ROOT / "app" / "main.py").read_text(encoding="utf-8")
         self.assertIn("load_original_workbench_runtime", entry)
-        self.assertIn("front_half_skill_overlay.install()", entry)
+        self.assertIn("production_skill_registry.install()", entry)
+        self.assertIn("production_runtime_optimizer.install()", entry)
         self.assertIn("legacy_v3_bridge.install()", entry)
         self.assertIn("original_workbench_router", entry)
+        self.assertNotIn("front_half_skill_overlay.install()", entry)
         self.assertNotIn("from app.v3.main import app\n", entry)
 
 

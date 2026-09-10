@@ -230,6 +230,7 @@
     if (terminalSyncing) return;
     terminalSyncing = true;
     try {
+      // Full card rendering is expensive and moves the page. Keep it terminal-only.
       if (typeof window.v3RefreshReferences === 'function') await window.v3RefreshReferences(false);
       lastRefs = await json(`/api/v3/studio/projects/${encodeURIComponent(projectId)}/references`);
       lastRefsAt = Date.now();

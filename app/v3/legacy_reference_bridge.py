@@ -73,11 +73,35 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
         )
         return max(1, int(selected.spec.max_references or 1))
 
+    @staticmethod
+    def _role_rank(role: str) -> int:
+        return {
+            "character_face_anchor": 0,
+            "location_reference": 1,
+            "scene_reference": 1,
+            "prop_reference": 1,
+            "item_reference": 1,
+            "character_reference": 2,
+            "character_turnaround": 2,
+            "character_consistency": 2,
+            "character_costume_reference": 3,
+        }.get(role, 9)
+
     def _candidate_reference_ids(self, project_id: str, target: dict[str, Any]) -> list[str]:
+        """Resolve references by semantic channel, not one-image-per-entity.
+
+        Character identity and character structure are separate evidence. The
+        first pass guarantees one core reference per relevant entity; the second
+        pass spends remaining provider budget on character structure/costume.
+        This follows the same discipline as the upstream asset/reference model:
+        immutable reference roles are explicit and ordered, rather than inferred
+        later by the provider executor.
+        """
         relevant = self._relevant_entity_ids(project_id, target)
         preferred_roles = {
-            "character_reference", "character_turnaround", "character_consistency",
-            "location_reference", "prop_reference", "item_reference",
+            "character_face_anchor", "character_reference", "character_turnaround",
+            "character_consistency", "character_costume_reference",
+            "location_reference", "scene_reference", "prop_reference", "item_reference",
         }
         entity_types = {
             str(entity.get("entity_id") or "").strip(): str(entity.get("entity_type") or "").strip().lower()
@@ -85,8 +109,10 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
             if str(entity.get("entity_id") or "").strip()
         }
         rows: list[dict[str, Any]] = []
-        selections = {row["character_id"]: row["appearance_version"]
-                      for row in (target.get("metadata") or {}).get("character_appearances") or []}
+        selections = {
+            row["character_id"]: row["appearance_version"]
+            for row in (target.get("metadata") or {}).get("character_appearances") or []
+        }
         for item in self.legacy.director.production.list_assets(project_id, active_only=True):
             if str(item.get("asset_type") or "").upper() != "IMAGE":
                 continue
@@ -94,11 +120,12 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
                 continue
             if self._status_value(item.get("dependency_state")) == "stale":
                 continue
-            if str(item.get("asset_role") or "") not in preferred_roles:
+            role = str(item.get("asset_role") or "").strip()
+            if role not in preferred_roles:
                 continue
             entities = {str(value) for value in item.get("entity_ids") or [] if str(value)}
             context = (item.get("metadata") or {}).get("visual_context") or {}
-            if str(item.get("asset_role") or "").startswith("character_"):
+            if role.startswith("character_"):
                 version = context.get("appearance_version") or "v1"
                 if not any(selections.get(eid, "v1") == version for eid in entities & relevant):
                     continue
@@ -114,7 +141,7 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
         rows.sort(
             key=lambda item: (
                 0 if relevant & {str(v) for v in item.get("entity_ids") or [] if str(v)} else 1,
-                0 if str(item.get("asset_role") or "") in {"character_reference", "character_turnaround"} else 1,
+                self._role_rank(str(item.get("asset_role") or "").strip()),
                 -int(item.get("version") or 0),
                 str(item.get("asset_id") or ""),
             )
@@ -124,20 +151,61 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
                 "当前镜头没有已采用的一致性参考图。可以不上传参考图：系统会批量生成缺失的角色、地点和道具参考图候选，采用后再生成分镜画面。"
             )
 
-        limit = self._reference_limit()
-        selected_rows: list[dict[str, Any]] = []
-        used_entities: set[str] = set()
+        by_entity: dict[str, list[dict[str, Any]]] = {}
+        unowned: list[dict[str, Any]] = []
         for item in rows:
             entities = {str(value) for value in item.get("entity_ids") or [] if str(value)}
-            matched = entities & relevant
-            identity = sorted(matched or entities)
-            entity_key = identity[0] if identity else str(item.get("asset_id") or "")
-            if entity_key in used_entities:
+            matched = sorted(entities & relevant)
+            entity_id = matched[0] if matched else (sorted(entities)[0] if entities else "")
+            if entity_id:
+                by_entity.setdefault(entity_id, []).append(item)
+            else:
+                unowned.append(item)
+
+        limit = self._reference_limit()
+        selected_rows: list[dict[str, Any]] = []
+        selected_asset_ids: set[str] = set()
+
+        # Pass 1: one authoritative core reference for each relevant entity.
+        # Character face anchors win; if a legacy project lacks one, its adopted
+        # turnaround/reference is the compatibility fallback.
+        for entity_id in sorted(relevant):
+            candidates = by_entity.get(entity_id, [])
+            if not candidates:
                 continue
-            used_entities.add(entity_key)
-            selected_rows.append(item)
+            kind = entity_types.get(entity_id, "")
+            if kind == "character":
+                core = next(
+                    (item for item in candidates if str(item.get("asset_role") or "") == "character_face_anchor"),
+                    None,
+                ) or next(
+                    (
+                        item for item in candidates
+                        if str(item.get("asset_role") or "") in {"character_reference", "character_turnaround", "character_consistency"}
+                    ),
+                    candidates[0],
+                )
+            else:
+                core = candidates[0]
+            asset_id = str(core.get("asset_id") or "")
+            if asset_id and asset_id not in selected_asset_ids:
+                selected_rows.append(core)
+                selected_asset_ids.add(asset_id)
             if len(selected_rows) >= limit:
                 break
+
+        # Pass 2: use remaining budget for structure/wardrobe references. This
+        # means a character can legitimately contribute both FaceID evidence and
+        # a separate full-body/turnaround image.
+        if len(selected_rows) < limit:
+            for item in rows:
+                asset_id = str(item.get("asset_id") or "")
+                if not asset_id or asset_id in selected_asset_ids:
+                    continue
+                selected_rows.append(item)
+                selected_asset_ids.add(asset_id)
+                if len(selected_rows) >= limit:
+                    break
 
         refs: list[str] = []
         for item in selected_rows:

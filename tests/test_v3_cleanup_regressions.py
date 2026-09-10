@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from app.services.production_assets import ProductionAssetService
 from app.v3.authoring_execution_timing import AuthoringExecutionTimingFix
 from app.v3.canonical_entity_reconciler import CanonicalEntityReconciler
+from app.v3.reference_generation_optimization import ReferenceGenerationOptimizer
 from app.v3.stage_progress import StageProgressTracker
 
 
@@ -138,6 +139,54 @@ class CleanupRegressionTests(unittest.TestCase):
         self.assertIn("syncTerminalCards", refs)
         self.assertIn("Full card rendering is expensive and moves the page", refs)
         self.assertNotIn("document.body, {childList:true, subtree:true}", refs)
+
+    def test_reference_ratio_guard_normalizes_face_anchor_and_turnaround(self):
+        face_payload = {
+            "capability": "image",
+            "params": {
+                "reference_phase": "face_anchor",
+                "aspect_ratio": "4:5",
+                "width": 1024,
+                "height": 1280,
+                "steps": 36,
+            },
+        }
+        face_target = {"metadata": {"reference_asset": True, "reference_phase": "face_anchor"}}
+        normalized_face = ReferenceGenerationOptimizer._normalize_reference_payload(face_payload, face_target)
+        self.assertEqual(normalized_face["params"]["aspect_ratio"], "1:1")
+        self.assertEqual((normalized_face["params"]["width"], normalized_face["params"]["height"]), (1024, 1024))
+        self.assertEqual(face_payload["params"]["aspect_ratio"], "4:5")
+        self.assertEqual(face_payload["params"]["height"], 1280)
+
+        turnaround_payload = {
+            "capability": "image",
+            "params": {
+                "reference_phase": "turnaround",
+                "aspect_ratio": "16:9",
+                "width": 1280,
+                "height": 720,
+            },
+        }
+        turnaround_target = {"metadata": {"reference_asset": True, "reference_phase": "turnaround"}}
+        normalized_turnaround = ReferenceGenerationOptimizer._normalize_reference_payload(
+            turnaround_payload,
+            turnaround_target,
+        )
+        self.assertEqual(normalized_turnaround["params"]["aspect_ratio"], "4:3")
+        self.assertEqual(
+            (normalized_turnaround["params"]["width"], normalized_turnaround["params"]["height"]),
+            (1536, 1152),
+        )
+
+        location_payload = {
+            "capability": "image",
+            "params": {"aspect_ratio": "16:9", "width": 1280, "height": 720},
+        }
+        location_target = {"metadata": {"reference_asset": True, "reference_kind": "location"}}
+        self.assertEqual(
+            ReferenceGenerationOptimizer._normalize_reference_payload(location_payload, location_target),
+            location_payload,
+        )
 
 
 if __name__ == "__main__":

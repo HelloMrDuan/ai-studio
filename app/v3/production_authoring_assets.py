@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException
 
 from .asset_authoring_refined import RefinedAuthoringAssetService, _clean, _STAGE_BY_TYPE, _STAGE_ORDER_INDEX
 from .character_appearances import CharacterAppearanceService
+from .character_appearance_materialization import CharacterAppearanceMaterializer
 from .character_asset_ownership_repair import CharacterAssetOwnershipRepair
 from .character_identity_cleanup import CharacterIdentityCleanupService
 from .stage_asset_materialization import StageOutputAssetMaterializer
@@ -31,6 +32,7 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
         self.materializer = StageOutputAssetMaterializer(legacy_runtime)
         self.ownership_repair = CharacterAssetOwnershipRepair(legacy_runtime)
         self.identity_cleanup = CharacterIdentityCleanupService(legacy_runtime)
+        self.appearance_materializer = CharacterAppearanceMaterializer(legacy_runtime)
         self.appearances = CharacterAppearanceService(legacy_runtime)
 
     @staticmethod
@@ -63,16 +65,15 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
         result = super().sync(project_id)
         ownership_after = self.ownership_repair.reconcile(project_id)
 
-        # If ownership repair had to create/re-home a character profile, run the
-        # idempotent profile sync once more so the authoring panel sees the fixed
-        # canonical graph in the same request. No model call is involved.
         if bool(ownership_after.get("changed")):
             result = super().sync(project_id)
 
-        # Default appearance v1 is a real asset, not a UI placeholder. Create it
-        # immediately after the Stage② character profile exists. Because the
-        # identity cleanup/ownership repair run first, the appearance inherits
-        # the right character and never inherits shot-only background text.
+        # Stage②'s validated machine package is authoritative for default and
+        # story variants. Materialize it only after canonical character profiles
+        # exist, so every version has stable entity/profile lineage. Old projects
+        # without the machine block explicitly fall back to the legacy default.
+        appearance_materialization = self.appearance_materializer.materialize(project_id)
+
         appearance_ids: list[str] = []
         project = self.director.get_project(project_id)
         if self._stage_available(project, "character"):
@@ -80,14 +81,15 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
                 if _clean(canonical.get("entity_type")).lower() != "character":
                     continue
                 try:
-                    appearance = self.appearances.ensure_default(project_id, _clean(canonical.get("entity_id")))
+                    appearance = self.appearances.ensure_default(
+                        project_id,
+                        _clean(canonical.get("entity_id")),
+                    )
                 except (FileNotFoundError, ValueError):
                     appearance = None
                 if appearance and _clean(appearance.get("asset_id")):
                     appearance_ids.append(_clean(appearance.get("asset_id")))
 
-        # One last local pass repairs any old default-appearance asset that was
-        # already persisted under the wrong entity id before this build.
         ownership_final = self.ownership_repair.reconcile(project_id)
 
         return {
@@ -99,6 +101,7 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
                 "final": ownership_final,
             },
             "character_identity_cleanup": identity_cleanup,
+            "character_appearance_materialization": appearance_materialization,
             "default_character_appearance_asset_ids": appearance_ids,
             "ready_stage_assets_visible_before_confirmation": True,
             "model_calls_added": 0,
@@ -106,9 +109,6 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
 
     def status(self, project_id: str) -> dict[str, Any]:
         state = super().status(project_id)
-        # super().status() dispatches through self.sync(), so the ready Stage②/③
-        # draft has already been materialized, sanitized, ownership-repaired and
-        # versioned.
         return {
             **state,
             "ready_stage_assets_visible_before_confirmation": True,
@@ -129,9 +129,16 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
                 continue
             materialized = result.get("stage_output_materialization") or {}
             cleanup = result.get("character_identity_cleanup") or {}
+            appearance_materialization = result.get("character_appearance_materialization") or {}
             ownership = result.get("character_ownership_repair") or {}
             ownership_changed = any(bool((ownership.get(key) or {}).get("changed")) for key in ("before", "after", "final"))
-            if bool(materialized.get("materialized")) or bool(cleanup.get("changed")) or ownership_changed or result.get("profile_asset_ids"):
+            if (
+                bool(materialized.get("materialized"))
+                or bool(cleanup.get("changed"))
+                or bool(appearance_materialization.get("materialized"))
+                or ownership_changed
+                or result.get("profile_asset_ids")
+            ):
                 changed += 1
         return {"scanned": scanned, "reconciled": changed}
 

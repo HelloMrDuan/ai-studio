@@ -117,5 +117,7 @@ jobs:
           tests/test_visual_generation_contract.py
           tests/test_v3_character_age_prompt.py
           tests/test_v3_character_generation_policy.py
+          tests/test_v3_reference_role_policy.py
+          tests/test_v3_unified_visual_contract.py
       - name: Diff check
         run: git diff --check HEAD^ HEAD

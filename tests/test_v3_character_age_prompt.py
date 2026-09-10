@@ -1,5 +1,5 @@
 from app.services.generation_contract import GenerationContract
-from app.services.prompt_compiler import PromptCompiler
+from app.services.prompt_compiler import PromptCompiler, naturalize_visual_anchor
 from app.services.visual_direction import VisualDirection
 
 
@@ -9,6 +9,12 @@ def _direction() -> VisualDirection:
         culture="chinese",
         era="ancient",
         art_style="cinematic realistic",
+        character_rules={
+            "face": "East Asian facial features",
+            "clothing": "ancient Chinese hanfu silhouette",
+            "hair": "traditional ancient Chinese hairstyle",
+        },
+        negative_constraints=["western fantasy", "knight armor", "modern clothing"],
     )
 
 
@@ -41,10 +47,50 @@ def test_explicit_seventeen_year_old_is_a_strong_visual_anchor():
     assert "17-year-old" in result.positive_prompt
     assert "teenage adolescent" in result.positive_prompt
     assert "youthful facial proportions" in result.positive_prompt
+    assert "East Asian facial features" in result.positive_prompt
+    assert "ancient Chinese hanfu silhouette" in result.positive_prompt
     assert "middle-aged person" in result.negative_prompt
     assert "mature adult face" in result.negative_prompt
     assert "heavy mature jawline" in result.negative_prompt
     assert "full adult beard" in result.negative_prompt
+    assert "western face" in result.negative_prompt
+    assert "knight armor" in result.negative_prompt
+
+
+def test_character_identity_precedes_turnaround_layout_in_provider_prompt():
+    result = PromptCompiler().compile(
+        asset_kind="character",
+        asset_description="17岁少年，深蓝长袍，黑色古风束发",
+        visual_direction=_direction(),
+        contract=_contract('{"stable_profile":{"年龄":"17岁","脸型":"清秀少年脸"},"stable_design":"深蓝长袍"}'),
+        reference=True,
+    )
+
+    prompt = result.positive_prompt
+    assert prompt.index("东方仙侠") < prompt.index("4-panel character turnaround sheet")
+    assert prompt.index("East Asian facial features") < prompt.index("4-panel character turnaround sheet")
+    assert prompt.index("17-year-old") < prompt.index("4-panel character turnaround sheet")
+    assert prompt.index("深蓝长袍") < prompt.index("4-panel character turnaround sheet")
+
+
+def test_raw_identity_json_is_naturalized_before_provider_prompt():
+    raw = '{"entity_id":"ent_123","stable_profile":{"年龄":"17岁","脸型":"清秀少年脸"},"stable_design":"深蓝长袍，黑色束发"}'
+    natural = naturalize_visual_anchor(raw)
+    result = PromptCompiler().compile(
+        asset_kind="character",
+        asset_description="角色参考图",
+        visual_direction=_direction(),
+        contract=_contract(raw),
+        reference=True,
+    )
+
+    assert "年龄: 17岁" in natural
+    assert "清秀少年脸" in result.positive_prompt
+    assert "深蓝长袍" in result.positive_prompt
+    assert "entity_id" not in result.positive_prompt
+    assert "ent_123" not in result.positive_prompt
+    assert '{"' not in result.positive_prompt
+    assert "{'" not in result.positive_prompt
 
 
 def test_colloquial_chinese_age_range_is_preserved():

@@ -34,15 +34,8 @@ from app.v3.front_half_quality_gate import install_front_half_quality_gate
 from app.v3.character_prompt_integration import install_character_prompt_integration
 from app.v3.reference_role_policy import install_reference_role_policy
 
-# A web-process restart must not resurrect persisted jobs created by the retired
-# multi-turn authoring driver. Only legacy active records carrying turn_count
-# are stopped; media generation jobs are left untouched.
 legacy_authoring_retirement = retire_legacy_authoring_jobs(settings)
 
-# Front-half outputs are production contracts, not suggestions. Extend the
-# built-in Skills with deterministic delivery schemas and reject incomplete
-# Qwen output before it can write entities/assets/handoffs. Character prompt
-# semantics are installed through one idempotent integration boundary.
 install_front_half_quality_gate(legacy_runtime.director)
 character_prompt_contract = install_character_prompt_integration()
 reference_role_contract = install_reference_role_policy()
@@ -52,9 +45,6 @@ production_skill_registry.install()
 production_runtime_optimizer = ProductionRuntimeOptimizer(settings, legacy_runtime.director)
 production_runtime_optimizer.install()
 
-# Old extraction passes may have persisted two IDs for the same visible
-# character/location/prop. Canonicalize them before any authoring/reference UI
-# reads the production graph, and keep the reconciliation active for new writes.
 canonical_entity_reconciler = CanonicalEntityReconciler(settings, legacy_runtime.director)
 canonical_entity_reconciler.install()
 
@@ -62,9 +52,6 @@ stage_progress_tracker = create_authoring_progress_tracker(settings, legacy_runt
 authoring_execution_timing = AuthoringExecutionTimingFix(stage_progress_tracker)
 authoring_execution_timing.install()
 
-# Stage②/③ reaching 100% must immediately materialize reusable assets so the
-# user can inspect them before manual confirmation. Existing ready projects are
-# reconciled on startup with zero model calls.
 authoring_asset_service = ProductionAuthoringAssetService(settings, legacy_runtime)
 authoring_asset_service.install_confirmation_hook()
 authoring_asset_reconciliation = authoring_asset_service.reconcile_existing_projects()
@@ -76,7 +63,7 @@ postproduction_prefetch.install_confirmation_hook()
 bgm_prefetch = BGMPrefetchService(settings, legacy_runtime)
 bgm_prefetch.install_confirmation_hook()
 
-from app.v3.production_legacy_bridge import ProductionReadyLegacyBridge
+from app.v3.unified_production_bridge import UnifiedProductionBridge
 from app.v3.reference_generation_optimization import (
     ReferenceGenerationOptimizer,
     create_reference_generation_optimization_router,
@@ -87,15 +74,12 @@ from app.v3.runtime_model_contract import (
     create_runtime_model_contract_router,
 )
 
-legacy_v3_bridge = ProductionReadyLegacyBridge(settings, legacy_runtime)
+legacy_v3_bridge = UnifiedProductionBridge(settings, legacy_runtime)
 legacy_v3_bridge.install()
-# Fail closed on the production model contract before any reference generation
-# wrapper captures the bridge. Text is Qwen; pure txt2img is Z-Image-Turbo;
-# identity/reference rendering stays explicitly on the proven SDXL reference path.
+# Text is Qwen. Reference-free image requests are Z-Image-Turbo. Reference-
+# conditioned image requests remain on the proven SDXL FaceID/IP-Adapter graph.
 runtime_model_contract = V3RuntimeModelContract(settings, legacy_runtime, legacy_v3_bridge)
 runtime_model_contract.install()
-# Every reference path must pass through the same runtime model contract. Using
-# original_execute here would bypass Z-Image routing for face-anchor txt2img.
 legacy_v3_bridge.reference_bootstrap = CharacterReferencePackageBootstrap(
     legacy_runtime,
     submit_candidate=runtime_model_contract.execute_candidate,

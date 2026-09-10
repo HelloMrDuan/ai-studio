@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from app.config import Settings
+from app.v3.character_prompt_integration import install_character_prompt_integration
+from app.v3.reference_role_policy import install_reference_role_policy
 
 from .contracts import StepActivityInput, StepActivityResult
 from .production_cached_executor import ProductionCachedFullPipelineExecutor, _MATERIALIZED
@@ -13,9 +15,13 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
     The visual executor is unified: reference-free images use the explicit
     Z-Image provider and reference-conditioned images use the proven SDXL
     reference provider, while both share the same Temporal operation and stores.
+    Prompt/reference policies are installed in this worker process too; the
+    worker does not depend on importing the web application's app.main module.
     """
 
     def __init__(self, settings: Settings) -> None:
+        install_character_prompt_integration()
+        install_reference_role_policy()
         super().__init__(settings, visual=UnifiedImageDomainExecutor(settings))
 
     async def __call__(self, input: StepActivityInput) -> StepActivityResult:

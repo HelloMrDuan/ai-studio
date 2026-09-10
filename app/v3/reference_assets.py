@@ -48,14 +48,7 @@ def _flatten_metadata(value: Any, prefix: str = "", depth: int = 0) -> list[str]
 
 
 class ReferenceAssetBootstrap:
-    """Reusable character/location/prop references through the mature candidate path.
-
-    The lifecycle follows the useful asset-development discipline from the
-    referenced open-source project: reusable stable identity assets are separate
-    from momentary shots, generation first creates a candidate, and downstream
-    production consumes only a version explicitly adopted by the user. Media
-    submission itself remains the existing workbench txt2img implementation.
-    """
+    """Reusable character/location/prop references through the mature candidate path."""
 
     def __init__(self, legacy_runtime: Any, submit_candidate: SubmitCandidate | None = None) -> None:
         self.legacy = legacy_runtime
@@ -170,15 +163,11 @@ class ReferenceAssetBootstrap:
 
         if kind == "character":
             format_rule = (
-                "生成一张4:3横向角色三视图设定图（character turnaround sheet / model sheet），必须在同一张画布中完成。"
-                "画面设置一个明显更大的正面脸部近景，用于锁定年龄、五官、脸型、肤色与发型；"
-                "同时并排展示同一角色的三个无遮挡全身视图：正面全身、严格90度侧面全身、背面全身。"
-                "三个全身视图必须从头到脚完整可见、比例和尺度接近、使用中性站姿，不得裁脚，不使用动作姿势。"
-                "脸部近景和三幅全身必须是完全同一个角色，严格保持相同的可见年龄、脸部结构、发型发色、"
-                "体型、肤色、服装、鞋履、配饰和固定配色；侧面和背面不得重新设计服装或人物。"
-                "如果项目明确了年龄，所有视图都必须忠实呈现该年龄，禁止年龄漂移。"
-                "使用干净纯色或浅色棚拍背景，不表现本镜头动作，不拿一次性剧情道具，"
-                "不出现其他人物、额外重复角色、场景叙事、字幕、标签、标注或水印。"
+                "生成一张4:3横向角色三视图设定图（character turnaround sheet / model sheet），同一画布四区块："
+                "一个明显较大的正面脸部近景，以及并排的正面全身、严格90度侧面全身、背面全身。"
+                "三个全身视图必须从头到脚完整可见、尺度接近、中性站姿；四个区块必须是完全同一角色，"
+                "不得改变已确认的年龄、脸型、发型发色、体型、肤色、服装、鞋履、配饰或配色。"
+                "使用中性浅灰或米白设定稿背景；不要时尚棚拍感、动作姿势、其他人物、字幕、标签或水印。"
             )
         elif kind in {"scene", "location"}:
             format_rule = (
@@ -193,11 +182,16 @@ class ReferenceAssetBootstrap:
                 "不出现人物、手部、其他道具、剧情场景、字幕、标注或水印。"
             )
 
+        # Confirmed identity facts intentionally precede layout. The final
+        # PromptCompiler preserves the same priority so verbose sheet rules can
+        # never crowd character identity/style out of the provider context.
         return (
             f"项目一致性参考资产：{label}「{name}」。\n"
-            "只使用项目已经确认的稳定视觉事实；忽略表情、姿势、一次性动作、镜头机位和瞬时剧情状态。\n"
-            f"{format_rule}\n\n"
-            f"项目已确认设定：\n{fact_text}"
+            "最高优先级：严格保持下面已经确认的稳定视觉事实，不得用参考图版式重新设计角色。\n"
+            f"项目已确认设定：\n{fact_text}\n\n"
+            "参考图布局要求（只控制排版，不覆盖上述身份约束）：\n"
+            f"{format_rule}\n"
+            "忽略表情、一次性动作、镜头机位和瞬时剧情状态。"
         )
 
     def _ensure_target_and_prompt(
@@ -225,8 +219,10 @@ class ReferenceAssetBootstrap:
                 name=f"{name} · 一致性参考图",
                 status="planned",
                 source={"type": "auto_consistency_reference", "entity_id": entity_id},
-                parent_asset_ids=[_clean(row.get("source_asset_id")) for row in entity.get("evidence") or []
-                                  if _clean(row.get("source_asset_id"))],
+                parent_asset_ids=[
+                    _clean(row.get("source_asset_id")) for row in entity.get("evidence") or []
+                    if _clean(row.get("source_asset_id"))
+                ],
                 entity_ids=[entity_id],
                 metadata={
                     "reference_asset": True,
@@ -246,10 +242,6 @@ class ReferenceAssetBootstrap:
         requested = _clean(prompt_override)
         current_prompt_asset = self._prompt_asset(project_id, entity_id)
         current_prompt_text = self._read_prompt_asset(project_id, current_prompt_asset)
-        # The UI submits the textarea even when the user did not edit it. If that
-        # textarea still contains an older auto-generated two-view layout, do not
-        # preserve it as a manual override: transparently migrate to the current
-        # three-view character-sheet contract. Genuine user edits remain intact.
         if (
             requested
             and current_prompt_asset is not None
@@ -306,29 +298,24 @@ class ReferenceAssetBootstrap:
                     ),
                     None,
                 )
-            # Auto prompts are versioned implementation detail: always expose the
-            # newest layout contract. Only an explicit user edit is persisted as
-            # authoritative textarea content across upgrades.
             prompt_text = self._reference_prompt(entity)
             if prompt_asset is not None and self._prompt_asset_is_user_edited(prompt_asset):
                 stored = self._read_prompt_asset(project_id, prompt_asset)
                 if stored:
                     prompt_text = stored
-            items.append(
-                {
-                    "entity_id": entity_id,
-                    "entity_type": kind,
-                    "label": _REFERENCE_LABEL[kind],
-                    "name": _clean(entity.get("name")),
-                    "ready": ready is not None,
-                    "reference_asset_id": _clean((ready or {}).get("asset_id")),
-                    "reference_url": _clean(((ready or {}).get("storage") or {}).get("url")),
-                    "target_asset_id": _clean((target or {}).get("asset_id")),
-                    "prompt_asset_id": _clean((prompt_asset or {}).get("asset_id")),
-                    "prompt_text": prompt_text,
-                    "candidate": candidate,
-                }
-            )
+            items.append({
+                "entity_id": entity_id,
+                "entity_type": kind,
+                "label": _REFERENCE_LABEL[kind],
+                "name": _clean(entity.get("name")),
+                "ready": ready is not None,
+                "reference_asset_id": _clean((ready or {}).get("asset_id")),
+                "reference_url": _clean(((ready or {}).get("storage") or {}).get("url")),
+                "target_asset_id": _clean((target or {}).get("asset_id")),
+                "prompt_asset_id": _clean((prompt_asset or {}).get("asset_id")),
+                "prompt_text": prompt_text,
+                "candidate": candidate,
+            })
         return {
             "project_id": project_id,
             "items": items,
@@ -370,7 +357,9 @@ class ReferenceAssetBootstrap:
                 return {"already_pending": True, "candidate": row, "status": self.status(project_id)}
 
         generation_payload = MediaGenerationPipeline().prepare_candidate(
-            self.director.production, project_id, {
+            self.director.production,
+            project_id,
+            {
                 "target_asset_id": _clean(target.get("asset_id")),
                 "capability": "image",
                 "mode": "txt2img",

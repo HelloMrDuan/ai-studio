@@ -4,13 +4,21 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+def _norm(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _has(value: Any, *tokens: str) -> bool:
+    text = _norm(value)
+    return any(token.lower() in text for token in tokens)
+
+
 @dataclass(frozen=True)
 class VisualDirection:
     """Project level visual rules consumed by media generation.
 
-    This is intentionally project driven. It does not infer rules from
-    character names or asset names. Story bible analysis can populate this
-    object and all downstream generators consume the same contract.
+    Rules are derived only from project visual-direction fields. Character names
+    and asset names never participate in culture/style inference.
     """
 
     world_style: str = ""
@@ -23,38 +31,67 @@ class VisualDirection:
     negative_constraints: list[str] = field(default_factory=list)
 
     def compile_context(self) -> str:
-        vocabulary = {"xianxia": "东方仙侠 xianxia", "chinese": "中国东方文化 chinese",
-                      "ancient": "古代 ancient"}
+        world = self.world_style or "未指定"
+        culture = self.culture or "未指定"
+        era = self.era or "未指定"
+        art = self.art_style or "未指定，遵循已确认视觉锚点"
+
         parts = [
-            "世界观: " + vocabulary.get(self.world_style, self.world_style or "未指定"),
-            "文化背景: " + vocabulary.get(self.culture, self.culture or "未指定"),
-            "时代: " + vocabulary.get(self.era, self.era or "未指定"),
-            "美术风格: " + (self.art_style or "未指定，遵循已确认视觉锚点"),
+            f"世界观: {world}",
+            f"文化背景: {culture}",
+            f"时代: {era}",
+            f"美术风格: {art}",
         ]
-        rules = []
-        for group in (
-            self.character_rules,
-            self.environment_rules,
-            self.prop_rules,
+
+        # Semantic vocabulary is additive and follows explicit project fields.
+        if _has(self.world_style, "xianxia", "仙侠"):
+            parts.append("东方仙侠 xianxia cultivation aesthetic, eastern fantasy visual language")
+        if _has(self.culture, "chinese", "china", "中国", "中华", "东亚", "east asian"):
+            parts.append("East Asian facial identity, Chinese visual identity")
+        if (
+            _has(self.era, "ancient", "古代", "古风")
+            and _has(self.culture, "chinese", "china", "中国", "中华", "东亚", "east asian")
         ):
+            parts.append("ancient Chinese costume language, traditional Chinese robe structure, traditional Chinese hairstyle")
+
+        rules: list[str] = []
+        for group in (self.character_rules, self.environment_rules, self.prop_rules):
             rules.extend(str(value) for value in group.values() if value)
-        return ", ".join(item for item in [*parts, *rules] if item)
+        return ", ".join(dict.fromkeys(item for item in [*parts, *rules] if item))
 
     def compile_negative_prompt(self) -> str:
         constraints = list(self.negative_constraints)
-        # Project fields define these rules; character names never participate.
-        if self.world_style == "xianxia" and self.culture == "chinese":
-            constraints.extend(["western face", "european features"])
-        if self.era == "ancient":
-            constraints.append("modern hairstyle")
+        culture_is_east_asian = _has(
+            self.culture,
+            "chinese", "china", "中国", "中华", "东亚", "east asian",
+        )
+        ancient = _has(self.era, "ancient", "古代", "古风")
+        xianxia = _has(self.world_style, "xianxia", "仙侠")
+
+        if culture_is_east_asian:
+            constraints.extend(["western face", "european facial features"])
+        if ancient:
+            constraints.extend([
+                "modern hairstyle",
+                "modern clothing",
+                "contemporary fashion",
+                "tank top",
+                "t-shirt",
+                "shorts",
+                "sneakers",
+                "modern high heels",
+            ])
+        if xianxia:
+            constraints.extend([
+                "western fantasy knight armor",
+                "european medieval costume",
+                "western fantasy character design",
+            ])
         return ", ".join(dict.fromkeys(item for item in constraints if item))
 
 
 class VisualDirectionCompiler:
-    """Single entry used before image/video providers.
-
-    Asset text must not bypass this layer.
-    """
+    """Single entry used before image/video providers."""
 
     def compile(
         self,

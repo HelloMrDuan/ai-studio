@@ -1,8 +1,12 @@
 (() => {
-  const POLL_MS = 1000;
+  const ACTIVE_POLL_MS = 1400;
+  const IDLE_POLL_MS = 5000;
+  const HIDDEN_POLL_MS = 10000;
   let polling = false;
   let finalizing = false;
   let lastFinalizeKey = '';
+  let timer = null;
+  let lastRenderSignature = '';
 
   function esc(value) {
     return String(value ?? '').replace(/[&<>"']/g, c => ({
@@ -30,14 +34,14 @@
     const style = document.createElement('style');
     style.id = 'v3StageProgressStyle';
     style.textContent = `
-      #v3DeepStageProgress{margin-top:14px;padding:15px 16px;border:1px solid #315076;background:#0a1423;border-radius:11px}
+      #v3DeepStageProgress{margin-top:14px;padding:15px 16px;border:1px solid #315076;background:#0a1423;border-radius:11px;min-height:118px;contain:layout paint}
       #v3DeepStageProgress .v3spHead{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
       #v3DeepStageProgress .v3spTitle{font-size:14px;font-weight:800;color:#eef4ff}
-      #v3DeepStageProgress .v3spCurrent{font-size:12px;color:#9fb5d3;margin-top:4px}
-      #v3DeepStageProgress .v3spPercent{font-size:26px;font-weight:900;color:#78a8ff;white-space:nowrap}
+      #v3DeepStageProgress .v3spCurrent{font-size:12px;color:#9fb5d3;margin-top:4px;min-height:18px}
+      #v3DeepStageProgress .v3spPercent{font-size:26px;font-weight:900;color:#78a8ff;white-space:nowrap;min-width:64px;text-align:right}
       #v3DeepStageProgress .v3spBar{height:9px;background:#07101c;border:1px solid #1e314b;border-radius:999px;overflow:hidden;margin:11px 0 9px}
-      #v3DeepStageProgress .v3spBar>i{display:block;height:100%;background:linear-gradient(90deg,#3978ef,#67bdff);border-radius:999px;transition:width .7s ease}
-      #v3DeepStageProgress .v3spMeta{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:#8fa5c3;margin-bottom:12px}
+      #v3DeepStageProgress .v3spBar>i{display:block;height:100%;background:linear-gradient(90deg,#3978ef,#67bdff);border-radius:999px;transition:width .35s ease}
+      #v3DeepStageProgress .v3spMeta{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:#8fa5c3;margin-bottom:12px;min-height:17px}
       #v3DeepStageProgress .v3spMeta b{color:#cfe0f7;font-weight:700}
       #v3DeepStageProgress .v3spSteps{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:7px}
       #v3DeepStageProgress .v3spStep{border:1px solid #203550;background:#08111e;border-radius:8px;padding:8px 9px;min-width:0}
@@ -50,7 +54,7 @@
       #v3DeepStageProgress .v3spStepName{font-size:11px;color:#c8d5e8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
       #v3DeepStageProgress .v3spStepPct{font-size:10px;color:#8ca2bf;white-space:nowrap}
       #v3DeepStageProgress .v3spMini{height:4px;background:#07101b;border-radius:999px;overflow:hidden;margin-top:7px}
-      #v3DeepStageProgress .v3spMini>i{display:block;height:100%;background:#4c88ec;border-radius:999px;transition:width .7s ease}
+      #v3DeepStageProgress .v3spMini>i{display:block;height:100%;background:#4c88ec;border-radius:999px;transition:width .35s ease}
       #v3DeepStageProgress .v3spFoot{font-size:10px;color:#7186a5;margin-top:10px;line-height:1.5}
       #v3DeepStageProgress .v3spError{margin-top:9px;padding:8px 9px;border:1px solid #713843;background:#35161c;color:#ffc1c9;border-radius:7px;font-size:11px;white-space:pre-wrap;word-break:break-word}
       @media(max-width:900px){#v3DeepStageProgress .v3spSteps{grid-template-columns:1fr}}
@@ -80,6 +84,10 @@
     return [...host.querySelectorAll('.stageProgressDetail')].find(item => item.id !== 'v3DeepStageProgress') || null;
   }
 
+  function setText(node, text) {
+    if (node && node.textContent !== text) node.textContent = text;
+  }
+
   function setTaskCopy(host, data, active) {
     const title = host.querySelector('.taskMain h2');
     const desc = host.querySelector('.taskDesc');
@@ -87,30 +95,43 @@
       if (node && !node.dataset.v3OriginalText) node.dataset.v3OriginalText = node.textContent || '';
     }
     if (!active) {
-      if (title?.dataset.v3OriginalText) title.textContent = title.dataset.v3OriginalText;
-      if (desc?.dataset.v3OriginalText) desc.textContent = desc.dataset.v3OriginalText;
+      if (title?.dataset.v3OriginalText) setText(title, title.dataset.v3OriginalText);
+      if (desc?.dataset.v3OriginalText) setText(desc, desc.dataset.v3OriginalText);
       return;
     }
     if (title) {
       const readable = String(data.title || '').split('·').slice(1).join('·').trim();
-      title.textContent = readable ? `正在生成：${readable}` : '正在生成当前阶段';
+      setText(title, readable ? `正在生成：${readable}` : '正在生成当前阶段');
     }
     if (desc) {
       const names = (data.steps || []).map(item => item.name).filter(Boolean);
-      desc.textContent = names.length ? `执行路径：${names.join(' → ')}` : '正在执行当前生产阶段';
+      setText(desc, names.length ? `执行路径：${names.join(' → ')}` : '正在执行当前生产阶段');
     }
   }
 
   function etaText(data) {
     if (data.status === 'completed') return `总耗时 ${formatSeconds(data.elapsed_seconds)}`;
     if (data.status === 'failed') return '执行失败';
-    if (data.status === 'waiting') return `内容生成已结束 · 正在本地完成校验`;
+    if (data.status === 'waiting') return '内容生成已结束 · 正在本地完成校验';
     const low = data.estimated_remaining_low_seconds;
     const high = data.estimated_remaining_high_seconds;
     if (low != null && high != null) {
       return `已耗时 ${formatSeconds(data.elapsed_seconds)} · 预计剩余 ${formatSeconds(low)} – ${formatSeconds(high)}`;
     }
     return `已耗时 ${formatSeconds(data.elapsed_seconds)}`;
+  }
+
+  function renderSignature(data) {
+    const steps = (data.steps || []).map(item => [item.name, item.state, Math.round(Number(item.percent) || 0)]);
+    return JSON.stringify([
+      data.supported, data.status, data.stage, data.title, data.error,
+      Math.round(Number(data.overall_percent) || 0),
+      data.current_step?.name || '', Math.round(Number(data.current_step?.percent) || 0),
+      steps,
+      Math.floor((Number(data.elapsed_seconds) || 0) / 5),
+      Math.floor((Number(data.estimated_remaining_low_seconds) || 0) / 5),
+      Math.floor((Number(data.estimated_remaining_high_seconds) || 0) / 5),
+    ]);
   }
 
   function render(data) {
@@ -120,15 +141,20 @@
     const active = data?.supported && data.status && data.status !== 'idle';
     const legacy = oldProgress(host);
     if (!active) {
-      panel.style.display = 'none';
-      if (legacy) legacy.style.display = '';
+      if (panel.style.display !== 'none') panel.style.display = 'none';
+      if (legacy && legacy.style.display === 'none') legacy.style.display = '';
       setTaskCopy(host, data || {}, false);
+      lastRenderSignature = '';
       return;
     }
 
-    panel.style.display = '';
-    if (legacy) legacy.style.display = 'none';
+    if (panel.style.display === 'none') panel.style.display = '';
+    if (legacy && legacy.style.display !== 'none') legacy.style.display = 'none';
     setTaskCopy(host, data, true);
+
+    const signature = renderSignature(data);
+    if (signature === lastRenderSignature) return;
+    lastRenderSignature = signature;
 
     const overall = Math.max(0, Math.min(100, Number(data.overall_percent) || 0));
     const current = data.current_step || {};
@@ -176,6 +202,11 @@
     `;
   }
 
+  function publish(data) {
+    window.__v3StageProgressLast = data;
+    window.dispatchEvent(new CustomEvent('v3:stage-progress', {detail: data}));
+  }
+
   async function tryLocalFinalize(data) {
     const id = projectId();
     if (!id || data?.status !== 'waiting' || finalizing) return;
@@ -197,9 +228,9 @@
         try { if (typeof refreshAll === 'function') await refreshAll(); } catch (_) {}
       } else if (body.needs_regeneration) {
         const panel = ensurePanel();
-        if (panel) {
+        if (panel && !panel.querySelector('.v3spFinalizeError')) {
           const box = document.createElement('div');
-          box.className = 'v3spError';
+          box.className = 'v3spError v3spFinalizeError';
           box.textContent = `本轮内容已经生成，但本地完成校验未通过：${body.reason || '需要重新生成'}`;
           panel.appendChild(box);
         }
@@ -217,33 +248,55 @@
     }
   }
 
+  function nextDelay(data) {
+    if (document.visibilityState === 'hidden') return HIDDEN_POLL_MS;
+    const status = String(data?.status || '').toLowerCase();
+    return ['running', 'waiting'].includes(status) ? ACTIVE_POLL_MS : IDLE_POLL_MS;
+  }
+
+  function schedule(delay) {
+    if (timer) clearTimeout(timer);
+    timer = window.setTimeout(refresh, Math.max(250, Number(delay) || IDLE_POLL_MS));
+  }
+
   async function refresh() {
     if (polling) return;
     const id = projectId();
     const panel = ensurePanel();
     if (!id) {
       if (panel) panel.style.display = 'none';
+      schedule(IDLE_POLL_MS);
+      return;
+    }
+    if (document.visibilityState === 'hidden') {
+      schedule(HIDDEN_POLL_MS);
       return;
     }
     polling = true;
+    let data = window.__v3StageProgressLast || null;
     try {
       const response = await fetch(`/api/v3/studio/projects/${encodeURIComponent(id)}/stage-progress`, {cache: 'no-store'});
-      if (!response.ok) return;
-      const data = await response.json();
-      render(data);
-      await tryLocalFinalize(data);
+      if (response.ok) {
+        data = await response.json();
+        render(data);
+        publish(data);
+        await tryLocalFinalize(data);
+      }
     } catch (_) {
       // Progress UI must never interrupt the creation workflow.
     } finally {
       polling = false;
+      schedule(nextDelay(data));
     }
   }
 
-  const observer = new MutationObserver(() => ensurePanel());
+  window.v3RefreshStageProgress = refresh;
+
   window.addEventListener('DOMContentLoaded', () => {
     ensurePanel();
     refresh();
-    observer.observe(document.body, {childList: true, subtree: true});
-    window.setInterval(refresh, POLL_MS);
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') schedule(50);
   });
 })();

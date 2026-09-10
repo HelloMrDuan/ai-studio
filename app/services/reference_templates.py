@@ -16,13 +16,19 @@ REFERENCE_TEMPLATES = {
         asset_type="CHARACTER",
         role="character_identity_reference",
         positive=(
-            "character identity reference, front view, half body and full body consistency, "
-            "strict age fidelity from the confirmed character profile, visible age must not drift older or younger, "
-            "fixed face shape, fixed hairstyle, fixed clothing, clear identity anchor"
+            "character identity turnaround sheet, single canvas model sheet, "
+            "one prominent front facial close-up for identity and age locking, "
+            "plus three full-body orthographic views arranged side by side: front view, exact 90-degree side view, back view, "
+            "same person in every view, same visible age in every view, same face structure, same hairstyle, same body proportions, "
+            "same clothing, footwear, accessories and color palette across all views, neutral expression, neutral standing pose, "
+            "full body visible from head to feet, clean plain background, strict age fidelity from the confirmed character profile, "
+            "clear identity anchor, production-ready character turnaround reference"
         ),
         negative=(
-            "random model photography, identity change, different face, age drift, "
-            "unintended aged-up appearance, unintended de-aged appearance"
+            "random model photography, identity change, different face, different person between views, age drift, "
+            "unintended aged-up appearance, unintended de-aged appearance, inconsistent hairstyle, inconsistent clothing, "
+            "inconsistent body proportions, missing side view, missing back view, front-only portrait, duplicated front views, "
+            "cropped feet, occluded body, action pose, cinematic scene background, other characters, text, labels, watermark"
         ),
     ),
     "location": ReferenceTemplate(

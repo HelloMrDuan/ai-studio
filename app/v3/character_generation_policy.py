@@ -18,8 +18,8 @@ from app.v3.character_reference_package import CharacterReferencePackageBootstra
 logger = logging.getLogger(__name__)
 
 _EXPLICIT_GENDER_PATTERNS = (
-    ("female", re.compile(r"(?:角色性别|性别|gender)\s*[：:=]\s*(?:女性|女|female|girl|woman)", re.IGNORECASE)),
-    ("male", re.compile(r"(?:角色性别|性别|gender)\s*[：:=]\s*(?:男性|男|male|boy|man)", re.IGNORECASE)),
+    ("female", re.compile(r"(?:角色性别|性别呈现|性别|gender)\s*[：:=]\s*(?:女性|女|female|girl|woman)", re.IGNORECASE)),
+    ("male", re.compile(r"(?:角色性别|性别呈现|性别|gender)\s*[：:=]\s*(?:男性|男|male|boy|man)", re.IGNORECASE)),
 )
 _FEMALE_PATTERNS = (
     re.compile(r"女性角色|女性人物|少女|女孩|女孩子|姑娘"),
@@ -38,7 +38,7 @@ _NEGATED_GENDER = re.compile(
 _PLACEHOLDER = re.compile(r"未明确|未知|待角色设计|待设计|待补充|未描述|not specified|unknown", re.IGNORECASE)
 _FACE_VALUE = re.compile(
     r"脸|面部|脸型|五官|眉|眼|鼻|嘴|唇|下颌|轮廓|肤|皮肤|"
-    r"发型|发色|黑发|白发|银发|棕发|金发|长发|短发|束发|发髻|辫|盘发|披发|"
+    r"发型|发色|黑发|白发|银发|棕发|金发|长发|短发|束发|发髻|低髻|高髻|辫|盘发|披发|"
     r"face|facial|eye|brow|nose|mouth|jaw|skin|hair",
     re.IGNORECASE,
 )
@@ -48,13 +48,13 @@ _HAIR_VALUE = re.compile(
     re.IGNORECASE,
 )
 _FACE_NOISE = re.compile(
-    r"长裙|短裙|裙|衣|袍|外套|鞋|靴|剑|剑鞘|刀|枪|玉佩|项链|耳坠|"
-    r"背景|场景|山|雪|建筑|道观|房间|手持|拿着|持有|"
-    r"dress|robe|clothes|clothing|shoe|boot|sword|scabbard|background|mountain|temple|holding",
+    r"长裙|短裙|裙|衣|袍|斗篷|披风|外套|鞋|靴|剑|剑鞘|刀|枪|铃|铃铛|青铜铃|玉佩|玉坠|项链|耳坠|"
+    r"背景|场景|山|雪|建筑|道观|房间|桥|钟楼|手持|拿着|持有|腰间|背着|"
+    r"dress|robe|clothes|clothing|cape|coat|shoe|boot|sword|scabbard|weapon|bell|pendant|background|mountain|temple|holding",
     re.IGNORECASE,
 )
 _HAIR_CLAUSE = re.compile(
-    r"(?:黑发|白发|银发|棕发|金发|长发|短发|束发|发髻|辫|盘发|披发|卷发|直发|头发[^，,；;。]{0,30}|hair[^,;.]{0,30})",
+    r"(?:黑发|白发|银发|棕发|金发|长发|短发|束发|发髻|低髻|高髻|辫|盘发|披发|卷发|直发|头发[^，,；;。、]{0,30}|hair[^,;.]{0,30})",
     re.IGNORECASE,
 )
 
@@ -67,7 +67,8 @@ def infer_character_gender(text: str) -> str:
     """Resolve explicit character gender semantics; never infer from a name.
 
     Labelled gender wins. Contradictory labelled values fail closed before an
-    expensive image generation task is launched.
+    expensive image generation task is launched. ``性别呈现`` is the canonical
+    Stage02 field and therefore has the same authority as legacy ``性别``.
     """
     source = _text(text)
     labelled: set[str] = set()
@@ -143,7 +144,7 @@ def _safe_face_facts(entity: dict[str, Any], limit: int = 12) -> list[str]:
 
         # Upstream authoring can occasionally place clothing/prop content under
         # a hair heading. Consume semantic values, not the heading name alone.
-        segments = [_text(part) for part in re.split(r"[，,；;。]+", value) if _text(part)]
+        segments = [_text(part) for part in re.split(r"[，,；;。、]+", value) if _text(part)]
         for segment in segments:
             if _FACE_NOISE.search(segment) and not _FACE_VALUE.search(segment):
                 continue

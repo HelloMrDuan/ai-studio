@@ -71,9 +71,18 @@ from app.v3.reference_generation_optimization import (
     create_reference_generation_optimization_router,
 )
 from app.v3.character_reference_package import CharacterReferencePackageBootstrap
+from app.v3.runtime_model_contract import (
+    V3RuntimeModelContract,
+    create_runtime_model_contract_router,
+)
 
 legacy_v3_bridge = ProductionReadyLegacyBridge(settings, legacy_runtime)
 legacy_v3_bridge.install()
+# Fail closed on the production model contract before any reference generation
+# wrapper captures the bridge. Text is Qwen; pure txt2img is Z-Image-Turbo;
+# identity/reference rendering stays explicitly on the proven SDXL FaceID path.
+runtime_model_contract = V3RuntimeModelContract(settings, legacy_runtime, legacy_v3_bridge)
+runtime_model_contract.install()
 # Replace only the reference bootstrap used by shot gating. The existing asset,
 # candidate, adoption and provider systems remain unchanged; characters now move
 # through face -> costume -> turnaround before becoming shot references.
@@ -117,6 +126,7 @@ app.include_router(legacy_postproduction_router)
 app.include_router(create_project_management_router(settings, legacy_runtime))
 app.include_router(create_character_reference_package_router(legacy_runtime))
 app.include_router(create_reference_generation_optimization_router(reference_generation_optimizer))
+app.include_router(create_runtime_model_contract_router(runtime_model_contract))
 app.include_router(create_stage_revision_router(settings, legacy_runtime))
 app.include_router(create_production_authoring_asset_router(settings, legacy_runtime))
 app.include_router(create_character_appearance_router(legacy_runtime))
@@ -144,5 +154,6 @@ __all__ = [
     "postproduction_prefetch",
     "bgm_prefetch",
     "legacy_v3_bridge",
+    "runtime_model_contract",
     "reference_generation_optimizer",
 ]

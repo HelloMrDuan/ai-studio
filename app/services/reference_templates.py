@@ -16,7 +16,7 @@ REFERENCE_TEMPLATES = {
         asset_type="CHARACTER",
         role="character_identity_reference",
         positive=(
-            "character identity turnaround sheet, single canvas model sheet, "
+            "character identity reference, character turnaround sheet, single canvas model sheet, "
             "one prominent front facial close-up for identity and age locking, "
             "plus three full-body orthographic views arranged side by side: front view, exact 90-degree side view, back view, "
             "same person in every view, same visible age in every view, same face structure, same hairstyle, same body proportions, "

@@ -567,11 +567,19 @@ def _extend_builtin_skill_contracts() -> None:
 
 
 def _detect_skill(system_prompt: str, messages: list[dict[str, Any]]) -> str:
-    haystack = _clean(system_prompt) + "\n" + "\n".join(
+    # The current Director system prompt names exactly the active production
+    # skill. Upstream context may legitimately contain older skill names, so it
+    # must never win routing merely because story-bible appears first in a
+    # combined haystack.
+    current_system = _clean(system_prompt)
+    for skill in _FRONT_HALF_SKILLS:
+        if skill in current_system:
+            return skill
+    message_text = "\n".join(
         _clean(item.get("content")) for item in messages if isinstance(item, dict)
     )
     for skill in _FRONT_HALF_SKILLS:
-        if skill in haystack:
+        if skill in message_text:
             return skill
     return ""
 
@@ -604,9 +612,6 @@ def install_front_half_quality_gate(director: Any) -> None:
                 result["front_half_contract_repair"] = {"attempted": False}
             return result
 
-        # Formatting/contract omissions are production defects, not a reason to
-        # make the user press Generate again. Perform exactly one bounded repair
-        # from the same model transport, then re-run the deterministic gate.
         repair_system = """你是前半段生产合同修复器。你的任务不是重新创作，而是把一个已有生产结果修成可直接交付的完整终态。
 
 规则：

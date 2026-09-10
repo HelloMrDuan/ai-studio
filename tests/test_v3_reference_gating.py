@@ -113,12 +113,19 @@ class ReferenceGatingTests(unittest.TestCase):
             ("location_profile", "苍梧山顶"), ("prop_profile", "古剑"), ("prop_profile", "青玉坠"),
         ]):
             director.production.create_text_asset(
-                director.project_id, stage="02" if index < 2 else "03", skill="test",
-                logical_key=f"formal:{index}", asset_role=role, name=f"「{name}」稳定设定",
-                content=json.dumps({"entity_id": f"owner-{index}", "name": name,
-                                    "stable_design": f"{name}的正式外观"}, ensure_ascii=False),
-                asset_type="STRUCTURED_DATA", extension=".json",
-                # Reproduce cross-bound and missing legacy associations.
+                director.project_id,
+                stage="02" if index < 2 else "03",
+                skill="test",
+                logical_key=f"formal:{index}",
+                asset_role=role,
+                name=f"「{name}」稳定设定",
+                content=json.dumps({
+                    "entity_id": f"owner-{index}",
+                    "name": name,
+                    "stable_design": f"{name}的正式外观",
+                }, ensure_ascii=False),
+                asset_type="STRUCTURED_DATA",
+                extension=".json",
                 entity_ids=["wrong-shared-owner"] if index < 2 else [],
             )
 
@@ -137,6 +144,83 @@ class ReferenceGatingTests(unittest.TestCase):
                 result = asyncio.run(service.generate_missing(director.project_id))
                 self.assertEqual(len(result["submitted_entity_ids"]), 5)
                 self.assertEqual(submit.await_count, 5)
+
+    def test_character_reference_is_face_anchor_then_reference_first_turnaround(self):
+        with tempfile.TemporaryDirectory() as raw:
+            director = _Director(Path(raw), "a" * 24)
+            director.project.update({
+                "current_stage": "04",
+                "completed_stages": ["01", "02", "03"],
+                "visual_direction": {
+                    "world_style": "xianxia",
+                    "culture": "chinese",
+                    "era": "ancient",
+                    "art_style": "cinematic realistic",
+                    "character_rules": {"clothing": "ancient Chinese hanfu"},
+                    "negative_constraints": ["western fantasy"],
+                },
+            })
+            p = director.production
+            p.create_text_asset(
+                director.project_id,
+                stage="02",
+                skill="test",
+                logical_key="formal:hero",
+                asset_role="character_profile",
+                name="「少年剑修」稳定设定",
+                content=json.dumps({
+                    "entity_id": "owner-hero",
+                    "name": "少年剑修",
+                    "stable_profile": {"年龄": "17岁", "脸型": "清秀少年脸"},
+                    "stable_design": "黑色古风束发，深蓝长袍，银色纹样",
+                }, ensure_ascii=False),
+                asset_type="STRUCTURED_DATA",
+                extension=".json",
+                entity_ids=["wrong-owner"],
+            )
+
+            submit = AsyncMock(return_value={})
+            service = CanonicalReferenceAssetBootstrap(_Legacy(director), submit_candidate=submit)
+
+            first = asyncio.run(service.generate_candidate(director.project_id, "owner-hero"))
+            self.assertEqual(first["generation_phase"], "face_anchor")
+            first_payload = submit.await_args.args[1]
+            first_target = p.get_asset(director.project_id, first_payload["target_asset_id"])
+            self.assertEqual(first_target["asset_role"], "character_face_anchor")
+            self.assertEqual(first_payload["mode"], "txt2img")
+            self.assertEqual(first_payload["params"]["width"], 1024)
+            self.assertEqual(first_payload["params"]["height"], 1280)
+            self.assertEqual(first_payload["params"]["reference_phase"], "face_anchor")
+            self.assertIn("17-year-old", first_payload["params"]["positive_prompt"])
+            self.assertIn("natural human face", first_payload["params"]["positive_prompt"])
+            self.assertIn("western face", first_payload["params"]["negative_prompt"])
+            self.assertIn("malformed face", first_payload["params"]["negative_prompt"])
+
+            p.bind_task(
+                director.project_id,
+                first_target["asset_id"],
+                {
+                    "task_id": "face-anchor-task",
+                    "status": "completed",
+                    "module": "test",
+                    "operation": "face-anchor",
+                    "output_files": ["/files/face-anchor.png"],
+                },
+            )
+            submit.reset_mock()
+
+            second = asyncio.run(service.generate_candidate(director.project_id, "owner-hero"))
+            self.assertEqual(second["generation_phase"], "turnaround")
+            second_payload = submit.await_args.args[1]
+            second_target = p.get_asset(director.project_id, second_payload["target_asset_id"])
+            self.assertEqual(second_target["asset_role"], "character_reference")
+            self.assertEqual(second_payload["mode"], "reference_img2img")
+            self.assertEqual(second_payload["params"]["width"], 1536)
+            self.assertEqual(second_payload["params"]["height"], 1152)
+            self.assertEqual(second_payload["params"]["reference_phase"], "turnaround")
+            self.assertEqual(second_payload["params"]["reference_asset_ids"], [first_target["asset_id"]])
+            self.assertIn("4-panel character turnaround sheet", second_payload["params"]["positive_prompt"])
+            self.assertIn("East Asian", second_payload["params"]["positive_prompt"])
 
     def test_missing_candidate_blocks_all_generation_entrypoints(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -164,10 +248,12 @@ class ReferenceGatingTests(unittest.TestCase):
             self._five_profiles(director)
             service = CanonicalReferenceAssetBootstrap(_Legacy(director), submit_candidate=_inert_submit)
             build = service._build_reference_candidates
+
             def conflicting(pid, profiles):
                 rows = build(pid, profiles)
                 rows[1][0]["entity_id"] = rows[0][0]["entity_id"]
                 return rows
+
             with patch.object(service, "_build_reference_candidates", side_effect=conflicting):
                 with self.assertRaisesRegex(ValueError, "归属 ID 冲突"):
                     service.status(director.project_id)
@@ -183,9 +269,13 @@ class ReferenceGatingTests(unittest.TestCase):
             director = _Director(Path(raw), "f" * 24)
             for name in ["旧名称", "新名称"]:
                 director.production.create_text_asset(
-                    director.project_id, stage="02", skill="test",
-                    logical_key="studio:authoring:owner:profile", asset_role="character_profile",
-                    name=f"角色「{name}」稳定设定", content=name,
+                    director.project_id,
+                    stage="02",
+                    skill="test",
+                    logical_key="studio:authoring:owner:profile",
+                    asset_role="character_profile",
+                    name=f"角色「{name}」稳定设定",
+                    content=name,
                     entity_ids=["alias-a", "alias-b"],
                 )
             service = CanonicalReferenceAssetBootstrap(_Legacy(director), submit_candidate=_inert_submit)

@@ -6,6 +6,10 @@ from pathlib import Path
 
 from app.services.production_assets import ProductionAssetService
 from app.v3.stage_asset_materialization import StageOutputAssetMaterializer
+from app.v3.stage_asset_materialization_guard import install_stage_asset_materialization_guard
+
+
+install_stage_asset_materialization_guard()
 
 
 _STAGE02 = """
@@ -49,13 +53,14 @@ class _Director:
             "title": "测试",
             "current_stage": "02",
             "completed_stages": ["01"],
-            "confirmed_outputs": {"01": {"handoff": "故事已确认", "production_asset_ids": []}},
+            "confirmed_outputs": {"01": {"handoff": "故事已确认：沈川、苏瑶。", "production_asset_ids": []}},
             "stage_state": {
                 "02": {
                     "stage_ready": True,
                     "skill_runtime": {"completion": {"ready": True}},
                 }
             },
+            "history": [],
         }
         self.production.ensure_project(project_id, "测试")
 
@@ -98,6 +103,33 @@ class StrictStageAssetMaterializationTests(unittest.TestCase):
             self.assertEqual(names, {"沈川", "苏瑶"})
             self.assertNotIn("发型、发色、肤色、体型、身高感", names)
             self.assertNotIn("常态服装分层、鞋履、固定配饰、主辅配色", names)
+
+    def test_plausible_new_character_not_in_story_source_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            project_id = "c" * 24
+            director = _Director(root, project_id)
+            director.production.create_entity(
+                project_id,
+                entity_type="character",
+                name="沈川",
+                logical_key="story:character:shen-chuan",
+                stage="01",
+            )
+            text = _STAGE02 + """
+
+## 角色资产：陆云
+- 稳定身份：17岁男性
+- 发型：黑发束起
+- 服装：白袍
+- 参考图生成要求：稳定身份参考
+"""
+            service = StageOutputAssetMaterializer(_Legacy(director))
+            rows = service._extract(project_id, "02", text)
+            names = {row["name"] for row in rows}
+            self.assertNotIn("陆云", names)
+            rejected = getattr(service, "_xiaoduan_last_rejected_unanchored", [])
+            self.assertTrue(any(row.get("name") == "陆云" for row in rejected))
 
     def test_existing_fake_materialized_characters_and_derived_assets_are_retired(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

@@ -32,6 +32,7 @@ from app.v3.canonical_entity_reconciler import CanonicalEntityReconciler
 from app.v3.authoring_execution_timing import AuthoringExecutionTimingFix
 from app.v3.front_half_quality_gate import install_front_half_quality_gate
 from app.v3.character_prompt_integration import install_character_prompt_integration
+from app.v3.reference_role_policy import install_reference_role_policy
 
 # A web-process restart must not resurrect persisted jobs created by the retired
 # multi-turn authoring driver. Only legacy active records carrying turn_count
@@ -44,6 +45,7 @@ legacy_authoring_retirement = retire_legacy_authoring_jobs(settings)
 # semantics are installed through one idempotent integration boundary.
 install_front_half_quality_gate(legacy_runtime.director)
 character_prompt_contract = install_character_prompt_integration()
+reference_role_contract = install_reference_role_policy()
 
 production_skill_registry = ProductionSkillRegistry(legacy_runtime.director)
 production_skill_registry.install()
@@ -152,6 +154,7 @@ __all__ = [
     "legacy_runtime",
     "legacy_authoring_retirement",
     "character_prompt_contract",
+    "reference_role_contract",
     "production_skill_registry",
     "production_runtime_optimizer",
     "canonical_entity_reconciler",

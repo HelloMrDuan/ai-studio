@@ -71,10 +71,17 @@ from app.v3.reference_generation_optimization import (
     create_reference_generation_optimization_router,
 )
 from app.v3.character_reference_package import CharacterReferencePackageBootstrap
+from app.v3.character_generation_policy import install_character_generation_policy
 from app.v3.runtime_model_contract import (
     V3RuntimeModelContract,
     create_runtime_model_contract_router,
 )
+
+# Install the character identity boundary before any reference bootstrap or
+# generation bridge starts accepting requests. Explicit gender/age/hair facts
+# are preserved into the provider-ready prompt and contradictory gender facts
+# fail before an expensive GPU task is launched.
+character_generation_policy = install_character_generation_policy()
 
 legacy_v3_bridge = ProductionReadyLegacyBridge(settings, legacy_runtime)
 legacy_v3_bridge.install()
@@ -153,6 +160,7 @@ __all__ = [
     "shot_continuity_linker",
     "postproduction_prefetch",
     "bgm_prefetch",
+    "character_generation_policy",
     "legacy_v3_bridge",
     "runtime_model_contract",
     "reference_generation_optimizer",

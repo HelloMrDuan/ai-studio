@@ -31,8 +31,7 @@ from app.v3.authoring_progress import create_authoring_progress_tracker
 from app.v3.canonical_entity_reconciler import CanonicalEntityReconciler
 from app.v3.authoring_execution_timing import AuthoringExecutionTimingFix
 from app.v3.front_half_quality_gate import install_front_half_quality_gate
-from app.v3.character_generation_policy import install_character_generation_policy
-from app.v3.character_reference_hardening import install_character_reference_hardening
+from app.v3.character_prompt_integration import install_character_prompt_integration
 
 # A web-process restart must not resurrect persisted jobs created by the retired
 # multi-turn authoring driver. Only legacy active records carrying turn_count
@@ -41,11 +40,10 @@ legacy_authoring_retirement = retire_legacy_authoring_jobs(settings)
 
 # Front-half outputs are production contracts, not suggestions. Extend the
 # built-in Skills with deterministic delivery schemas and reject incomplete
-# Qwen output before it can write entities/assets/handoffs. Character identity
-# semantics are installed before any stage/reference compiler uses them.
+# Qwen output before it can write entities/assets/handoffs. Character prompt
+# semantics are installed through one idempotent integration boundary.
 install_front_half_quality_gate(legacy_runtime.director)
-install_character_generation_policy()
-install_character_reference_hardening()
+character_prompt_contract = install_character_prompt_integration()
 
 production_skill_registry = ProductionSkillRegistry(legacy_runtime.director)
 production_skill_registry.install()
@@ -91,7 +89,7 @@ legacy_v3_bridge = ProductionReadyLegacyBridge(settings, legacy_runtime)
 legacy_v3_bridge.install()
 # Fail closed on the production model contract before any reference generation
 # wrapper captures the bridge. Text is Qwen; pure txt2img is Z-Image-Turbo;
-# identity/reference rendering stays explicitly on the proven SDXL FaceID path.
+# identity/reference rendering stays explicitly on the proven SDXL reference path.
 runtime_model_contract = V3RuntimeModelContract(settings, legacy_runtime, legacy_v3_bridge)
 runtime_model_contract.install()
 # Every reference path must pass through the same runtime model contract. Using
@@ -153,6 +151,7 @@ __all__ = [
     "app",
     "legacy_runtime",
     "legacy_authoring_retirement",
+    "character_prompt_contract",
     "production_skill_registry",
     "production_runtime_optimizer",
     "canonical_entity_reconciler",

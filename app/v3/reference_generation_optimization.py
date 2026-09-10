@@ -81,6 +81,40 @@ class ReferenceGenerationOptimizer:
         metadata = target.get("metadata") if isinstance(target.get("metadata"), dict) else {}
         return bool(metadata.get("reference_asset")) or role in _REFERENCE_ROLES
 
+    @staticmethod
+    def _normalize_reference_payload(
+        payload: dict[str, Any],
+        target: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Normalize reference-only render sizes before the legacy provider validates them.
+
+        The mature image endpoint accepts the platform's canonical ratios. The
+        character face-anchor stage originally requested 4:5 (1024x1280), which
+        is rejected before ComfyUI runs. Keep the intended render purpose but map
+        it to a supported canonical canvas: square for the large face anchor and
+        4:3 for the turnaround sheet. The caller payload is not mutated.
+        """
+        normalized = dict(payload)
+        params = dict(payload.get("params") or {})
+        metadata = target.get("metadata") if isinstance(target.get("metadata"), dict) else {}
+        phase = _clean(params.get("reference_phase") or metadata.get("reference_phase")).lower()
+
+        if phase == "face_anchor":
+            params.update({
+                "aspect_ratio": "1:1",
+                "width": 1024,
+                "height": 1024,
+            })
+        elif phase == "turnaround":
+            params.update({
+                "aspect_ratio": "4:3",
+                "width": 1536,
+                "height": 1152,
+            })
+
+        normalized["params"] = params
+        return normalized
+
     def _sync_record_from_candidate(self, record: ReferenceSubmission) -> None:
         sync = getattr(self.legacy, "_wb_sync_candidates", None)
         load = getattr(self.legacy, "_wb_load_candidates", None)
@@ -190,6 +224,24 @@ class ReferenceGenerationOptimizer:
         if not self._is_reference_target(target):
             return await self.bridge.execute_candidate(project_id, payload)
 
+        normalized_payload = self._normalize_reference_payload(payload, target)
+        original_params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+        normalized_params = normalized_payload.get("params") if isinstance(normalized_payload.get("params"), dict) else {}
+        if (
+            original_params.get("aspect_ratio") != normalized_params.get("aspect_ratio")
+            or original_params.get("width") != normalized_params.get("width")
+            or original_params.get("height") != normalized_params.get("height")
+        ):
+            logger.info(
+                "REFERENCE_RATIO_NORMALIZED project_id=%s target_asset_id=%s phase=%s ratio=%s size=%sx%s",
+                project_id,
+                target_asset_id,
+                _clean(normalized_params.get("reference_phase") or (target.get("metadata") or {}).get("reference_phase")),
+                _clean(normalized_params.get("aspect_ratio")),
+                normalized_params.get("width"),
+                normalized_params.get("height"),
+            )
+
         key = (project_id, target_asset_id)
         active_submission_id = self._target_active.get(key)
         if active_submission_id:
@@ -213,7 +265,7 @@ class ReferenceGenerationOptimizer:
         )
         self._submissions[submission_id] = record
         self._target_active[key] = submission_id
-        task = asyncio.create_task(self._run_reference(record, project_id, dict(payload)))
+        task = asyncio.create_task(self._run_reference(record, project_id, normalized_payload))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         logger.info(

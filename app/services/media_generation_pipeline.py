@@ -2,11 +2,41 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields
 import json
+import re
 from typing import Any
 
 from app.services.prompt_compiler import PromptCompiler, naturalize_visual_anchor
 from app.services.generation_contract import GenerationContract
 from app.services.visual_direction import VisualDirection
+
+
+_FACE_ANCHOR_TOKENS = (
+    "age", "年龄", "岁", "gender", "性别", "少年", "少女", "teen",
+    "face", "facial", "脸", "面部", "脸型", "五官", "眉", "眼", "鼻", "嘴", "下颌", "轮廓",
+    "hair", "发型", "发色", "黑发", "肤色", "skin", "气质", "冷峻", "清秀",
+)
+_COSTUME_ANCHOR_TOKENS = (
+    "costume", "clothing", "outfit", "robe", "garment", "服装", "衣", "袍", "上衣", "下装",
+    "shoe", "boot", "鞋", "靴", "accessory", "配饰", "配色", "颜色", "纹样", "刺绣", "材质",
+    "sword", "剑", "剑鞘", "体型", "身高", "body", "build",
+)
+
+
+def _phase_anchor_text(text: str, phase: str) -> str:
+    """Keep only facts relevant to the current character reference sub-stage.
+
+    Face-anchor generation must not inherit scenery, action, sword poses or the
+    complete costume paragraph. Costume generation should receive clothing/body
+    facts, while the final turnaround keeps the full approved identity package.
+    """
+    raw = str(text or "").strip()
+    phase = str(phase or "").strip().lower()
+    if not raw or phase not in {"face_anchor", "costume"}:
+        return raw
+    tokens = _FACE_ANCHOR_TOKENS if phase == "face_anchor" else _COSTUME_ANCHOR_TOKENS
+    parts = [part.strip(" -\t") for part in re.split(r"[;\n]+", raw) if part.strip(" -\t")]
+    selected = [part for part in parts if any(token in part.lower() for token in tokens)]
+    return "; ".join(dict.fromkeys(selected))
 
 
 @dataclass(frozen=True)
@@ -58,6 +88,12 @@ class MediaGenerationPipeline:
         context = dict(target["metadata"]["visual_context"])
         direction = production.get_visual_direction(project_id, context.get("visual_direction_id", ""))
         entity_ids = tuple(target.get("entity_ids") or [])
+        target_metadata = target.get("metadata") if isinstance(target.get("metadata"), dict) else {}
+        reference_phase = str(
+            (payload.get("params") or {}).get("reference_phase")
+            if isinstance(payload.get("params"), dict)
+            else ""
+        ).strip().lower() or str(target_metadata.get("reference_phase") or "").strip().lower()
         anchors: list[str] = []
         parents = [source_id, *[
             pid for pid in target.get("parent_asset_ids", [])
@@ -108,6 +144,8 @@ class MediaGenerationPipeline:
                     }, ensure_ascii=False)
 
             anchor = naturalize_visual_anchor(raw)
+            if context.get("asset_identity_type") == "character":
+                anchor = _phase_anchor_text(anchor, reference_phase)
             if anchor and anchor not in anchors:
                 anchors.append(anchor)
 
@@ -122,7 +160,7 @@ class MediaGenerationPipeline:
             asset_version=str(target["version"]),
             prompt=description,
             visual_direction=direction,
-            visual_context=context,
+            visual_context={**context, "reference_phase": reference_phase},
             entity_ids=entity_ids,
             character_appearances=tuple(selections),
             identity_anchors="\n".join(anchors),
@@ -158,7 +196,7 @@ class MediaGenerationPipeline:
             extension=".json",
             entity_ids=list(entity_ids),
             parent_asset_ids=list(dict.fromkeys(parents)),
-            metadata={"visual_context": context},
+            metadata={"visual_context": context, "reference_phase": reference_phase},
         )
         prompt_asset = production.create_text_asset(
             project_id,
@@ -175,6 +213,7 @@ class MediaGenerationPipeline:
                 "visual_context": context,
                 "prompt_compiler": "v3-visual-v1",
                 "source_prompt_asset_id": source_id,
+                "reference_phase": reference_phase,
             },
         )
         params.update(asdict(compiled))
@@ -185,7 +224,7 @@ class MediaGenerationPipeline:
             "prompt_asset_id": prompt_asset["asset_id"],
             "params": params,
             "generation_contract_id": contract_asset["asset_id"],
-            "visual_context": context,
+            "visual_context": {**context, "reference_phase": reference_phase},
             "visual_direction": direction,
             "character_appearances": selections,
         }

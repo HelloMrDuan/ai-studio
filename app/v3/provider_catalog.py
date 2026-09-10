@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import Settings
+from app.services.comfyui import ZIMAGE_TURBO_WORKFLOW_PATH
 
 from .contracts import Capability, ProviderModelSpec, ProviderTransport
 from .provider_gateway import ProviderRegistry
@@ -102,6 +103,22 @@ def platform_provider_specs(settings: Settings) -> list[ProviderModelSpec]:
             base_url=str(settings.gemma_base_url).rstrip("/"),
             priority=10,
             metadata={"source": "existing-platform", "adapter": "openai-compatible"},
+        ),
+        ProviderModelSpec(
+            provider_id="local-zimage-image",
+            model_id="z-image-turbo",
+            transport=ProviderTransport.local_comfyui,
+            capabilities={Capability.image_generation},
+            base_url=str(settings.comfyui_base_url).rstrip("/"),
+            priority=5,
+            max_references=0,
+            metadata={
+                "source": "existing-platform",
+                "adapter": "z-image-turbo-api-workflow",
+                "workflow_path": str(ZIMAGE_TURBO_WORKFLOW_PATH),
+                "reference_mode": "none",
+                "prompt_contract": "provider_ready_frozen",
+            },
         ),
         ProviderModelSpec(
             provider_id="local-comfyui-image",

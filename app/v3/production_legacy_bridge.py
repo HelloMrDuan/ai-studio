@@ -21,6 +21,7 @@ _ASPECT_SIZES: dict[str, tuple[int, int]] = {
     "9:16": (576, 1024),
     "4:3": (1024, 768),
     "3:4": (768, 1024),
+    "4:5": (1024, 1280),
     "1:1": (1024, 1024),
 }
 
@@ -50,9 +51,6 @@ class ProductionReadyLegacyBridge(ReferenceAwareLegacyCandidateV3Bridge):
             raw.pop("model_key", None)
 
         params = apply_smart_candidate_params(raw, shot=formal, capability=capability)
-        # A normal preview is a new creative attempt, so freeze a fresh concrete
-        # seed at submission time. A final refine explicitly carries the preview
-        # seed and therefore remains reproducible and cacheable.
         if capability == "image" and quality_stage != "final":
             seed_value = raw.get("seed")
             try:
@@ -65,15 +63,147 @@ class ProductionReadyLegacyBridge(ReferenceAwareLegacyCandidateV3Bridge):
 
         next_payload["params"] = params
         metadata = dict(next_payload.get("metadata") or {}) if isinstance(next_payload.get("metadata"), dict) else {}
-        metadata.update(
-            {
-                "quality_tier": infer_quality_tier(formal),
-                "quality_mode": "smart",
-                "quality_stage": str(params.get("quality_stage") or "preview"),
-            }
-        )
+        metadata.update({
+            "quality_tier": infer_quality_tier(formal),
+            "quality_mode": "smart",
+            "quality_stage": str(params.get("quality_stage") or "preview"),
+        })
         next_payload["metadata"] = metadata
         return next_payload
+
+    def _reference_ids_from_assets(self, project_id: str, asset_ids: list[str]) -> list[str]:
+        production = self.legacy.director.production
+        refs: list[str] = []
+        for asset_id in asset_ids:
+            asset_id = str(asset_id or "").strip()
+            if not asset_id:
+                continue
+            asset = production.get_asset(project_id, asset_id)
+            if str(asset.get("asset_type") or "").upper() != "IMAGE":
+                raise ValueError("角色锁脸锚点必须是图片资产")
+            if self._status_value(asset.get("status")) != "ready":
+                raise ValueError("角色锁脸锚点尚未采用，不能生成三视图")
+            if self._status_value(asset.get("dependency_state")) == "stale":
+                raise ValueError("角色锁脸锚点已经过期，请重新生成并采用")
+            path = self._asset_path(project_id, asset_id)
+            entity_id = next((str(x).strip() for x in asset.get("entity_ids") or [] if str(x).strip()), "")
+            ref_id = f"face-anchor:{project_id}:{asset_id}"
+            self.references.import_file(
+                ref_id,
+                path,
+                entity_id=entity_id,
+                role=str(asset.get("asset_role") or "character_face_anchor"),
+                entity_type="character",
+            )
+            refs.append(ref_id)
+        if not refs:
+            raise ValueError("三视图生成缺少已采用的角色锁脸锚点")
+        return refs
+
+    async def _execute_reference_first_target(
+        self,
+        project_id: str,
+        target: dict[str, Any],
+        payload: dict[str, Any],
+        reference_asset_ids: list[str],
+    ) -> dict[str, Any]:
+        prompt_asset_id = str(payload.get("prompt_asset_id") or "").strip()
+        prompt = self._prompt_text(project_id, prompt_asset_id)
+        params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+        reference_ids = self._reference_ids_from_assets(project_id, reference_asset_ids)
+        width, height = self._image_dimensions(params)
+
+        task_id = "v3task_" + secrets.token_hex(10)
+        workflow_id = "studio-v3-ref-" + secrets.token_hex(10)
+        target_asset_id = str(target.get("asset_id") or "").strip()
+        logical_key = f"studio-v3:reference:{target_asset_id}:image"
+        step_key = f"{workflow_id}:image-generate"
+        seed = int(params.get("seed") or 0)
+        if seed < 0:
+            seed = secrets.randbelow(2_147_483_646) + 1
+
+        step_payload = {
+            "logical_key": logical_key,
+            "provider_id": "local-comfyui-image",
+            "model_id": "configured-image-workflow",
+            "shot_id": f"reference-{target_asset_id}",
+            "source_text": prompt,
+            **visual_contract_fields({**payload, **params}),
+            "reference_ids": reference_ids,
+            "entity_ids": [str(x) for x in target.get("entity_ids") or [] if str(x)],
+            "camera_direction": "neutral character reference",
+            "action": "neutral standing turnaround",
+            "duration_seconds": 1.0,
+            "width": width,
+            "height": height,
+            "steps": int(params.get("steps") or 36),
+            "cfg": float(params.get("cfg") or 6.0),
+            "seed": seed,
+            "sampler_name": str(params.get("sampler_name") or params.get("sampler") or "dpmpp_2m"),
+            "scheduler": str(params.get("scheduler") or "karras"),
+            "metadata": {
+                "source": "character_face_anchor_reference_first",
+                "legacy_target_asset_id": target_asset_id,
+                "reference_phase": str(params.get("reference_phase") or "turnaround"),
+                "face_anchor_asset_ids": reference_asset_ids,
+            },
+        }
+        payload_ref = self.payloads.put(project_id, f"{workflow_id}-image", step_payload)
+        step = ProductionStep(
+            step_id="image-generate",
+            skill_id="image_direction",
+            operation="generation.image.generate_candidate",
+            payload_ref=payload_ref,
+            idempotency_key=step_key,
+        )
+        request = ProductionWorkflowInput(workflow_id=workflow_id, project_id=project_id, steps=(step,))
+        task_record = self.legacy.store.create(
+            task_id=task_id,
+            module="新版工作流",
+            operation="角色三视图生成",
+            title=str(target.get("name") or "角色三视图"),
+            params={
+                "v3_workflow_id": workflow_id,
+                "v3_logical_key": logical_key,
+                "legacy_target_asset_id": target_asset_id,
+                "reference_phase": "turnaround",
+                "width": width,
+                "height": height,
+            },
+            input_files=[],
+        )
+        task = task_record.model_dump(mode="json")
+        candidate = self._append_candidate(
+            project_id=project_id,
+            target=target,
+            payload=payload,
+            task=task,
+            output_asset_type="IMAGE",
+            dependencies=[prompt_asset_id, *reference_asset_ids],
+            v3_workflow_id=workflow_id,
+            v3_logical_key=logical_key,
+            v3_step_key=step_key,
+        )
+        background = asyncio.create_task(
+            self._run_v3(
+                project_id=project_id,
+                candidate_id=str(candidate["candidate_id"]),
+                task_id=task_id,
+                request=request,
+                logical_key=logical_key,
+                step_key=step_key,
+            )
+        )
+        self._tasks.add(background)
+        background.add_done_callback(self._tasks.discard)
+        return {
+            "candidate": candidate,
+            "task": task,
+            "producer": "v3_temporal_reference_first",
+            "manual_adoption_required": True,
+            "reference_ids": reference_ids,
+            "face_anchor_asset_ids": reference_asset_ids,
+        }
 
     async def execute_candidate(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         capability = str(payload.get("capability") or "").strip().lower()
@@ -86,6 +216,10 @@ class ProductionReadyLegacyBridge(ReferenceAwareLegacyCandidateV3Bridge):
         if not shot_id:
             if capability == "image":
                 payload = MediaGenerationPipeline().prepare_candidate(self.legacy.director.production, project_id, payload)
+                params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+                reference_asset_ids = [str(x).strip() for x in params.get("reference_asset_ids") or [] if str(x).strip()]
+                if reference_asset_ids:
+                    return await self._execute_reference_first_target(project_id, target, payload, reference_asset_ids)
             return await self.original_execute(project_id, payload)
 
         target = self.shot_authoring.bind_active_contract_to_target(project_id, target)
@@ -121,23 +255,14 @@ class ProductionReadyLegacyBridge(ReferenceAwareLegacyCandidateV3Bridge):
         logical_key = self._logical_key(shot_id, capability)
         step_key = f"{workflow_id}:{capability}-generate"
         common_metadata = dict(next_payload.get("metadata") or {})
-        common_metadata.update(
-            {
-                "source": "original_workbench_v3_bridge",
-                "legacy_target_asset_id": target_asset_id,
-                "shot_id": shot_id,
-            }
-        )
+        common_metadata.update({"source": "original_workbench_v3_bridge", "legacy_target_asset_id": target_asset_id, "shot_id": shot_id})
 
         if capability == "image":
             reference_ids = self._candidate_reference_ids(project_id, target)
             width, height = self._image_dimensions(params)
             profile = profile_for_shot(formal)
             quality_stage = str(params.get("quality_stage") or "preview")
-            steps = int(
-                params.get("steps")
-                or (profile.image_final_steps if quality_stage == "final" else profile.image_candidate_steps)
-            )
+            steps = int(params.get("steps") or (profile.image_final_steps if quality_stage == "final" else profile.image_candidate_steps))
             operation = "generation.image.generate_candidate"
             step_payload = {
                 "logical_key": logical_key,
@@ -186,10 +311,7 @@ class ProductionReadyLegacyBridge(ReferenceAwareLegacyCandidateV3Bridge):
                 "length": int(params.get("length") or 124),
                 "steps": int(params.get("steps") or 20),
                 "seed": int(params.get("seed") or 0),
-                "metadata": {
-                    **common_metadata,
-                    "legacy_first_frame_asset_id": first_frame_asset_id,
-                },
+                "metadata": {**common_metadata, "legacy_first_frame_asset_id": first_frame_asset_id},
             }
             output_asset_type = "VIDEO"
 
@@ -201,11 +323,7 @@ class ProductionReadyLegacyBridge(ReferenceAwareLegacyCandidateV3Bridge):
             payload_ref=payload_ref,
             idempotency_key=step_key,
         )
-        request = ProductionWorkflowInput(
-            workflow_id=workflow_id,
-            project_id=project_id,
-            steps=(step,),
-        )
+        request = ProductionWorkflowInput(workflow_id=workflow_id, project_id=project_id, steps=(step,))
         task_record = self.legacy.store.create(
             task_id=task_id,
             module="新版工作流",
@@ -264,12 +382,7 @@ class ProductionReadyLegacyBridge(ReferenceAwareLegacyCandidateV3Bridge):
         step_key: str,
     ) -> None:
         try:
-            self.legacy.store.update(
-                task_id,
-                status=TaskStatus.running,
-                progress=5,
-                message="正在生成候选",
-            )
+            self.legacy.store.update(task_id, status=TaskStatus.running, progress=5, message="正在生成候选")
             client = await Client.connect(self.temporal_address, namespace=self.temporal_namespace)
             handle = await client.start_workflow(
                 ProductionWorkflow.run,
@@ -283,10 +396,7 @@ class ProductionReadyLegacyBridge(ReferenceAwareLegacyCandidateV3Bridge):
 
             versions = self.resources.list_versions(project_id, logical_key)
             resource = next(
-                (
-                    item for item in reversed(versions)
-                    if str(item.get("generation_task_id") or "") == step_key
-                ),
+                (item for item in reversed(versions) if str(item.get("generation_task_id") or "") == step_key),
                 None,
             )
             if resource is None:

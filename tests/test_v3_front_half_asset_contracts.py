@@ -141,27 +141,28 @@ class _Legacy:
 
 
 class FrontHalfAssetContractTests(unittest.TestCase):
+    def _stage02_entity(self, director: _Director, project_id: str):
+        p = director.production
+        story_entity = p.create_entity(
+            project_id,
+            entity_type="character",
+            name="沈川",
+            logical_key="story:character:shen-chuan",
+            stage="01",
+            evidence={"source_stage": "01", "type": "story_fact"},
+        )
+        StageOutputAssetMaterializer(_Legacy(director)).materialize(project_id)
+        return next(
+            item for item in p.list_entities(project_id, entity_type="character")
+            if item["entity_id"] == story_entity["entity_id"]
+        )
+
     def test_stage02_versions_materialize_once_and_list_does_not_replace_default(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             project_id = "f" * 24
             director = _Director(Path(raw), project_id, "02", _STAGE02)
             p = director.production
-            story_entity = p.create_entity(
-                project_id,
-                entity_type="character",
-                name="沈川",
-                logical_key="story:character:shen-chuan",
-                stage="01",
-                evidence={"source_stage": "01", "type": "story_fact"},
-            )
-            legacy = _Legacy(director)
-            materializer = StageOutputAssetMaterializer(legacy)
-            materializer.materialize(project_id)
-
-            character = next(
-                item for item in p.list_entities(project_id, entity_type="character")
-                if item["entity_id"] == story_entity["entity_id"]
-            )
+            character = self._stage02_entity(director, project_id)
             authoring = character["metadata"]["authoring"]
             self.assertIn("参考图生成要求", authoring["source_design"])
             self.assertNotIn("参考图生成要求", authoring["stable_design"])
@@ -188,7 +189,7 @@ class FrontHalfAssetContractTests(unittest.TestCase):
                 entity_ids=[character["entity_id"]],
             )
 
-            versions = CharacterAppearanceMaterializer(legacy)
+            versions = CharacterAppearanceMaterializer(_Legacy(director))
             first = versions.materialize(project_id)
             second = versions.materialize(project_id)
             self.assertEqual(first["asset_ids"], second["asset_ids"])
@@ -207,12 +208,34 @@ class FrontHalfAssetContractTests(unittest.TestCase):
             before_content = json.loads(p.read_text_asset(project_id, before_id))
             self.assertIn("深蓝色古代束袖长袍", before_content["stable_design"])
 
-            listed = CharacterAppearanceService(legacy).list(project_id)
+            listed = CharacterAppearanceService(_Legacy(director)).list(project_id)
             defaults = [row for row in listed["appearances"] if row["appearance_id"] == "default"]
             self.assertEqual(len(defaults), 1)
             self.assertEqual(defaults[0]["asset_id"], before_id)
             default_after = p.get_asset(project_id, before_id)
             self.assertEqual(default_after["source"]["type"], "stage02_appearance_version")
+
+    def test_stage02_revision_refreshes_raw_source_and_stable_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            project_id = "r" * 24
+            director = _Director(Path(raw), project_id, "02", _STAGE02)
+            character = self._stage02_entity(director, project_id)
+            self.assertIn("深蓝色古代束袖长袍", character["metadata"]["authoring"]["stable_design"])
+
+            director.stage_text = _STAGE02.replace(
+                "深蓝色古代束袖长袍",
+                "墨绿色古代束袖长袍",
+            )
+            StageOutputAssetMaterializer(_Legacy(director)).materialize(project_id)
+            refreshed = next(
+                item for item in director.production.list_entities(project_id, entity_type="character")
+                if item["entity_id"] == character["entity_id"]
+            )
+            authoring = refreshed["metadata"]["authoring"]
+            self.assertIn("墨绿色古代束袖长袍", authoring["source_design"])
+            self.assertIn("墨绿色古代束袖长袍", authoring["stable_design"])
+            self.assertNotIn("深蓝色古代束袖长袍", authoring["stable_design"])
+            self.assertNotIn("参考图生成要求", authoring["stable_design"])
 
     def test_stage03_direction_survives_same_pass_cleanup_of_legacy_fake_entity(self) -> None:
         with tempfile.TemporaryDirectory() as raw:

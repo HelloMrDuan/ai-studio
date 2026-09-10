@@ -3,14 +3,13 @@ from __future__ import annotations
 import unittest
 
 from app.v3.front_half_quality_gate import (
+    parse_character_appearance_versions,
     parse_visual_direction_block,
     validate_front_half_output,
 )
 
 
-class FrontHalfQualityGateTests(unittest.TestCase):
-    def test_story_bible_requires_all_ten_fact_groups(self) -> None:
-        good = """
+_STORY = """
 # 故事生产圣经
 ## 故事定位
 这是一个完整短篇故事定位，目标时长约三分钟。这里补充足够的生产说明以形成稳定事实源。
@@ -27,20 +26,15 @@ N01 进入山门；N02 发现石门；N03 作出选择。每个节点写明进�
 ## 道具实体表
 乌木剑鞘；青玉坠。记录首次出现与后续状态变化。
 ## 对白与旁白事实
-保留原文关键对白，其他叙述允许压缩但不改事实。
+对白：保留原文关键对白。旁白：其他叙述允许压缩但不改事实。
 ## 连续性事件
 记录服装、天气、持有物和时间变化，供后续镜头继承。
 ## 创作计划
 冲突逐步升级，高潮放在石门开启，计划不覆盖事实层。
 """ + ("稳定生产事实。" * 30)
-        self.assertTrue(validate_front_half_output("xiaoduan-story-bible", good)["valid"])
-        bad = good.replace("## 地点实体表", "## 空间内容")
-        result = validate_front_half_output("xiaoduan-story-bible", bad)
-        self.assertFalse(result["valid"])
-        self.assertTrue(any("地点实体表" in item for item in result["issues"]))
 
-    def test_character_contract_requires_gender_and_identity_fields(self) -> None:
-        good = """
+
+_CHARACTER = """
 ## 角色资产：苏瑶
 - 稳定身份：青云山弟子
 - 性别呈现：女性
@@ -74,14 +68,9 @@ N01 进入山门；N02 发现石门；N03 作出选择。每个节点写明进�
 }
 ```
 """
-        self.assertTrue(validate_front_half_output("xiaoduan-character-assets", good)["valid"])
-        bad = good.replace("- 性别呈现：女性\n", "")
-        result = validate_front_half_output("xiaoduan-character-assets", bad)
-        self.assertFalse(result["valid"])
-        self.assertTrue(any("性别" in item for item in result["issues"]))
 
-    def test_visual_direction_is_strict_machine_contract(self) -> None:
-        good = """
+
+_VISUAL = """
 ## 项目视觉圣经
 - 媒介与技法：电影写实摄影，细腻自然肤质与真实布料。
 - 项目色板：主色 #203A5F，辅色 #DDE6EA，强调色 #6F8A63，背景 #ECE8DF。
@@ -121,24 +110,68 @@ N01 进入山门；N02 发现石门；N03 作出选择。每个节点写明进�
 - change_reason：默认无版本变化
 - 参考图生成要求：白底完整展示道具本体
 """
-        result = validate_front_half_output("xiaoduan-visual-assets", good)
+
+
+class FrontHalfQualityGateTests(unittest.TestCase):
+    def test_story_bible_requires_all_ten_fact_groups(self) -> None:
+        self.assertTrue(validate_front_half_output("xiaoduan-story-bible", _STORY)["valid"])
+        bad = _STORY.replace("## 地点实体表", "## 空间内容")
+        result = validate_front_half_output("xiaoduan-story-bible", bad)
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("地点实体表" in item for item in result["issues"]))
+
+    def test_story_bible_requires_world_timeline_dialogue_narration_and_node_id(self) -> None:
+        no_timeline = _STORY.replace("世界观与时间线", "世界观").replace("时间变化", "时序变化")
+        result = validate_front_half_output("xiaoduan-story-bible", no_timeline)
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("时间线" in item for item in result["issues"]))
+
+        no_node_id = _STORY.replace("N01 ", "").replace("N02 ", "").replace("N03 ", "")
+        result = validate_front_half_output("xiaoduan-story-bible", no_node_id)
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("节点 ID" in item for item in result["issues"]))
+
+    def test_character_contract_requires_gender_and_identity_fields(self) -> None:
+        self.assertTrue(validate_front_half_output("xiaoduan-character-assets", _CHARACTER)["valid"])
+        bad = _CHARACTER.replace("- 性别呈现：女性\n", "")
+        result = validate_front_half_output("xiaoduan-character-assets", bad)
+        self.assertFalse(result["valid"])
+        self.assertTrue(any("性别" in item for item in result["issues"]))
+
+    def test_appearance_stable_design_rejects_shot_or_reference_pollution(self) -> None:
+        bad = _CHARACTER.replace(
+            "16-17岁女性，黑色长发以玉簪挽起，纤细匀称，浅青色交领长裙、白色薄披风、浅色布靴",
+            "16-17岁女性，黑色长发，浅青色长裙，背景为雪山，镜头正面特写",
+        )
+        with self.assertRaises(ValueError):
+            parse_character_appearance_versions(bad)
+
+    def test_visual_direction_is_strict_machine_contract(self) -> None:
+        result = validate_front_half_output("xiaoduan-visual-assets", _VISUAL)
         self.assertTrue(result["valid"], result["issues"])
-        direction = parse_visual_direction_block(good)
+        direction = parse_visual_direction_block(_VISUAL)
         self.assertEqual(direction["world_style"], "东方仙侠")
         self.assertEqual(direction["culture"], "古代中国文化语境")
         self.assertIn("western fantasy identity drift", direction["negative_constraints"])
 
-        bad = good.replace("#203A5F", "深蓝").replace("#DDE6EA", "浅灰")
+        bad = _VISUAL.replace("#203A5F", "深蓝").replace("#DDE6EA", "浅灰")
         result = validate_front_half_output("xiaoduan-visual-assets", bad)
         self.assertFalse(result["valid"])
         self.assertTrue(any("HEX" in item for item in result["issues"]))
 
-    def test_visual_direction_rejects_missing_structured_fields(self) -> None:
+    def test_visual_direction_rejects_missing_or_empty_structured_rules(self) -> None:
         bad = """```visual-direction-json
 {"world_style":"东方仙侠","culture":"中国","era":"古代","art_style":"写实"}
 ```"""
         with self.assertRaises(ValueError):
             parse_visual_direction_block(bad)
+
+        empty = _VISUAL.replace(
+            '{"identity": "东亚人物特征，身份与形象版本稳定"}',
+            '{}',
+        )
+        with self.assertRaises(ValueError):
+            parse_visual_direction_block(empty)
 
 
 if __name__ == "__main__":

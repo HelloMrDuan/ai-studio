@@ -22,12 +22,7 @@ def _capabilities(values: list[str] | tuple[str, ...]) -> set[Capability]:
 
 
 def _comfy_reference_profile(settings: Settings) -> dict[str, Any] | None:
-    """Load an operator-proven Comfy reference workflow profile.
-
-    Static profiles declare every reference slot explicitly. Role-aware profiles
-    instead declare a bounded max reference count and let the executor compile the
-    exact FaceID/IP-Adapter chain for the references actually used by one shot.
-    """
+    """Load an operator-proven Comfy reference workflow profile."""
     profile_path = Path(settings.data_dir) / "comfyui_reference_profile.v3.json"
     if not profile_path.is_file():
         return None
@@ -111,7 +106,6 @@ def platform_provider_specs(settings: Settings) -> list[ProviderModelSpec]:
             capabilities={Capability.image_generation},
             base_url=str(settings.comfyui_base_url).rstrip("/"),
             priority=5,
-            max_references=0,
             metadata={
                 "source": "existing-platform",
                 "adapter": "z-image-turbo-api-workflow",

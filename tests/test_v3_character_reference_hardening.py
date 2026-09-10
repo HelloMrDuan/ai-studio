@@ -5,6 +5,7 @@ import unittest
 from types import SimpleNamespace
 
 import app.services.media_generation_pipeline as media_pipeline_module
+from app.services.comfyui import ZIMAGE_TURBO_KEY
 from app.services.generation_contract import GenerationContract
 from app.services.prompt_compiler import PromptCompiler
 from app.services.visual_direction import VisualDirection
@@ -110,15 +111,19 @@ class CharacterReferenceHardeningTests(unittest.TestCase):
         self.assertIn("story prop", result.negative_prompt)
         self.assertNotIn("male character", result.positive_prompt)
 
-    def test_runtime_contract_rebinds_legacy_and_bootstrap_dispatch(self) -> None:
+    def test_runtime_contract_rebinds_public_dispatch_and_routes_face_to_zimage(self) -> None:
         async def original_llm(*args, **kwargs):
             return {}, "qwen3-32b"
 
         async def original_execute(project_id, payload):
             return {"project_id": project_id, "payload": payload}
 
+        face_target = {
+            "asset_role": "character_face_anchor",
+            "metadata": {"reference_asset": True, "reference_phase": "face_anchor"},
+        }
         llm = SimpleNamespace(_request_messages=original_llm)
-        production = SimpleNamespace(get_asset=lambda project_id, target_id: {})
+        production = SimpleNamespace(get_asset=lambda project_id, target_id: face_target)
         director = SimpleNamespace(production=production, llm=llm)
         bootstrap = SimpleNamespace(submit_candidate=original_execute)
         bridge = SimpleNamespace(execute_candidate=original_execute, reference_bootstrap=bootstrap)
@@ -138,8 +143,28 @@ class CharacterReferenceHardeningTests(unittest.TestCase):
         self.assertIs(legacy.director_workbench_execute_candidate.__self__, contract)
         self.assertIs(bridge.execute_candidate.__self__, contract)
         self.assertIs(bootstrap.submit_candidate.__self__, contract)
-        result = asyncio.run(legacy.director_workbench_execute_candidate("p", {"capability": "text"}))
-        self.assertEqual(result["project_id"], "p")
+
+        request = {
+            "capability": "image",
+            "mode": "txt2img",
+            "target_asset_id": "face-asset",
+            "params": {
+                "reference_phase": "face_anchor",
+                "model_key": "smart",
+                "steps": 36,
+                "cfg": 6.0,
+                "sampler": "dpmpp_2m",
+                "scheduler": "karras",
+            },
+        }
+        result = asyncio.run(legacy.director_workbench_execute_candidate("p", request))
+        routed = result["payload"]["params"]
+        self.assertEqual(routed["model_key"], ZIMAGE_TURBO_KEY)
+        self.assertEqual(routed["steps"], 9)
+        self.assertEqual(routed["cfg"], 1.0)
+        self.assertEqual(routed["sampler"], "euler")
+        self.assertEqual(routed["scheduler"], "simple")
+        self.assertEqual(routed["runtime_image_backend"], ZIMAGE_TURBO_KEY)
 
 
 if __name__ == "__main__":

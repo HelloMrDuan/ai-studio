@@ -127,13 +127,32 @@ class ReferenceAssetBootstrap:
         key = self._prompt_key(entity_id)
         rows = [
             item for item in self.director.production.list_assets(project_id, active_only=True)
-            if _clean(item.get("logical_key")) == key
+            if _clean(item.get("logical_key")).startswith(key)
             and _clean(item.get("asset_type")).upper() in {"TEXT", "STRUCTURED_DATA", "FILE"}
             and _clean(item.get("status")).lower() == "ready"
             and _clean(item.get("dependency_state")).lower() != "stale"
         ]
         rows.sort(key=lambda item: (int(item.get("version") or 0), _clean(item.get("updated_at"))))
         return rows[-1] if rows else None
+
+    @staticmethod
+    def _prompt_asset_is_user_edited(prompt_asset: dict[str, Any] | None) -> bool:
+        if not isinstance(prompt_asset, dict):
+            return False
+        source = prompt_asset.get("source") if isinstance(prompt_asset.get("source"), dict) else {}
+        metadata = prompt_asset.get("metadata") if isinstance(prompt_asset.get("metadata"), dict) else {}
+        return bool(metadata.get("user_edited")) or _clean(source.get("type")) == "manual_reference_prompt"
+
+    def _read_prompt_asset(self, project_id: str, prompt_asset: dict[str, Any] | None) -> str:
+        if not isinstance(prompt_asset, dict):
+            return ""
+        asset_id = _clean(prompt_asset.get("asset_id"))
+        if not asset_id:
+            return ""
+        try:
+            return _clean(self.director.production.read_text_asset(project_id, asset_id))
+        except Exception:
+            return ""
 
     def _reference_prompt(self, entity: dict[str, Any]) -> str:
         kind = _clean(entity.get("entity_type")).lower()
@@ -151,10 +170,15 @@ class ReferenceAssetBootstrap:
 
         if kind == "character":
             format_rule = (
-                "生成一张4:3横向角色身份参考图，左右等分：左侧是同一角色清晰面部近景，"
-                "右侧是同一角色无遮挡全身。两侧必须保持完全相同的脸部结构、发型发色、"
-                "体型、肤色、服装、鞋履、配饰和配色。使用中性表情、中性站姿、纯净浅色背景。"
-                "这是稳定身份资产，不表现本镜头动作，不拿剧情道具，不出现其他人物、字幕、标注或水印。"
+                "生成一张4:3横向角色三视图设定图（character turnaround sheet / model sheet），必须在同一张画布中完成。"
+                "画面设置一个明显更大的正面脸部近景，用于锁定年龄、五官、脸型、肤色与发型；"
+                "同时并排展示同一角色的三个无遮挡全身视图：正面全身、严格90度侧面全身、背面全身。"
+                "三个全身视图必须从头到脚完整可见、比例和尺度接近、使用中性站姿，不得裁脚，不使用动作姿势。"
+                "脸部近景和三幅全身必须是完全同一个角色，严格保持相同的可见年龄、脸部结构、发型发色、"
+                "体型、肤色、服装、鞋履、配饰和固定配色；侧面和背面不得重新设计服装或人物。"
+                "如果项目明确了年龄，所有视图都必须忠实呈现该年龄，禁止年龄漂移。"
+                "使用干净纯色或浅色棚拍背景，不表现本镜头动作，不拿一次性剧情道具，"
+                "不出现其他人物、额外重复角色、场景叙事、字幕、标签、标注或水印。"
             )
         elif kind in {"scene", "location"}:
             format_rule = (
@@ -207,6 +231,7 @@ class ReferenceAssetBootstrap:
                 metadata={
                     "reference_asset": True,
                     "reference_kind": kind,
+                    "reference_layout": "character_turnaround_v2" if kind == "character" else f"{kind}_reference_v1",
                     "manual_adoption_required": True,
                     "design_source": "formal_stable_profile",
                     "visual_context": {"appearance_version": version if kind == "character" else ""},
@@ -217,7 +242,24 @@ class ReferenceAssetBootstrap:
         for evidence in entity.get("evidence") or []:
             if isinstance(evidence, dict) and _clean(evidence.get("source_asset_id")):
                 source_asset_ids.append(_clean(evidence.get("source_asset_id")))
-        content = _clean(prompt_override) or self._reference_prompt(entity)
+
+        requested = _clean(prompt_override)
+        current_prompt_asset = self._prompt_asset(project_id, entity_id)
+        current_prompt_text = self._read_prompt_asset(project_id, current_prompt_asset)
+        # The UI submits the textarea even when the user did not edit it. If that
+        # textarea still contains an older auto-generated two-view layout, do not
+        # preserve it as a manual override: transparently migrate to the current
+        # three-view character-sheet contract. Genuine user edits remain intact.
+        if (
+            requested
+            and current_prompt_asset is not None
+            and not self._prompt_asset_is_user_edited(current_prompt_asset)
+            and current_prompt_text
+            and requested == current_prompt_text
+        ):
+            requested = ""
+
+        content = requested or self._reference_prompt(entity)
         prompt = self.director.production.create_text_asset(
             project_id,
             stage="03",
@@ -229,7 +271,7 @@ class ReferenceAssetBootstrap:
             asset_type="TEXT",
             extension=".txt",
             source={
-                "type": "manual_reference_prompt" if _clean(prompt_override) else "auto_consistency_reference_prompt",
+                "type": "manual_reference_prompt" if requested else "auto_consistency_reference_prompt",
                 "entity_id": entity_id,
             },
             parent_asset_ids=list(dict.fromkeys(source_asset_ids))[-16:],
@@ -237,7 +279,8 @@ class ReferenceAssetBootstrap:
             metadata={
                 "reference_asset": True,
                 "reference_kind": kind,
-                "user_edited": bool(_clean(prompt_override)),
+                "reference_layout": "character_turnaround_v2" if kind == "character" else f"{kind}_reference_v1",
+                "user_edited": bool(requested),
             },
         )
         return target, prompt
@@ -263,12 +306,14 @@ class ReferenceAssetBootstrap:
                     ),
                     None,
                 )
+            # Auto prompts are versioned implementation detail: always expose the
+            # newest layout contract. Only an explicit user edit is persisted as
+            # authoritative textarea content across upgrades.
             prompt_text = self._reference_prompt(entity)
-            if prompt_asset is not None:
-                try:
-                    prompt_text = self.director.production.read_text_asset(project_id, _clean(prompt_asset.get("asset_id")))
-                except Exception:
-                    pass
+            if prompt_asset is not None and self._prompt_asset_is_user_edited(prompt_asset):
+                stored = self._read_prompt_asset(project_id, prompt_asset)
+                if stored:
+                    prompt_text = stored
             items.append(
                 {
                     "entity_id": entity_id,
@@ -424,7 +469,7 @@ def create_reference_asset_router(legacy_runtime: Any) -> APIRouter:
                 project_id,
                 entity_id,
                 force=bool(body.get("force")),
-                prompt_override=_clean(body.get("prompt_text")),
+                prompt_override=_clean(body.get("prompt_text") or body.get("prompt")),
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

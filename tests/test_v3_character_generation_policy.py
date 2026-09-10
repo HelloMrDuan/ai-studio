@@ -81,6 +81,11 @@ def test_explicit_male_identity_is_hard_constrained_before_provider():
     assert "girl" in result.negative_prompt
 
 
+def test_stage02_gender_presentation_field_is_authoritative():
+    assert infer_character_gender("性别呈现：女性\n年龄感：16岁少女") == "female"
+    assert infer_character_gender("性别呈现：男性\n年龄感：18岁少年") == "male"
+
+
 def test_gender_is_never_inferred_from_character_name():
     assert infer_character_gender("角色名称：苏瑶；脸型：清秀") == ""
     assert infer_character_gender("角色名称：沈川；脸型：清秀") == ""

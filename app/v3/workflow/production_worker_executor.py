@@ -4,19 +4,25 @@ from app.config import Settings
 
 from .contracts import StepActivityInput, StepActivityResult
 from .production_cached_executor import ProductionCachedFullPipelineExecutor, _MATERIALIZED
+from .unified_image_executor import UnifiedImageDomainExecutor
 
 
 class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
-    """Worker executor that checks immutable media reuse before acquiring GPU."""
+    """Worker executor that checks immutable media reuse before acquiring GPU.
+
+    The visual executor is unified: reference-free images use the explicit
+    Z-Image provider and reference-conditioned images use the proven SDXL
+    reference provider, while both share the same Temporal operation and stores.
+    """
 
     def __init__(self, settings: Settings) -> None:
-        super().__init__(settings)
+        super().__init__(settings, visual=UnifiedImageDomainExecutor(settings))
 
     async def __call__(self, input: StepActivityInput) -> StepActivityResult:
         operation = input.step.operation
         if operation in _MATERIALIZED:
             # FullPipelineExecutor normally acquires the Comfy workspace before
-            # delegating visual work.  Exact content reuse needs no GPU at all,
+            # delegating visual work. Exact content reuse needs no GPU at all,
             # so inspect the content-addressed cache first.
             cached_task = self.visual.base.results.get(input.project_id, input.step.idempotency_key)
             if cached_task is not None:

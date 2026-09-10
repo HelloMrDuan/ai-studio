@@ -25,29 +25,13 @@ _CN_DIGITS = {
 }
 
 _ANCHOR_TECHNICAL_KEYS = {
-    "schema_version",
-    "asset_id",
-    "entity_id",
-    "character_id",
-    "character_entity_id",
-    "appearance_id",
-    "appearance_version",
-    "logical_key",
-    "source_asset_id",
-    "parent_asset_ids",
-    "evidence",
-    "source",
+    "schema_version", "asset_id", "entity_id", "character_id", "character_entity_id",
+    "appearance_id", "appearance_version", "logical_key", "source_asset_id",
+    "parent_asset_ids", "evidence", "source",
 }
 _ANCHOR_TRANSIENT_KEYS = {
-    "action",
-    "pose",
-    "expression",
-    "camera",
-    "camera_direction",
-    "shot",
-    "shot_id",
-    "scene_state",
-    "momentary_state",
+    "action", "pose", "expression", "camera", "camera_direction", "shot", "shot_id",
+    "scene_state", "momentary_state",
 }
 
 
@@ -205,13 +189,33 @@ def _character_age_constraints(text: str) -> tuple[str, str]:
     return strict, "age drift, visibly younger or older than the confirmed character age"
 
 
-def _anchor_rows(value: Any, prefix: str = "", depth: int = 0) -> list[str]:
-    """Convert stored profile JSON into concise visual language.
+def _character_face_quality_constraints(direction: VisualDirection) -> tuple[str, str]:
+    """Stable face anatomy rules independent of character identity.
 
-    IDs, lineage fields and transient shot state are deliberately excluded: they
-    consume prompt budget but have no visual meaning. Stable profile/design data
-    remains renderable and human-readable.
+    Anti-CGI/style negatives are enabled only for projects explicitly requesting
+    a realistic/cinematic/photo visual language so stylized projects remain valid.
     """
+    positive = (
+        "natural human face, anatomically coherent facial structure, normal eye size and alignment, "
+        "balanced facial proportions, anatomically plausible nose and mouth, natural jaw and cheeks, "
+        "consistent facial identity, clean detailed eyes, natural skin texture"
+    )
+    negative = (
+        "malformed face, distorted face, warped facial anatomy, asymmetrical eyes, cross-eyed, "
+        "misaligned eyes, duplicated facial features, deformed mouth, broken jawline, melted face, "
+        "uncanny face, oversized doll eyes"
+    )
+    style = str(direction.art_style or "").lower()
+    if any(token in style for token in ("realistic", "photoreal", "cinematic", "photo", "写实", "电影")):
+        positive += ", realistic human facial detail, subtle skin texture, natural non-plastic skin"
+        negative += (
+            ", cartoon face, chibi, disney-like face, pixar-like face, 3d toy, cgi doll, "
+            "game-avatar face, plastic doll skin, wax figure"
+        )
+    return positive, negative
+
+
+def _anchor_rows(value: Any, prefix: str = "", depth: int = 0) -> list[str]:
     if depth > 4:
         return []
     rows: list[str] = []
@@ -239,7 +243,6 @@ def _anchor_rows(value: Any, prefix: str = "", depth: int = 0) -> list[str]:
 
 
 def naturalize_visual_anchor(raw: Any) -> str:
-    """Return a compact, non-JSON visual anchor suitable for provider prompts."""
     if raw is None:
         return ""
     if isinstance(raw, (dict, list)):
@@ -251,7 +254,6 @@ def naturalize_visual_anchor(raw: Any) -> str:
         return ""
 
     parsed_rows: list[str] = []
-    # identity_anchors can contain one JSON document per line.
     chunks = [line.strip() for line in text.splitlines() if line.strip()]
     all_json = bool(chunks)
     for chunk in chunks:
@@ -286,10 +288,9 @@ def _join_unique(parts: tuple[str, ...] | list[str]) -> str:
 class PromptCompiler:
     """Unified media prompt compilation entry.
 
-    Character identity, project visual direction and age constraints are placed
-    ahead of reference-sheet layout. This ordering is intentional: providers
-    with limited text-encoder context must not preserve the sheet layout while
-    truncating the actual character identity.
+    Character identity, project direction, age and face anatomy always precede
+    reference layout. This prevents a large turnaround layout prompt from
+    crowding the actual person out of the provider's text context.
     """
 
     def __init__(self) -> None:
@@ -322,24 +323,26 @@ class PromptCompiler:
 
         age_positive = ""
         age_negative = ""
+        face_positive = ""
+        face_negative = ""
         if kind == "character":
             age_positive, age_negative = _character_age_constraints(
                 "\n".join(part for part in (asset_description, anchor_text, contract_context) if part)
             )
+            face_positive, face_negative = _character_face_quality_constraints(visual_direction)
 
         if reference:
-            # Identity and style come first. The layout is last and intentionally
-            # concise so it cannot crowd confirmed visual facts out of the model
-            # text-encoder context window.
             positive = _join_unique([
                 visual_context,
                 age_positive,
+                face_positive,
                 asset_description,
                 template.positive if template else "",
             ])
             negative = _join_unique([
                 visual_direction.compile_negative_prompt(),
                 age_negative,
+                face_negative,
                 provider_negative,
                 template.negative if template else "",
             ])
@@ -351,17 +354,16 @@ class PromptCompiler:
             )
             positive = _join_unique([
                 age_positive,
+                face_positive,
                 compiled["positive_prompt"],
                 "shot production, preserve established identities and visual anchors",
             ])
             negative = _join_unique([
                 age_negative,
+                face_negative,
                 compiled["negative_prompt"],
                 provider_negative,
                 "identity change, inconsistent visual anchors",
             ])
 
-        return CompiledPrompt(
-            positive_prompt=positive,
-            negative_prompt=negative,
-        )
+        return CompiledPrompt(positive_prompt=positive, negative_prompt=negative)

@@ -99,6 +99,9 @@ class MediaGenerationPipeline:
 
         description = production.read_text_asset(project_id, source_id)
         context = dict(target["metadata"]["visual_context"])
+        phase_context = dict(context)
+        if reference_phase:
+            phase_context["reference_phase"] = reference_phase
         direction = production.get_visual_direction(project_id, context.get("visual_direction_id", ""))
         entity_ids = tuple(target.get("entity_ids") or [])
         anchors: list[str] = []
@@ -167,7 +170,7 @@ class MediaGenerationPipeline:
             asset_version=str(target["version"]),
             prompt=description,
             visual_direction=direction,
-            visual_context={**context, "reference_phase": reference_phase},
+            visual_context=phase_context,
             entity_ids=entity_ids,
             character_appearances=tuple(selections),
             identity_anchors="\n".join(anchors),
@@ -231,7 +234,7 @@ class MediaGenerationPipeline:
             "prompt_asset_id": prompt_asset["asset_id"],
             "params": params,
             "generation_contract_id": contract_asset["asset_id"],
-            "visual_context": {**context, "reference_phase": reference_phase},
+            "visual_context": phase_context,
             "visual_direction": direction,
             "character_appearances": selections,
         }

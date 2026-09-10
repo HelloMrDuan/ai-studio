@@ -60,6 +60,19 @@ N01 进入山门；N02 发现石门；N03 作出选择。每个节点写明进�
 - 参考图生成要求：稳定身份，不带剧情动作和场景背景
 - 原文证据：原文明确苏瑶为少女并写明服装
 - 设计补全来源：未指定五官细节由角色设计补全
+```appearance-versions-json
+{
+  "versions": [
+    {
+      "appearance_id": "default",
+      "name": "默认造型",
+      "stable_design": "16-17岁女性，黑色长发以玉簪挽起，纤细匀称，浅青色交领长裙、白色薄披风、浅色布靴",
+      "change_reason": "故事开场默认状态",
+      "effective_story_node_ids": []
+    }
+  ]
+}
+```
 """
         self.assertTrue(validate_front_half_output("xiaoduan-character-assets", good)["valid"])
         bad = good.replace("- 性别呈现：女性\n", "")

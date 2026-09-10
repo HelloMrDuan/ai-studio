@@ -13,12 +13,11 @@ _FRONT_HALF_SKILLS = {
     "xiaoduan-character-assets": "02",
     "xiaoduan-visual-assets": "03",
 }
-_PLACEHOLDER = re.compile(r"^(?:未指定|未知|待设计|待补充|not specified|unknown)\s*$", re.I)
+_PLACEHOLDER = re.compile(r"^(?:未指定|未知|待设计|待补充|未描述|not specified|unknown)\s*$", re.I)
 _ASSET_HEADING = re.compile(r"(?m)^\s{0,3}##\s+(角色|地点|道具)资产\s*[：:]\s*(.+?)\s*$")
-_VISUAL_BLOCK = re.compile(
-    r"```visual-direction-json\s*(\{.*?\})\s*```",
-    re.I | re.S,
-)
+_VISUAL_BLOCK = re.compile(r"```visual-direction-json\s*(\{.*?\})\s*```", re.I | re.S)
+_APPEARANCE_BLOCK = re.compile(r"```appearance-versions-json\s*(\{.*?\})\s*```", re.I | re.S)
+_SAFE_APPEARANCE_ID = re.compile(r"[A-Za-z0-9._-]{1,80}$")
 
 
 def _clean(value: Any) -> str:
@@ -30,6 +29,10 @@ def _contains(text: str, *tokens: str) -> bool:
     return any(token.casefold() in lowered for token in tokens)
 
 
+def _normalized_identity(value: str) -> str:
+    return re.sub(r"[\s\u200b-\u200d\ufeff]+", "", _clean(value)).casefold()
+
+
 def _heading_blocks(content: str, kind: str) -> list[tuple[str, str]]:
     matches = list(_ASSET_HEADING.finditer(content))
     rows: list[tuple[str, str]] = []
@@ -37,10 +40,7 @@ def _heading_blocks(content: str, kind: str) -> list[tuple[str, str]]:
         if match.group(1) != kind:
             continue
         start = match.end()
-        end = len(content)
-        for later in matches[index + 1 :]:
-            end = later.start()
-            break
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
         rows.append((_clean(match.group(2)), content[start:end].strip()))
     return rows
 
@@ -87,6 +87,64 @@ def parse_visual_direction_block(content: str) -> dict[str, Any]:
     if not negatives:
         raise ValueError("visual-direction-json.negative_constraints 至少要有一条项目级禁止漂移约束")
     return payload
+
+
+def parse_character_appearance_versions(content: str) -> dict[str, list[dict[str, Any]]]:
+    """Parse exact Stage02 appearance contracts by canonical character name."""
+    result: dict[str, list[dict[str, Any]]] = {}
+    for name, body in _heading_blocks(content, "角色"):
+        match = _APPEARANCE_BLOCK.search(body)
+        if not match:
+            raise ValueError(f"角色「{name}」缺少 ```appearance-versions-json 机器形象版本块")
+        try:
+            payload = json.loads(match.group(1))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"角色「{name}」appearance-versions-json 不是合法 JSON：{exc.msg}") from exc
+        if not isinstance(payload, dict) or set(payload) != {"versions"}:
+            raise ValueError(f"角色「{name}」appearance-versions-json 只能包含 versions")
+        versions = payload.get("versions")
+        if not isinstance(versions, list) or not versions:
+            raise ValueError(f"角色「{name}」至少需要一个形象版本")
+        seen: set[str] = set()
+        normalized: list[dict[str, Any]] = []
+        for index, raw in enumerate(versions):
+            if not isinstance(raw, dict):
+                raise ValueError(f"角色「{name}」形象版本 #{index + 1} 必须是对象")
+            expected = {"appearance_id", "name", "stable_design", "change_reason", "effective_story_node_ids"}
+            missing = expected - set(raw)
+            extra = set(raw) - expected
+            if missing or extra:
+                detail = []
+                if missing:
+                    detail.append("缺少 " + ", ".join(sorted(missing)))
+                if extra:
+                    detail.append("多余 " + ", ".join(sorted(extra)))
+                raise ValueError(f"角色「{name}」形象版本字段不合法：{'；'.join(detail)}")
+            aid = _clean(raw.get("appearance_id"))
+            if not _SAFE_APPEARANCE_ID.fullmatch(aid):
+                raise ValueError(f"角色「{name}」appearance_id 必须为 1-80 位 ASCII 字母/数字/._-：{aid}")
+            if aid in seen:
+                raise ValueError(f"角色「{name}」appearance_id 重复：{aid}")
+            seen.add(aid)
+            label = _clean(raw.get("name"))
+            design = _clean(raw.get("stable_design"))
+            reason = _clean(raw.get("change_reason"))
+            nodes = raw.get("effective_story_node_ids")
+            if not label or len(design) < 8 or not reason:
+                raise ValueError(f"角色「{name}」形象版本 {aid} 的 name/stable_design/change_reason 不完整")
+            if not isinstance(nodes, list) or not all(isinstance(item, str) and item.strip() for item in nodes):
+                raise ValueError(f"角色「{name}」形象版本 {aid}.effective_story_node_ids 必须是字符串数组")
+            normalized.append({
+                "appearance_id": aid,
+                "name": label,
+                "stable_design": design,
+                "change_reason": reason,
+                "effective_story_node_ids": [item.strip() for item in nodes],
+            })
+        if "default" not in seen:
+            raise ValueError(f"角色「{name}」必须包含 appearance_id=default 的默认形象版本")
+        result[name] = normalized
+    return result
 
 
 def _validate_stage01(content: str) -> list[str]:
@@ -159,6 +217,10 @@ def _validate_stage02(content: str) -> list[str]:
             issues.append(f"角色资产重复：{name}")
         names.add(key)
         issues.extend(_validate_character_block(name, body))
+    try:
+        parse_character_appearance_versions(text)
+    except ValueError as exc:
+        issues.append(str(exc))
     return issues
 
 
@@ -223,7 +285,6 @@ def _validate_stage03(content: str) -> list[str]:
         parse_visual_direction_block(text)
     except ValueError as exc:
         issues.append(str(exc))
-
     for name, body in _heading_blocks(text, "地点"):
         issues.extend(_validate_location_block(name, body))
     for name, body in _heading_blocks(text, "道具"):
@@ -241,12 +302,21 @@ def validate_front_half_output(skill_name: str, content: str) -> dict[str, Any]:
         issues = _validate_stage03(content)
     else:
         issues = []
-    return {
-        "valid": not issues,
-        "skill": skill,
-        "stage": _FRONT_HALF_SKILLS.get(skill, ""),
-        "issues": issues,
-    }
+    return {"valid": not issues, "skill": skill, "stage": _FRONT_HALF_SKILLS.get(skill, ""), "issues": issues}
+
+
+def _source_anchor_issues(skill_name: str, content: str, source_text: str) -> list[str]:
+    """Ensure Stage02/03 identity names already exist in the actual upstream input."""
+    kind = "角色" if skill_name == "xiaoduan-character-assets" else None
+    kinds = [kind] if kind else ["地点", "道具"] if skill_name == "xiaoduan-visual-assets" else []
+    compact_source = _normalized_identity(source_text)
+    issues: list[str] = []
+    for item_kind in kinds:
+        for name, _body in _heading_blocks(content, item_kind):
+            wanted = _normalized_identity(name)
+            if wanted and wanted not in compact_source:
+                issues.append(f"{item_kind}资产「{name}」未出现在真实上游故事/资产上下文，禁止创建新身份")
+    return issues
 
 
 def _extend_builtin_skill_contracts() -> None:
@@ -268,6 +338,22 @@ def _extend_builtin_skill_contracts() -> None:
 - 每个角色块必须显式写年龄/年龄感、脸部/五官、发型、发色、肤色、体型、身高感、服装、鞋履、固定身份锚点、允许变化项、形象版本、`change_reason`、参考图生成要求、原文证据、设计补全来源。
 - 发型未被故事指定时可以做设计补全，但必须作为明确设计结论固定下来；不能因为男性/女性使用性别刻板印象自动补长发或短发。
 - 角色名称必须逐字沿用故事生产圣经中的稳定名称；本阶段禁止新增故事生产圣经不存在的角色实体。
+- 稳定身份描述只写可见、可复用的身份/外观事实；允许变化项、剧情状态、证据说明、参考图版式不得混入 stable_design。
+- 每个 `## 角色资产：名称` 块内必须且只放一份以下机器形象版本块。`appearance_id` 只能使用 ASCII 字母、数字、`.`、`_`、`-`，默认造型固定为 `default`：
+```appearance-versions-json
+{
+  "versions": [
+    {
+      "appearance_id": "default",
+      "name": "默认造型",
+      "stable_design": "只写这个形象版本稳定可见的服装、发型、鞋履、配饰、颜色和体型差异",
+      "change_reason": "角色基础造型",
+      "effective_story_node_ids": []
+    }
+  ]
+}
+```
+- 剧情存在持续换装、伤势或阶段性造型时，必须在 versions 中增加独立版本；不能覆盖 default，也不能只写在说明文字里。
 """
 
     stage03 = BUILTIN_PRODUCTION_SKILLS["xiaoduan-visual-assets"]
@@ -296,13 +382,12 @@ def _extend_builtin_skill_contracts() -> None:
 ```
 - 该 JSON 是项目级 Visual Direction 的唯一机器事实源；不得从项目名、角色名或模型默认值推断其中字段。
 - 地点/道具名称必须逐字沿用故事生产圣经中的稳定名称；本阶段禁止新增故事生产圣经不存在的地点或道具身份。
+- 地点/道具 stable_design 只保存稳定空间/结构/材质事实；天气、人物位置、剧情功能、版本原因、参考图版式属于状态或执行元数据，不得污染稳定身份。
 """
 
 
 def _detect_skill(system_prompt: str, messages: list[dict[str, Any]]) -> str:
-    haystack = _clean(system_prompt) + "\n" + "\n".join(
-        _clean(item.get("content")) for item in messages if isinstance(item, dict)
-    )
+    haystack = _clean(system_prompt) + "\n" + "\n".join(_clean(item.get("content")) for item in messages if isinstance(item, dict))
     for skill in _FRONT_HALF_SKILLS:
         if skill in haystack:
             return skill
@@ -310,17 +395,10 @@ def _detect_skill(system_prompt: str, messages: list[dict[str, Any]]) -> str:
 
 
 def install_front_half_quality_gate(director: Any) -> None:
-    """Install deterministic, fail-closed validation before front-half output is persisted.
-
-    This follows the same boundary discipline as a strict output schema: Qwen is
-    still the creative writer, but incomplete or structurally unsafe output is
-    rejected before control entities/assets/handoffs are written. No mock or
-    second semantic model judges the content.
-    """
+    """Reject incomplete front-half Qwen output before any project write occurs."""
     _extend_builtin_skill_contracts()
     if getattr(director, "_xiaoduan_front_half_quality_gate_installed", False):
         return
-
     original_chat = director._tracked_llm_chat
     original_confirm = director.confirm_stage
 
@@ -335,11 +413,13 @@ def install_front_half_quality_gate(director: Any) -> None:
             return result
         content = _clean((result or {}).get("content")) if isinstance(result, dict) else ""
         check = validate_front_half_output(skill, content)
+        source_text = "\n".join(_clean(item.get("content")) for item in messages if isinstance(item, dict))
+        source_issues = _source_anchor_issues(skill, content, source_text)
+        if source_issues:
+            check["issues"].extend(source_issues)
+            check["valid"] = False
         if not check["valid"]:
-            raise RuntimeError(
-                "前半段生产结果未通过确定性交付质量门，未写入项目："
-                + json.dumps(check, ensure_ascii=False)
-            )
+            raise RuntimeError("前半段生产结果未通过确定性交付质量门，未写入项目：" + json.dumps(check, ensure_ascii=False))
         if isinstance(result, dict):
             result = dict(result)
             result["front_half_quality_gate"] = check
@@ -353,10 +433,7 @@ def install_front_half_quality_gate(director: Any) -> None:
             content = _clean(self._latest_stage_output(project, stage))
             check = validate_front_half_output(skill, content)
             if not check["valid"]:
-                raise RuntimeError(
-                    f"阶段 {stage} 交付质量未闭合，禁止确认："
-                    + json.dumps(check["issues"], ensure_ascii=False)
-                )
+                raise RuntimeError(f"阶段 {stage} 交付质量未闭合，禁止确认：" + json.dumps(check["issues"], ensure_ascii=False))
         return await original_confirm(project_id)
 
     director._tracked_llm_chat = MethodType(guarded_chat, director)
@@ -366,6 +443,7 @@ def install_front_half_quality_gate(director: Any) -> None:
 
 __all__ = [
     "install_front_half_quality_gate",
+    "parse_character_appearance_versions",
     "parse_visual_direction_block",
     "validate_front_half_output",
 ]

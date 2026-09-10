@@ -43,20 +43,44 @@ def _source_anchored(self: StageOutputAssetMaterializer, project_id: str, stage:
 
 
 def _project_entity_identity(entity: dict[str, Any]) -> bool:
-    """Persist a stable visible projection without destroying the raw stage block."""
+    """Persist a stable visible projection while retaining the latest raw block.
+
+    StageOutputAssetMaterializer refreshes ``stable_design`` from the newest
+    ready Stage02/03 text on every materialization. If that raw block changed,
+    it must replace the previous ``source_design`` before projection; otherwise
+    reopening a stage would silently snap the asset back to its old design.
+    """
     kind = _clean(entity.get("entity_type")).lower()
     if kind not in {"character", "location", "prop"}:
         return False
     metadata = entity.get("metadata") if isinstance(entity.get("metadata"), dict) else {}
     authoring = metadata.get("authoring") if isinstance(metadata.get("authoring"), dict) else {}
     current = _clean(authoring.get("stable_design"))
-    source_design = _clean(authoring.get("source_design")) or current
+    previous_source = _clean(authoring.get("source_design"))
+    previous_projection = (
+        project_stable_design(kind, previous_source) if previous_source else ""
+    )
+
+    # If a projection already existed and the materializer just supplied text
+    # different from that projection, ``current`` is the fresh authoritative
+    # Stage output. Promote it to source_design. Repeated syncs with unchanged
+    # source are harmless because the same raw source is promoted again.
+    if (
+        previous_source
+        and _clean(authoring.get("stable_projection")) == "visible_reusable_identity_v1"
+        and current
+        and current != previous_projection
+    ):
+        source_design = current
+    else:
+        source_design = previous_source or current
     if not source_design:
         return False
+
     projected = project_stable_design(kind, source_design)
     changed = (
         current != projected
-        or _clean(authoring.get("source_design")) != source_design
+        or previous_source != source_design
         or _clean(authoring.get("stable_projection")) != "visible_reusable_identity_v1"
     )
     authoring["source_design"] = source_design
@@ -193,9 +217,6 @@ def install_stage_asset_materialization_guard() -> None:
                     metadata["retired_reason"] = "上游假实体已被严格资产解析器清理"
                 graph_changed = True
 
-        # Save all entity cleanup/projection mutations before creating the
-        # direction asset. Otherwise this older in-memory graph snapshot can
-        # overwrite logical_assets and erase the newly-created active direction.
         if graph_changed:
             self.production._save(graph)
 

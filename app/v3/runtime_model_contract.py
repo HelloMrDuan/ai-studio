@@ -150,6 +150,16 @@ class V3RuntimeModelContract:
             runtime_settings.gemma_start_command = self.settings.gemma_start_command
         self.llm._request_messages = self._qwen_request_messages
         self.bridge.execute_candidate = self.execute_candidate
+
+        # LegacyCandidateV3Bridge.install() previously stored a bound method on
+        # legacy_runtime. Replacing bridge.execute_candidate afterwards does not
+        # mutate that already-bound callable. Rebind every public/default image
+        # entrypoint here so reference generation cannot bypass model routing.
+        self.legacy.director_workbench_execute_candidate = self.execute_candidate
+        bootstrap = getattr(self.bridge, "reference_bootstrap", None)
+        if bootstrap is not None and hasattr(bootstrap, "submit_candidate"):
+            bootstrap.submit_candidate = self.execute_candidate
+
         self._installed = True
 
     def status(self) -> dict[str, Any]:

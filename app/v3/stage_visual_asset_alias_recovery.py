@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .stage_asset_materialization import StageOutputAssetMaterializer, _clean, _name_key, _norm_name
+from .stage_asset_materialization_guard import _source_anchored
 
 
 _LEGACY_VISUAL_KIND = {
@@ -30,14 +31,13 @@ def _marker_count(kind: str, text: str) -> int:
 
 
 def install_stage_visual_asset_alias_recovery() -> None:
-    """Recover old story entity types into Stage③ canonical visual assets.
+    """Recover source-backed old story entity types into Stage③ visual assets.
 
-    Older story extraction used ``scene`` for reusable places and sometimes
-    ``artifact/item/object`` for props. Stage③ owns the decision whether those
-    facts become durable visual assets. We therefore only promote an alias when
-    the ready Stage③ draft actually mentions the entity and its nearby context
-    contains enough stable visual structure. Narrative scene records with no
-    reusable spatial design remain narrative records and are never promoted.
+    This compatibility layer runs outside the strict StageOutputAssetMaterializer
+    extract wrapper in the current install order, so it must explicitly preserve
+    the same story-source boundary. A legacy ``scene``/``item`` row is not a
+    license to promote an identity that the authoritative Stage01/user source
+    does not contain.
     """
     cls = StageOutputAssetMaterializer
     if getattr(cls, "_xiaoduan_visual_alias_recovery_installed", False):
@@ -65,12 +65,19 @@ def install_stage_visual_asset_alias_recovery() -> None:
             if key in found:
                 continue
 
+            if not _source_anchored(self, project_id, "03", name):
+                rejected = list(
+                    getattr(self, "_xiaoduan_last_rejected_unanchored", []) or []
+                )
+                record = {"stage": "03", "kind": kind, "name": name}
+                if record not in rejected:
+                    rejected.append(record)
+                self._xiaoduan_last_rejected_unanchored = rejected
+                continue
+
             context = self._context_for_name(text, name, blocks)
             if not context:
                 continue
-            # A legacy alias is promoted only when Stage③ actually contains a
-            # sufficiently rich stable design around it. This prevents a plot
-            # scene title from becoming a second location merely by name match.
             if self._body_score(kind, context) < 3 or _marker_count(kind, context) < 3:
                 continue
 

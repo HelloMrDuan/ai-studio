@@ -34,8 +34,8 @@ _FACE_SIGNAL = re.compile(
 )
 _COSTUME_SIGNAL = re.compile(
     r"性别|gender|年龄|岁|身高|体型|肩|腰|body|build|height|"
-    r"服装|上衣|下装|衣|袍|裙|斗篷|披风|外套|鞋|靴|腰带|配色|颜色|材质|纹样|刺绣|"
-    r"clothes|clothing|robe|dress|cape|coat|shoe|boot|belt|outfit|garment|material|color|pattern|embroidery",
+    r"服装|上衣|下装|衣|袍|裙|斗篷|披风|外套|鞋|靴|腰带|配饰|饰品|首饰|配色|颜色|材质|纹样|刺绣|"
+    r"clothes|clothing|robe|dress|cape|coat|shoe|boot|belt|accessory|jewelry|outfit|garment|material|color|pattern|embroidery",
     re.IGNORECASE,
 )
 _FACE_NOISE = re.compile(
@@ -49,6 +49,11 @@ _FACE_NOISE = re.compile(
 _COSTUME_NOISE = re.compile(
     r"手持|拿着|挥|战斗|剧情|背景|场景|山|雪|建筑|房间|桥|钟楼|镜头|构图|"
     r"holding|action|battle|background|scene|mountain|building|camera|composition",
+    re.IGNORECASE,
+)
+_STORY_PROP = re.compile(
+    r"剑|剑鞘|刀|枪|铃|铃铛|玉佩|玉坠|手持|拿着|背着|"
+    r"sword|scabbard|weapon|blade|bell|pendant|holding|carrying",
     re.IGNORECASE,
 )
 _HAIR_ORNAMENT = re.compile(r"簪|发钗|发冠|发带|hairpin|hair ornament|headband|hair ribbon", re.IGNORECASE)
@@ -167,6 +172,27 @@ def strict_face_facts(metadata: dict[str, Any], limit: int = 14) -> list[str]:
     return selected[:limit]
 
 
+def strict_costume_facts(metadata: dict[str, Any], limit: int = 18) -> list[str]:
+    """Project only body/clothing/shoes/wearable design, never independent props."""
+    selected: list[str] = []
+    for row in _atomic_rows(metadata):
+        key, value = _split_row(row)
+        if not value or _PLACEHOLDER.search(value):
+            continue
+        for segment in _segments(value):
+            if not segment or _PLACEHOLDER.search(segment):
+                continue
+            if _STORY_PROP.search(segment):
+                continue
+            if _COSTUME_NOISE.search(segment):
+                continue
+            if not (_COSTUME_SIGNAL.search(segment) or _COSTUME_SIGNAL.search(key)):
+                continue
+            if segment not in selected:
+                selected.append(segment)
+    return selected[:limit]
+
+
 def project_character_anchor(raw: str, phase: str) -> str:
     source = _text(raw)
     current = _text(phase).lower()
@@ -181,6 +207,8 @@ def project_character_anchor(raw: str, phase: str) -> str:
             if not segment or _PLACEHOLDER.search(segment):
                 continue
             hair_ornament = current == "face_anchor" and bool(_HAIR_ORNAMENT.search(segment))
+            if current == "costume" and _STORY_PROP.search(segment):
+                continue
             if noise.search(segment) and not hair_ornament:
                 continue
             if not (signal.search(segment) or signal.search(key) or hair_ornament):
@@ -212,6 +240,21 @@ def build_face_anchor_prompt(entity: dict[str, Any]) -> str:
         "生成单人正面头肩身份肖像，视线自然朝向镜头，中性自然表情，脸部占画面主要区域。"
         "双眼、鼻、口、下颌比例自然，皮肤纹理清晰自然。"
         "只保留低存在感且符合项目时代的基础上衣领，背景为干净浅灰或米白，画面只服务于身份锁定。"
+    )
+
+
+def build_costume_reference_prompt(entity: dict[str, Any]) -> str:
+    name = _text(entity.get("name")) or "角色"
+    metadata = entity.get("metadata") if isinstance(entity.get("metadata"), dict) else {}
+    facts = strict_costume_facts(metadata)
+    fact_text = "\n- ".join(facts) if facts else "只使用上游已确认的体型、服装、鞋履与可穿戴配饰"
+    return (
+        f"角色「{name}」服装定装参考。\n"
+        "脸部身份和发型只继承已采用的 Face Anchor，本阶段不重新设计脸。\n"
+        "稳定服装事实：\n- " + fact_text + "\n\n"
+        "生成同一角色的单人全身正面中性站姿，从头到脚完整可见。"
+        "只设计体型轮廓、服装层次、材质、配色、鞋履和真正属于角色穿戴系统的配饰。"
+        "背景保持干净中性，人物身份与服装结构清晰可复用。"
     )
 
 
@@ -315,8 +358,9 @@ def compile_character_constraints(
         ])
         negative.extend([
             "face redesign", "identity drift", "different hairstyle", "action pose", "battle pose",
-            "cinematic scene background", "extra character", "handheld story prop",
+            "cinematic scene background", "extra character", "handheld story prop", "weapon", "story artifact",
         ])
+        negative.extend(_story_prop_negatives(source))
     elif phase == "turnaround":
         positive.extend([
             "TURNAROUND CONTRACT: preserve the same adopted face identity, hairstyle, body proportions and adopted costume in every panel",
@@ -326,16 +370,19 @@ def compile_character_constraints(
             "identity drift", "gender drift", "mixed outfits", "different face between panels",
             "different hairstyle between panels", "action pose", "scene background", "story prop",
         ])
+        negative.extend(_story_prop_negatives(source))
 
     return CharacterPromptConstraints(tuple(dict.fromkeys(positive)), tuple(dict.fromkeys(negative)))
 
 
 __all__ = [
     "CharacterPromptConstraints",
+    "build_costume_reference_prompt",
     "build_face_anchor_prompt",
     "compile_character_constraints",
     "extract_age_label",
     "infer_character_gender",
     "project_character_anchor",
+    "strict_costume_facts",
     "strict_face_facts",
 ]

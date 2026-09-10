@@ -69,7 +69,6 @@ class V3RuntimeModelContract:
             references = []
         references = [_clean(value) for value in references if _clean(value)]
         is_reference_asset = bool(metadata.get("reference_asset")) or role in _REFERENCE_ROLES
-        phase = _clean(params.get("reference_phase") or metadata.get("reference_phase")).lower()
 
         if references:
             # Current identity/reference execution is a real SDXL FaceID/IP-Adapter
@@ -137,6 +136,18 @@ class V3RuntimeModelContract:
     def install(self) -> None:
         if self._installed:
             return
+        # Settings can be overridden by a stale .env from older Gemma-based
+        # deployments. V3's production text contract is Qwen, so overwrite the
+        # effective runtime values in-process rather than silently honoring a
+        # legacy model selection.
+        self.settings.gemma_model = self.required_text_model
+        self.settings.gemma_start_command = (
+            "bash /root/autodl-tmp/ai-studio/platform-v2/scripts/start_qwen_v3.sh"
+        )
+        runtime_settings = getattr(self.legacy, "settings", None)
+        if runtime_settings is not None:
+            runtime_settings.gemma_model = self.required_text_model
+            runtime_settings.gemma_start_command = self.settings.gemma_start_command
         self.llm._request_messages = self._qwen_request_messages
         self.bridge.execute_candidate = self.execute_candidate
         self._installed = True
@@ -146,6 +157,7 @@ class V3RuntimeModelContract:
             "text": {
                 "required_model": self.required_text_model,
                 "policy": "qwen_fail_closed",
+                "start_command": self.settings.gemma_start_command,
             },
             "image_txt2img": {
                 "model_key": ZIMAGE_TURBO_KEY,

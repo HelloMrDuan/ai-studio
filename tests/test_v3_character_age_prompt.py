@@ -49,12 +49,19 @@ def test_explicit_seventeen_year_old_is_a_strong_visual_anchor():
     assert "youthful facial proportions" in result.positive_prompt
     assert "East Asian facial features" in result.positive_prompt
     assert "ancient Chinese hanfu silhouette" in result.positive_prompt
+    assert "natural human face" in result.positive_prompt
+    assert "anatomically coherent facial structure" in result.positive_prompt
+    assert "realistic human facial detail" in result.positive_prompt
     assert "middle-aged person" in result.negative_prompt
     assert "mature adult face" in result.negative_prompt
     assert "heavy mature jawline" in result.negative_prompt
     assert "full adult beard" in result.negative_prompt
     assert "western face" in result.negative_prompt
     assert "knight armor" in result.negative_prompt
+    assert "malformed face" in result.negative_prompt
+    assert "cgi doll" in result.negative_prompt
+    assert "cartoon face" in result.negative_prompt
+    assert "modern high heels" in result.negative_prompt
 
 
 def test_character_identity_precedes_turnaround_layout_in_provider_prompt():
@@ -70,6 +77,7 @@ def test_character_identity_precedes_turnaround_layout_in_provider_prompt():
     assert prompt.index("东方仙侠") < prompt.index("4-panel character turnaround sheet")
     assert prompt.index("East Asian facial features") < prompt.index("4-panel character turnaround sheet")
     assert prompt.index("17-year-old") < prompt.index("4-panel character turnaround sheet")
+    assert prompt.index("natural human face") < prompt.index("4-panel character turnaround sheet")
     assert prompt.index("深蓝长袍") < prompt.index("4-panel character turnaround sheet")
 
 
@@ -145,3 +153,26 @@ def test_location_numbers_do_not_trigger_character_age_control():
 
     assert "17-year-old" not in result.positive_prompt
     assert "middle-aged person" not in result.negative_prompt
+
+
+def test_western_stylized_project_is_not_contaminated_by_chinese_or_realistic_style_rules():
+    direction = VisualDirection(
+        world_style="western fantasy",
+        culture="european",
+        era="medieval",
+        art_style="stylized illustration",
+    )
+    result = PromptCompiler().compile(
+        asset_kind="character",
+        asset_description="young knight apprentice",
+        visual_direction=direction,
+        contract=None,
+        reference=True,
+    )
+
+    lowered = result.positive_prompt.lower()
+    assert "xianxia" not in lowered
+    assert "chinese" not in lowered
+    assert "east asian" not in lowered
+    assert "cgi doll" not in result.negative_prompt
+    assert "cartoon face" not in result.negative_prompt

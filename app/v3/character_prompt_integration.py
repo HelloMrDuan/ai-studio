@@ -8,6 +8,7 @@ from app.services.prompt_compiler import CompiledPrompt, PromptCompiler, natural
 from app.services.reference_templates import REFERENCE_TEMPLATES, ReferenceTemplate
 from app.services.visual_direction import VisualDirection
 from app.v3.character_identity_contract import (
+    build_costume_reference_prompt,
     build_face_anchor_prompt,
     compile_character_constraints,
     project_character_anchor,
@@ -60,8 +61,8 @@ def install_character_prompt_integration() -> dict[str, Any]:
     """Install one idempotent character prompt boundary.
 
     Stable identity projection, phase-specific prompt rules and provider-ready
-    positive/negative prompts are applied exactly once here. This replaces the
-    former stack of independent character prompt monkey patches.
+    positive/negative prompts are applied exactly once here. Face and costume
+    authoring prompts are both generated from the same stable-fact contract.
     """
     _remove_legacy_adult_bias()
     _strengthen_turnaround_template()
@@ -72,6 +73,13 @@ def install_character_prompt_integration() -> dict[str, Any]:
 
         setattr(face_prompt, "_xiaoduan_unified_character_prompt", True)
         CharacterReferencePackageBootstrap._face_prompt = face_prompt
+
+    if not getattr(CharacterReferencePackageBootstrap._costume_prompt, "_xiaoduan_unified_character_prompt", False):
+        def costume_prompt(self: CharacterReferencePackageBootstrap, entity: dict[str, Any]) -> str:
+            return build_costume_reference_prompt(entity)
+
+        setattr(costume_prompt, "_xiaoduan_unified_character_prompt", True)
+        CharacterReferencePackageBootstrap._costume_prompt = costume_prompt
 
     if not getattr(media_pipeline_module._phase_anchor_text, "_xiaoduan_unified_character_prompt", False):
         original_phase = media_pipeline_module._phase_anchor_text
@@ -121,6 +129,7 @@ def install_character_prompt_integration() -> dict[str, Any]:
         "compiler_boundary": "single_idempotent_character_prompt_contract",
         "identity_projection": "phase_scoped",
         "face_prompt": "affirmative_identity_only",
+        "costume_prompt": "body_clothing_wearables_only_no_story_props",
         "provider_prompt": "frozen_positive_negative_contract",
         "adult_bias_removed": True,
     }

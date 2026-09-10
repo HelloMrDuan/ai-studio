@@ -108,6 +108,7 @@ jobs:
           tests.test_v3_semantic_audit
           tests.test_v3_stage04_retirement
           tests.test_v3_character_reference_package
+          tests.test_v3_character_reference_hardening
           tests.test_v3_runtime_model_contract
       - name: Verify visual inheritance and compiled render contracts
         run: >-

@@ -80,7 +80,7 @@ class VisualDirection:
         xianxia = _has(self.world_style, "xianxia", "仙侠")
 
         if culture_is_east_asian:
-            constraints.extend(["western face", "european facial features"])
+            constraints.extend(["western face", "european features", "european facial features"])
         if ancient:
             constraints.extend([
                 "modern hairstyle",

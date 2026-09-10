@@ -43,8 +43,26 @@ class CharacterAppearanceService:
     def _logical_key(entity_id: str, appearance_id: str) -> str:
         return f"studio:character:{entity_id}:appearance:{appearance_id}"
 
+    def _active_appearance(
+        self,
+        project_id: str,
+        entity_id: str,
+        appearance_id: str,
+    ) -> dict[str, Any] | None:
+        key = self._logical_key(entity_id, appearance_id)
+        rows = [
+            item for item in self.production.list_assets(project_id, active_only=True)
+            if _clean(item.get("asset_role")) == "character_appearance"
+            and _clean(item.get("logical_key")) == key
+            and entity_id in {_clean(x) for x in item.get("entity_ids") or []}
+            and _clean(item.get("status")).lower() == "ready"
+            and _clean(item.get("dependency_state")).lower() != "stale"
+        ]
+        rows.sort(key=lambda x: (int(x.get("version") or 0), _clean(x.get("updated_at"))))
+        return rows[-1] if rows else None
+
     def _character_profile(self, project_id: str, entity_id: str) -> dict[str, Any] | None:
-        character = self._character(project_id, entity_id)
+        self._character(project_id, entity_id)
         rows = []
         for item in self.production.list_assets(project_id, active_only=True):
             if _clean(item.get("asset_role")) != "character_profile":
@@ -53,7 +71,6 @@ class CharacterAppearanceService:
                 continue
             if _clean(item.get("status")).lower() != "ready" or _clean(item.get("dependency_state")).lower() == "stale":
                 continue
-            # Ownership uses stable IDs; display names may change independently.
             try:
                 raw = self.production.read_text_asset(project_id, _clean(item.get("asset_id")), max_chars=20000)
                 parsed = json.loads(raw)
@@ -83,6 +100,14 @@ class CharacterAppearanceService:
         return ""
 
     def ensure_default(self, project_id: str, entity_id: str) -> dict[str, Any] | None:
+        # A validated Stage02 appearance package or a user-edited default is
+        # authoritative. Never replace it on a read/list request with a profile-
+        # derived fallback. If its parent profile changes, normal asset lineage
+        # marks it stale and the fallback may then create a new current default.
+        current = self._active_appearance(project_id, entity_id, "default")
+        if current is not None:
+            return current
+
         character = self._character(project_id, entity_id)
         text = self._profile_text(project_id, entity_id)
         if not text:
@@ -132,8 +157,6 @@ class CharacterAppearanceService:
         }
         for entity_id in list(character_names):
             self.ensure_default(project_id, entity_id)
-        # ensure_default may have superseded a repaired default; normalize once
-        # more so all active rows have the correct owner id and logical key.
         if character_names:
             repair = self.ownership_repair.reconcile(project_id)
 
@@ -141,6 +164,8 @@ class CharacterAppearanceService:
         seen: set[tuple[str, str]] = set()
         for asset in self.production.list_assets(project_id, active_only=True):
             if _clean(asset.get("asset_role")) != "character_appearance":
+                continue
+            if _clean(asset.get("status")).lower() != "ready" or _clean(asset.get("dependency_state")).lower() == "stale":
                 continue
             entity_ids = [_clean(x) for x in asset.get("entity_ids") or [] if _clean(x)]
             if not entity_ids:

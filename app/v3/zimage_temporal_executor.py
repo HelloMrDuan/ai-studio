@@ -14,8 +14,13 @@ from app.v3.adapters.comfyui import ComfyUIAdapter
 from app.v3.contracts import ProviderModelSpec
 
 
-class ZImageWorkflowError(RuntimeError):
-    pass
+class ZImageWorkflowError(ValueError):
+    """Deterministic Z-Image contract/configuration failure.
+
+    This subclasses ValueError so the Temporal domain boundary classifies an
+    invalid workflow/prompt/model contract as a semantic failure instead of
+    retrying it as transient infrastructure noise.
+    """
 
 
 def _required_node(workflow: dict[str, Any], node_id: str, class_type: str) -> dict[str, Any]:
@@ -75,8 +80,6 @@ def compile_zimage_workflow(
     })
     save["inputs"]["filename_prefix"] = str(filename_prefix or "Xiaoduan/ZImageTurbo")
 
-    # Z-Image-Turbo's production contract is fixed. Reject accidental SDXL
-    # parameters instead of silently degrading output quality.
     if int(steps) != 9 or abs(float(cfg) - 1.0) > 1e-9:
         raise ZImageWorkflowError("Z-Image-Turbo requires steps=9 and cfg=1.0")
     if str(sampler_name) != "euler" or str(scheduler) != "simple":

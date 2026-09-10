@@ -71,16 +71,29 @@ class MediaGenerationPipeline:
     def prepare_candidate(self, production, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         """Compile the actual workbench request and persist its lineage."""
         target = production.ensure_visual_context(project_id, str(payload["target_asset_id"]))
+        target_metadata = target.get("metadata") if isinstance(target.get("metadata"), dict) else {}
+        incoming_params = dict(payload.get("params") or {}) if isinstance(payload.get("params"), dict) else {}
+        reference_phase = str(
+            incoming_params.get("reference_phase")
+            or target_metadata.get("reference_phase")
+            or ""
+        ).strip().lower()
+
         source_id = str(payload.get("prompt_asset_id") or "")
         source = production.get_asset(project_id, source_id)
         if source.get("metadata", {}).get("prompt_compiler") == "v3-visual-v1":
             contract_id = source.get("contract_artifact_id")
             if contract_id and payload.get("generation_contract_id") == contract_id:
                 saved = json.loads(production.read_text_asset(project_id, contract_id))
-                params = payload.get("params") or {}
-                if (saved.get("visual_context") == target["metadata"]["visual_context"]
-                    and saved.get("positive_prompt") == params.get("positive_prompt")
-                    and saved.get("negative_prompt") == params.get("negative_prompt")):
+                saved_context = dict(saved.get("visual_context") or {})
+                saved_phase = str(saved_context.pop("reference_phase", "") or "").strip().lower()
+                target_context = dict(target["metadata"]["visual_context"])
+                if (
+                    saved_context == target_context
+                    and saved_phase == reference_phase
+                    and saved.get("positive_prompt") == incoming_params.get("positive_prompt")
+                    and saved.get("negative_prompt") == incoming_params.get("negative_prompt")
+                ):
                     return payload
             source_id = source["metadata"]["source_prompt_asset_id"]
 
@@ -88,12 +101,6 @@ class MediaGenerationPipeline:
         context = dict(target["metadata"]["visual_context"])
         direction = production.get_visual_direction(project_id, context.get("visual_direction_id", ""))
         entity_ids = tuple(target.get("entity_ids") or [])
-        target_metadata = target.get("metadata") if isinstance(target.get("metadata"), dict) else {}
-        reference_phase = str(
-            (payload.get("params") or {}).get("reference_phase")
-            if isinstance(payload.get("params"), dict)
-            else ""
-        ).strip().lower() or str(target_metadata.get("reference_phase") or "").strip().lower()
         anchors: list[str] = []
         parents = [source_id, *[
             pid for pid in target.get("parent_asset_ids", [])
@@ -172,7 +179,7 @@ class MediaGenerationPipeline:
             "scene_reference",
             "prop_reference",
         }
-        params = dict(payload.get("params") or {})
+        params = dict(incoming_params)
         compiled = self.prompt_compiler.compile(
             asset_kind=context.get("asset_identity_type", ""),
             asset_description=description,

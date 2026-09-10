@@ -121,6 +121,24 @@ class CleanupRegressionTests(unittest.TestCase):
         text = (Path(__file__).resolve().parents[1] / "app" / "v3" / "original_workbench_overlay.py").read_text(encoding="utf-8")
         self.assertIn("stage-state-overlay.js", text)
 
+    def test_frontend_progress_uses_one_stage_poller_and_stable_reference_updates(self):
+        static = Path(__file__).resolve().parents[1] / "app" / "v3" / "static"
+        progress = (static / "stage-progress-overlay.js").read_text(encoding="utf-8")
+        state = (static / "stage-state-overlay.js").read_text(encoding="utf-8")
+        refs = (static / "reference-generation-ux-overlay.js").read_text(encoding="utf-8")
+
+        self.assertIn("v3:stage-progress", progress)
+        self.assertIn("window.__v3StageProgressLast", progress)
+        self.assertNotIn("setInterval(refresh", state)
+        self.assertNotIn("/stage-progress`, {cache: 'no-store'}", state)
+        self.assertIn("window.addEventListener('v3:stage-progress'", state)
+
+        self.assertNotIn("setInterval(refreshUx", refs)
+        self.assertIn("REFS_REFRESH_MS = 5000", refs)
+        self.assertIn("syncTerminalCards", refs)
+        self.assertIn("Full card rendering is expensive and moves the page", refs)
+        self.assertNotIn("document.body, {childList:true, subtree:true}", refs)
+
 
 if __name__ == "__main__":
     unittest.main()

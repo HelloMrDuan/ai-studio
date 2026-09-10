@@ -43,23 +43,31 @@ def _source_anchored(self: StageOutputAssetMaterializer, project_id: str, stage:
 
 
 def _project_entity_identity(entity: dict[str, Any]) -> bool:
+    """Persist a stable visible projection without destroying the raw stage block."""
     kind = _clean(entity.get("entity_type")).lower()
     if kind not in {"character", "location", "prop"}:
         return False
     metadata = entity.get("metadata") if isinstance(entity.get("metadata"), dict) else {}
     authoring = metadata.get("authoring") if isinstance(metadata.get("authoring"), dict) else {}
     current = _clean(authoring.get("stable_design"))
-    if not current:
+    source_design = _clean(authoring.get("source_design")) or current
+    if not source_design:
         return False
-    projected = project_stable_design(kind, current)
-    changed = projected != current or _clean(authoring.get("source_design")) != current
-    authoring["source_design"] = current
+    projected = project_stable_design(kind, source_design)
+    changed = (
+        current != projected
+        or _clean(authoring.get("source_design")) != source_design
+        or _clean(authoring.get("stable_projection")) != "visible_reusable_identity_v1"
+    )
+    authoring["source_design"] = source_design
     authoring["stable_design"] = projected
     authoring["stable_projection"] = "visible_reusable_identity_v1"
     metadata["authoring"] = authoring
 
     continuity = metadata.get("continuity") if isinstance(metadata.get("continuity"), dict) else {}
     core = continuity.get("core_profile") if isinstance(continuity.get("core_profile"), dict) else {}
+    if _clean(core.get("阶段正式设定")) != projected:
+        changed = True
     core["阶段正式设定"] = projected
     continuity["core_profile"] = core
     metadata["continuity"] = continuity
@@ -114,7 +122,7 @@ def install_stage_asset_materialization_guard() -> None:
         retired_ids: set[str] = set(result.get("retired_invalid_entity_ids") or [])
         rejected_unanchored: list[dict[str, str]] = []
         projected_ids: list[str] = []
-        visual_direction_asset_id = ""
+        pending_visual_direction: dict[str, Any] | None = None
         visual_direction_error = ""
         graph_changed = False
 
@@ -162,9 +170,7 @@ def install_stage_asset_materialization_guard() -> None:
 
             if stage == "03":
                 try:
-                    direction = parse_visual_direction_block(text)
-                    asset = self.production.set_visual_direction(project_id, direction)
-                    visual_direction_asset_id = _clean(asset.get("asset_id"))
+                    pending_visual_direction = parse_visual_direction_block(text)
                 except ValueError as exc:
                     # New outputs are rejected before write by front_half_quality_gate.
                     # Old confirmed projects remain readable; no prose inference is made.
@@ -187,8 +193,16 @@ def install_stage_asset_materialization_guard() -> None:
                     metadata["retired_reason"] = "上游假实体已被严格资产解析器清理"
                 graph_changed = True
 
+        # Save all entity cleanup/projection mutations before creating the
+        # direction asset. Otherwise this older in-memory graph snapshot can
+        # overwrite logical_assets and erase the newly-created active direction.
         if graph_changed:
             self.production._save(graph)
+
+        visual_direction_asset_id = ""
+        if pending_visual_direction is not None:
+            asset = self.production.set_visual_direction(project_id, pending_visual_direction)
+            visual_direction_asset_id = _clean(asset.get("asset_id"))
 
         result["retired_invalid_entity_ids"] = sorted(retired_ids)
         result["rejected_unanchored_assets"] = rejected_unanchored

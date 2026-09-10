@@ -18,8 +18,8 @@ from app.v3.character_reference_package import CharacterReferencePackageBootstra
 logger = logging.getLogger(__name__)
 
 _EXPLICIT_GENDER_PATTERNS = (
-    ("female", re.compile(r"(?:角色性别|性别|gender)\s*[：:=]\s*(?:女性|女|female|girl|woman)\b?", re.IGNORECASE)),
-    ("male", re.compile(r"(?:角色性别|性别|gender)\s*[：:=]\s*(?:男性|男|male|boy|man)\b?", re.IGNORECASE)),
+    ("female", re.compile(r"(?:角色性别|性别|gender)\s*[：:=]\s*(?:女性|女|female|girl|woman)", re.IGNORECASE)),
+    ("male", re.compile(r"(?:角色性别|性别|gender)\s*[：:=]\s*(?:男性|男|male|boy|man)", re.IGNORECASE)),
 )
 _FEMALE_PATTERNS = (
     re.compile(r"女性角色|女性人物|少女|女孩|女孩子|姑娘"),
@@ -64,10 +64,10 @@ def _text(value: Any) -> str:
 
 
 def infer_character_gender(text: str) -> str:
-    """Resolve only explicit character gender semantics; never infer from a name.
+    """Resolve explicit character gender semantics; never infer from a name.
 
-    Labelled gender wins. If contradictory labelled values are present, generation
-    fails closed instead of letting the image model choose a random identity.
+    Labelled gender wins. Contradictory labelled values fail closed before an
+    expensive image generation task is launched.
     """
     source = _text(text)
     labelled: set[str] = set()
@@ -141,9 +141,8 @@ def _safe_face_facts(entity: dict[str, Any], limit: int = 12) -> list[str]:
         if not value or _PLACEHOLDER.search(value):
             continue
 
-        # A frequent upstream failure is a value such as "浅青长裙，手持玉佩"
-        # accidentally stored under a "发型/发色" heading. Reject by semantic
-        # value, not by the field name alone.
+        # Upstream authoring can occasionally place clothing/prop content under
+        # a hair heading. Consume semantic values, not the heading name alone.
         segments = [_text(part) for part in re.split(r"[，,；;。]+", value) if _text(part)]
         for segment in segments:
             if _FACE_NOISE.search(segment) and not _FACE_VALUE.search(segment):
@@ -152,9 +151,8 @@ def _safe_face_facts(entity: dict[str, Any], limit: int = 12) -> list[str]:
             semantic_hair = bool(_HAIR_KEY.search(key) and _HAIR_VALUE.search(segment))
             if not semantic_face and not semantic_hair:
                 continue
-            fact = segment
-            if fact not in selected:
-                selected.append(fact)
+            if segment not in selected:
+                selected.append(segment)
     return selected[:limit]
 
 
@@ -328,10 +326,10 @@ def install_character_generation_policy() -> dict[str, Any]:
     """Install one strict identity boundary for every V3 character render.
 
     The policy follows the useful discipline from waoowaoo: stable identity facts
-    stay separate from layout/scene instructions and the final provider prompt is
-    complete. It also follows the task/provider discipline used by
-    MoneyPrinterTurbo: contradictory or invalid identity input fails before the
-    expensive generation task rather than silently falling back.
+    remain separate from layout/scene instructions and the final provider prompt
+    is complete. It also follows MoneyPrinterTurbo's explicit task/provider
+    contract discipline: contradictory identity input fails before generation
+    instead of silently falling back.
     """
     _remove_adult_style_bias()
     _strengthen_character_turnaround_template()

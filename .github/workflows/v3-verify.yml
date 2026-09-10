@@ -112,5 +112,6 @@ jobs:
           python -m pytest -q
           tests/test_visual_generation_contract.py
           tests/test_v3_character_age_prompt.py
+          tests/test_v3_character_generation_policy.py
       - name: Diff check
         run: git diff --check HEAD^ HEAD

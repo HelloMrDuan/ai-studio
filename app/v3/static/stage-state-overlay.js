@@ -1,11 +1,4 @@
 (() => {
-  const POLL_MS = 900;
-  let busy = false;
-
-  function projectId() {
-    try { return String(current || '').trim(); } catch (_) { return ''; }
-  }
-
   function projectSnapshot() {
     try { return snap?.project || null; } catch (_) { return null; }
   }
@@ -30,38 +23,29 @@
     if (completed.has(stage)) {
       step.classList.remove('current', 'ready');
       step.classList.add('done');
-      if (state) state.textContent = '100%';
+      if (state && state.textContent !== '100%') state.textContent = '100%';
       return;
     }
 
     // A native ①-④ production call can be fully complete before the user
-    // confirms the stage.  That is not "处理中" and must not look active.
+    // confirms the stage. That is not "处理中" and must not look active.
     if (data.status === 'completed' && String(project.current_stage || '') === stage) {
       step.classList.remove('current', 'done');
       step.classList.add('ready');
-      if (state) state.textContent = '待确认';
+      if (state && state.textContent !== '待确认') state.textContent = '待确认';
     }
   }
 
-  async function refresh() {
-    if (busy) return;
-    const id = projectId();
-    if (!id) return;
-    busy = true;
-    try {
-      const response = await fetch(`/api/v3/studio/projects/${encodeURIComponent(id)}/stage-progress`, {cache: 'no-store'});
-      if (!response.ok) return;
-      patchStep(await response.json());
-    } catch (_) {
-      // Visual correction must never interrupt production.
-    } finally {
-      busy = false;
-    }
+  function onSharedProgress(event) {
+    patchStep(event?.detail || window.__v3StageProgressLast || null);
   }
 
   function boot() {
-    refresh();
-    window.setInterval(refresh, POLL_MS);
+    // stage-progress-overlay.js owns the only stage-progress network poller.
+    // Reuse its cached/event state so this overlay never doubles the same API
+    // traffic and never races the main progress panel while the user clicks.
+    if (window.__v3StageProgressLast) patchStep(window.__v3StageProgressLast);
+    window.addEventListener('v3:stage-progress', onSharedProgress);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

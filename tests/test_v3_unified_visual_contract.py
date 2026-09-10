@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from app.config import Settings
 from app.services.comfyui import ZIMAGE_TURBO_CLIP, ZIMAGE_TURBO_UNET, ZIMAGE_TURBO_VAE
 from app.v3.character_identity_contract import (
     build_costume_reference_prompt,
@@ -11,8 +12,12 @@ from app.v3.character_identity_contract import (
 )
 from app.v3.character_package_integrity import install_character_package_integrity
 from app.v3.character_reference_package import CharacterReferencePackageBootstrap
+from app.v3.contracts import Capability
+from app.v3.provider_catalog import platform_provider_specs
 from app.v3.unified_production_bridge import UnifiedProductionBridge
 from app.v3.production_legacy_bridge import ProductionReadyLegacyBridge
+from app.v3.workflow.production_worker_executor import ProductionWorkerExecutor
+from app.v3.workflow.unified_image_executor import UnifiedImageDomainExecutor
 from app.v3.zimage_temporal_executor import ZImageWorkflowError, compile_zimage_workflow
 
 
@@ -82,6 +87,17 @@ def test_character_package_is_not_published_before_turnaround_adoption() -> None
     assert result == {}
 
 
+def test_zimage_provider_is_explicit_and_cannot_accept_references(tmp_path: Path) -> None:
+    specs = platform_provider_specs(Settings(data_dir=tmp_path))
+    zimage = next(spec for spec in specs if spec.provider_id == "local-zimage-image")
+    assert zimage.model_id == "z-image-turbo"
+    assert zimage.capabilities == {Capability.image_generation}
+    assert Capability.image_reference not in zimage.capabilities
+    assert zimage.metadata["reference_mode"] == "none"
+    assert zimage.metadata["prompt_contract"] == "provider_ready_frozen"
+    assert str(zimage.metadata["workflow_path"]).endswith("workflows/z_image_turbo_api.json")
+
+
 def test_zimage_workflow_freezes_real_model_and_provider_prompt() -> None:
     root = Path(__file__).resolve().parents[1]
     workflow = json.loads((root / "workflows" / "z_image_turbo_api.json").read_text(encoding="utf-8"))
@@ -125,7 +141,10 @@ def test_invalid_zimage_profile_is_semantic_not_retryable_runtime_noise() -> Non
         raise AssertionError("invalid SDXL-like params must be rejected for Z-Image")
 
 
-def test_workbench_bridge_has_one_temporal_image_entry_for_no_ref_and_ref_modes() -> None:
+def test_workbench_and_worker_use_the_unified_image_path(tmp_path: Path) -> None:
     assert issubclass(UnifiedProductionBridge, ProductionReadyLegacyBridge)
     assert hasattr(UnifiedProductionBridge, "_execute_zimage_temporal_target")
     assert hasattr(ProductionReadyLegacyBridge, "_execute_reference_first_target")
+
+    worker = ProductionWorkerExecutor(Settings(data_dir=tmp_path))
+    assert isinstance(worker.visual, UnifiedImageDomainExecutor)

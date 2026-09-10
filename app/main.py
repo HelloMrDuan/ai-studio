@@ -32,6 +32,7 @@ from app.v3.canonical_entity_reconciler import CanonicalEntityReconciler
 from app.v3.authoring_execution_timing import AuthoringExecutionTimingFix
 from app.v3.front_half_quality_gate import install_front_half_quality_gate
 from app.v3.character_generation_policy import install_character_generation_policy
+from app.v3.character_reference_hardening import install_character_reference_hardening
 
 # A web-process restart must not resurrect persisted jobs created by the retired
 # multi-turn authoring driver. Only legacy active records carrying turn_count
@@ -44,6 +45,7 @@ legacy_authoring_retirement = retire_legacy_authoring_jobs(settings)
 # semantics are installed before any stage/reference compiler uses them.
 install_front_half_quality_gate(legacy_runtime.director)
 install_character_generation_policy()
+install_character_reference_hardening()
 
 production_skill_registry = ProductionSkillRegistry(legacy_runtime.director)
 production_skill_registry.install()
@@ -92,12 +94,11 @@ legacy_v3_bridge.install()
 # identity/reference rendering stays explicitly on the proven SDXL FaceID path.
 runtime_model_contract = V3RuntimeModelContract(settings, legacy_runtime, legacy_v3_bridge)
 runtime_model_contract.install()
-# Replace only the reference bootstrap used by shot gating. The existing asset,
-# candidate, adoption and provider systems remain unchanged; characters now move
-# through face -> costume -> turnaround before becoming shot references.
+# Every reference path must pass through the same runtime model contract. Using
+# original_execute here would bypass Z-Image routing for face-anchor txt2img.
 legacy_v3_bridge.reference_bootstrap = CharacterReferencePackageBootstrap(
     legacy_runtime,
-    submit_candidate=legacy_v3_bridge.original_execute,
+    submit_candidate=runtime_model_contract.execute_candidate,
 )
 reference_generation_optimizer = ReferenceGenerationOptimizer(legacy_v3_bridge, max_concurrency=2)
 reference_generation_optimizer.install()

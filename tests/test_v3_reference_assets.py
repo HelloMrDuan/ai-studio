@@ -68,9 +68,12 @@ class ReferenceAssetWorkflowTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(state["manual_adoption_required"])
             self.assertEqual({item["entity_type"] for item in state["items"]}, {"character", "location", "prop"})
             character = next(item for item in state["items"] if item["entity_type"] == "character")
-            self.assertIn("4:3横向角色身份参考图", character["prompt_text"])
-            self.assertIn("左侧是同一角色清晰面部近景", character["prompt_text"])
-            self.assertIn("右侧是同一角色无遮挡全身", character["prompt_text"])
+            self.assertIn("4:3横向角色三视图设定图", character["prompt_text"])
+            self.assertIn("正面脸部近景", character["prompt_text"])
+            self.assertIn("正面全身", character["prompt_text"])
+            self.assertIn("严格90度侧面全身", character["prompt_text"])
+            self.assertIn("背面全身", character["prompt_text"])
+            self.assertIn("从头到脚完整可见", character["prompt_text"])
             self.assertIn("不表现本镜头动作", character["prompt_text"])
 
     async def test_user_can_edit_reference_prompt_before_regeneration(self):
@@ -92,7 +95,7 @@ class ReferenceAssetWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 return {"candidate": {"candidate_id": "candidate-1", "status": "queued"}}
 
             service = ReferenceAssetBootstrap(_Legacy(director), submit_candidate=submit)
-            override = "4:3横向角色参考图。保持短黑发、白色西装和黑色皮鞋；左脸部近景，右全身，中性站姿。"
+            override = "角色三视图保持短黑发、白色西装和黑色皮鞋；正面、严格侧面、背面必须是同一个人。"
             result = await service.generate_candidate(
                 project_id,
                 entity["entity_id"],
@@ -105,12 +108,50 @@ class ReferenceAssetWorkflowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(captured["payload"]["params"]["aspect_ratio"], "4:3")
             prompt_asset_id = captured["payload"]["prompt_asset_id"]
             self.assertIn(override, director.production.read_text_asset(project_id, prompt_asset_id))
+            self.assertIn("exact 90-degree side view", captured["payload"]["params"]["positive_prompt"])
+            self.assertIn("back view", captured["payload"]["params"]["positive_prompt"])
+            self.assertIn("missing side view", captured["payload"]["params"]["negative_prompt"])
             compiled = director.production.get_asset(project_id, prompt_asset_id)
             original_id = compiled["metadata"]["source_prompt_asset_id"]
             self.assertEqual(director.production.read_text_asset(project_id, original_id), override)
             target = director.production.get_asset(project_id, captured["payload"]["target_asset_id"])
             self.assertEqual(target["asset_role"], "character_reference")
             self.assertTrue(target["metadata"]["manual_adoption_required"])
+            self.assertEqual(target["metadata"]["reference_layout"], "character_turnaround_v2")
+
+    async def test_old_auto_prompt_is_migrated_to_current_turnaround_layout(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            project_id = "d" * 24
+            director = _Director(root, project_id)
+            entity = director.production.create_entity(
+                project_id,
+                entity_type="character",
+                name="沈川",
+                metadata={"appearance": "17岁，黑发，深蓝长袍"},
+            )
+            service = ReferenceAssetBootstrap(_Legacy(director), submit_candidate=_inert_submit)
+            old_prompt = "生成一张4:3横向角色身份参考图，左右等分：左侧面部近景，右侧正面全身。"
+            director.production.create_text_asset(
+                project_id,
+                stage="03",
+                skill="xiaoduan-consistency-reference",
+                logical_key=service._prompt_key(entity["entity_id"]),
+                asset_role="character_reference_prompt",
+                name="沈川 · 旧版一致性参考图生成要求",
+                content=old_prompt,
+                asset_type="TEXT",
+                extension=".txt",
+                source={"type": "auto_consistency_reference_prompt", "entity_id": entity["entity_id"]},
+                entity_ids=[entity["entity_id"]],
+                metadata={"reference_asset": True, "reference_kind": "character", "user_edited": False},
+            )
+
+            state = service.status(project_id)
+            character = next(item for item in state["items"] if item["entity_id"] == entity["entity_id"])
+            self.assertIn("角色三视图设定图", character["prompt_text"])
+            self.assertIn("严格90度侧面全身", character["prompt_text"])
+            self.assertNotEqual(character["prompt_text"], old_prompt)
 
     async def test_generate_missing_submits_candidates_but_never_auto_adopts(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -131,6 +172,10 @@ class ReferenceAssetWorkflowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(result["submitted_entity_ids"]), 2)
             self.assertEqual(len(calls), 2)
             self.assertTrue(all(call["params"]["semantic_compile"] == "auto" for call in calls))
+            character_call = next(call for call in calls if call["params"].get("positive_prompt") and "turnaround sheet" in call["params"]["positive_prompt"])
+            self.assertIn("front view", character_call["params"]["positive_prompt"])
+            self.assertIn("side view", character_call["params"]["positive_prompt"])
+            self.assertIn("back view", character_call["params"]["positive_prompt"])
             state = service.status(project_id)
             self.assertEqual(state["ready_count"], 0)
 

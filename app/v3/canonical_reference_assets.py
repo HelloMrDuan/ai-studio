@@ -7,7 +7,13 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from app.services.media_generation_pipeline import MediaGenerationPipeline
-from .reference_assets import ReferenceAssetBootstrap, _ACTIVE, _PENDING, _clean
+from .reference_assets import (
+    ReferenceAssetBootstrap,
+    _ACTIVE,
+    _PENDING,
+    _clean,
+    _flatten_metadata,
+)
 
 
 _PRIORITY = {"character": 0, "location": 1, "prop": 2}
@@ -20,18 +26,23 @@ _KIND_BY_PROFILE_ROLE = {role: kind for kind, role in _PROFILE_ROLES.items()}
 
 
 class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
-    """Reference workflow driven by formal stable authoring profiles.
+    """Reference workflow driven only by formal stable authoring profiles.
 
-    Character references use a real two-stage path: first generate/adopt a large
-    identity portrait, then use that adopted portrait as the image reference for
-    the turnaround sheet. Location/prop references keep the existing direct path.
+    Character references are intentionally two-stage:
+    1. create/adopt a large face identity anchor;
+    2. use that adopted anchor as a real image reference for the turnaround sheet.
+
+    Location and prop references keep the existing direct generation path. The
+    whole flow still uses the existing ProductionAssetService/candidate/adoption
+    model; no parallel asset system is introduced.
     """
 
     def _profile_asset(self, project_id: str, entity_id: str, kind: str) -> dict[str, Any] | None:
         key = f"studio:authoring:{entity_id}:profile"
         role = _PROFILE_ROLES.get(kind, "")
         rows = [
-            item for item in self.director.production.list_assets(project_id, active_only=True)
+            item
+            for item in self.director.production.list_assets(project_id, active_only=True)
             if _clean(item.get("logical_key")) == key
             and _clean(item.get("asset_role")) == role
             and _clean(item.get("status")).lower() == "ready"
@@ -58,14 +69,17 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
 
     def _stable_profiles(self, project_id: str) -> list[dict[str, Any]]:
         return [
-            asset for asset in self.director.production.list_assets(project_id, active_only=True)
+            asset
+            for asset in self.director.production.list_assets(project_id, active_only=True)
             if _clean(asset.get("asset_role")) in _KIND_BY_PROFILE_ROLE
             and _clean(asset.get("status")).lower() == "ready"
             and _clean(asset.get("dependency_state")).lower() != "stale"
         ]
 
     def _build_reference_candidates(
-        self, project_id: str, profiles: list[dict[str, Any]],
+        self,
+        project_id: str,
+        profiles: list[dict[str, Any]],
     ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
         rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
         for profile in profiles:
@@ -77,6 +91,7 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
                 payload = {}
             if not isinstance(payload, dict):
                 payload = {}
+
             metadata = profile.get("metadata") or {}
             key = re.fullmatch(r"studio:authoring:(.+):profile", _clean(profile.get("logical_key")))
             owners = list(dict.fromkeys(_clean(x) for x in profile.get("entity_ids") or [] if _clean(x)))
@@ -88,7 +103,10 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
             )
             name = _clean(payload.get("name")) or self._name_from_profile(profile)
             if not entity_id or not name:
-                raise ValueError(f"缺失参考资产：{name or profile.get('asset_id')}，正式稳定设定缺少名称或唯一归属 ID")
+                raise ValueError(
+                    f"缺失参考资产：{name or profile.get('asset_id')}，正式稳定设定缺少名称或唯一归属 ID"
+                )
+
             entity = {
                 "entity_id": entity_id,
                 "entity_type": kind,
@@ -101,7 +119,13 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
                 "evidence": [{"source_asset_id": profile["asset_id"]}],
             }
             rows.append((entity, profile))
-        rows.sort(key=lambda pair: (_PRIORITY.get(_clean(pair[0].get("entity_type")), 9), _clean(pair[0].get("name"))))
+
+        rows.sort(
+            key=lambda pair: (
+                _PRIORITY.get(_clean(pair[0].get("entity_type")), 9),
+                _clean(pair[0].get("name")),
+            )
+        )
         return rows
 
     @staticmethod
@@ -112,17 +136,23 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
         expected = {_clean(profile.get("asset_id")) for profile in profiles}
         actual = [_clean(profile.get("asset_id")) for _, profile in rows]
         if len(profiles) != len(rows) or expected != set(actual) or len(set(actual)) != len(actual):
-            missing = [str(profile.get("name") or profile.get("asset_id")) for profile in profiles
-                       if _clean(profile.get("asset_id")) not in actual]
+            missing = [
+                str(profile.get("name") or profile.get("asset_id"))
+                for profile in profiles
+                if _clean(profile.get("asset_id")) not in actual
+            ]
             raise ValueError(
                 f"缺失参考资产：{', '.join(missing) or '候选重复或包含非正式资产'}；"
                 f"stable_profile_count={len(profiles)}, reference_candidate_count={len(rows)}"
             )
+
         owners: dict[str, str] = {}
         for entity, _ in rows:
             owner = entity["entity_id"]
             if owner in owners:
-                raise ValueError(f"缺失参考资产：{owners[owner]}、{entity['name']} 的稳定设定归属 ID 冲突：{owner}")
+                raise ValueError(
+                    f"缺失参考资产：{owners[owner]}、{entity['name']} 的稳定设定归属 ID 冲突：{owner}"
+                )
             owners[owner] = entity["name"]
 
     def _entity(self, project_id: str, entity_id: str) -> dict[str, Any]:
@@ -143,7 +173,9 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
                 and entity["entity_id"] in (asset.get("entity_ids") or [])
                 and context.get("appearance_version") == version
             ):
-                payload = json.loads(self.director.production.read_text_asset(project_id, asset["asset_id"]))
+                payload = json.loads(
+                    self.director.production.read_text_asset(project_id, asset["asset_id"])
+                )
                 return {
                     **entity,
                     "appearance_version": version,
@@ -163,9 +195,13 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
         return f"studio:face-anchor:{entity_id}:prompt{suffix}"
 
     def _face_target(self, project_id: str, entity: dict[str, Any]) -> dict[str, Any] | None:
-        key = self._face_anchor_key(_clean(entity.get("entity_id")), _clean(entity.get("appearance_version")) or "v1")
+        key = self._face_anchor_key(
+            _clean(entity.get("entity_id")),
+            _clean(entity.get("appearance_version")) or "v1",
+        )
         rows = [
-            asset for asset in self.director.production.list_assets(project_id, active_only=True)
+            asset
+            for asset in self.director.production.list_assets(project_id, active_only=True)
             if _clean(asset.get("logical_key")) == key
             and _clean(asset.get("asset_type")).upper() == "IMAGE"
             and _clean(asset.get("asset_role")) == "character_face_anchor"
@@ -186,7 +222,10 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
     def _face_prompt(self, entity: dict[str, Any]) -> str:
         name = _clean(entity.get("name")) or "角色"
         rows = _flatten_metadata(entity.get("metadata") or {})
-        facts = "\n".join(f"- {_clean(row)}" for row in rows[-24:] if _clean(row)) or "- 只遵循已经确认的稳定角色设定。"
+        facts = (
+            "\n".join(f"- {_clean(row)}" for row in rows[-24:] if _clean(row))
+            or "- 只遵循已经确认的稳定角色设定。"
+        )
         return (
             f"角色「{name}」身份锁脸锚点。\n"
             "最高优先级：忠实保持项目世界观、文化、时代、年龄、脸型、五官、发型、肤色和角色气质。\n"
@@ -206,9 +245,11 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
         name = _clean(entity.get("name")) or "角色"
         version = _clean(entity.get("appearance_version")) or "v1"
         evidence = [
-            _clean(row.get("source_asset_id")) for row in entity.get("evidence") or []
+            _clean(row.get("source_asset_id"))
+            for row in entity.get("evidence") or []
             if isinstance(row, dict) and _clean(row.get("source_asset_id"))
         ]
+
         target = self._face_target(project_id, entity)
         if target is None or _clean(target.get("status")).lower() in {"archived", "superseded"}:
             target = self.director.production.declare_asset(
@@ -232,6 +273,7 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
                     "visual_context": {"appearance_version": version},
                 },
             )
+
         prompt = self.director.production.create_text_asset(
             project_id,
             stage="03",
@@ -245,16 +287,25 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
             source={"type": "auto_character_face_anchor_prompt", "entity_id": entity_id},
             parent_asset_ids=evidence[-16:],
             entity_ids=[entity_id],
-            metadata={"reference_asset": True, "reference_kind": "character", "reference_phase": "face_anchor"},
+            metadata={
+                "reference_asset": True,
+                "reference_kind": "character",
+                "reference_phase": "face_anchor",
+            },
         )
         return target, prompt
 
-    def _pending_candidate(self, project_id: str, target: dict[str, Any] | None) -> dict[str, Any] | None:
+    def _pending_candidate(
+        self,
+        project_id: str,
+        target: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
         if target is None:
             return None
         return next(
             (
-                row for row in self._candidate_rows(project_id, _clean(target.get("asset_id")))
+                row
+                for row in self._candidate_rows(project_id, _clean(target.get("asset_id")))
                 if not _clean(row.get("confirmed_asset_id"))
                 and _clean(row.get("status")).lower() not in {"rejected", "failed"}
             ),
@@ -269,6 +320,7 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
             kind = _clean(entity.get("entity_type")).lower()
             entity_id = _clean(entity.get("entity_id"))
             name = _clean(entity.get("name"))
+
             ready = self._ready_reference(project_id, entity)
             final_target = self._target(project_id, entity)
             prompt_asset = self._prompt_asset(project_id, entity_id)
@@ -287,32 +339,33 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
 
             candidate = self._pending_candidate(project_id, active_target)
             prompt_text = self._reference_prompt(entity)
-            if prompt_asset is not None:
-                try:
-                    prompt_text = self.director.production.read_text_asset(project_id, _clean(prompt_asset.get("asset_id")))
-                except Exception:
-                    pass
+            if prompt_asset is not None and self._prompt_asset_is_user_edited(prompt_asset):
+                stored = self._read_prompt_asset(project_id, prompt_asset)
+                if stored:
+                    prompt_text = stored
 
             preview_asset = ready or face_ready
-            items.append({
-                "entity_id": entity_id,
-                "entity_type": kind,
-                "label": {"character": "角色", "location": "场景", "prop": "道具"}[kind],
-                "name": name,
-                "ready": ready is not None,
-                "reference_asset_id": _clean((ready or {}).get("asset_id")),
-                "reference_url": _clean(((preview_asset or {}).get("storage") or {}).get("url")),
-                "target_asset_id": _clean((active_target or {}).get("asset_id")),
-                "prompt_asset_id": _clean((prompt_asset or {}).get("asset_id")),
-                "prompt_text": prompt_text,
-                "candidate": candidate,
-                "profile_asset_id": _clean(profile.get("asset_id")),
-                "profile_version": int(profile.get("version") or 0),
-                "generation_phase": phase,
-                "face_anchor_ready": face_ready is not None,
-                "face_anchor_asset_id": _clean((face_ready or {}).get("asset_id")),
-                "face_anchor_url": _clean(((face_ready or {}).get("storage") or {}).get("url")),
-            })
+            items.append(
+                {
+                    "entity_id": entity_id,
+                    "entity_type": kind,
+                    "label": {"character": "角色", "location": "场景", "prop": "道具"}[kind],
+                    "name": name,
+                    "ready": ready is not None,
+                    "reference_asset_id": _clean((ready or {}).get("asset_id")),
+                    "reference_url": _clean(((preview_asset or {}).get("storage") or {}).get("url")),
+                    "target_asset_id": _clean((active_target or {}).get("asset_id")),
+                    "prompt_asset_id": _clean((prompt_asset or {}).get("asset_id")),
+                    "prompt_text": prompt_text,
+                    "candidate": candidate,
+                    "profile_asset_id": _clean(profile.get("asset_id")),
+                    "profile_version": int(profile.get("version") or 0),
+                    "generation_phase": phase,
+                    "face_anchor_ready": face_ready is not None,
+                    "face_anchor_asset_id": _clean((face_ready or {}).get("asset_id")),
+                    "face_anchor_url": _clean(((face_ready or {}).get("storage") or {}).get("url")),
+                }
+            )
 
         completed = {_clean(value) for value in project.get("completed_stages") or []}
         current_stage = _clean(project.get("current_stage"))
@@ -367,7 +420,13 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
                     if not _clean(row.get("confirmed_asset_id")) and state in _ACTIVE and force:
                         raise ValueError("锁脸锚点仍在生成，请完成后再重新生成")
                     if not _clean(row.get("confirmed_asset_id")) and state in _PENDING and not force:
-                        return {"already_pending": True, "candidate": row, "generation_phase": "face_anchor", "status": self.status(project_id)}
+                        return {
+                            "already_pending": True,
+                            "candidate": row,
+                            "generation_phase": "face_anchor",
+                            "status": self.status(project_id),
+                        }
+
                 payload = MediaGenerationPipeline().prepare_candidate(
                     self.director.production,
                     project_id,
@@ -393,15 +452,30 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
                     },
                 )
                 response = await self.submit_candidate(project_id, payload)
-                return {"submitted": True, "generation_phase": "face_anchor", **dict(response or {}), "status": self.status(project_id)}
+                return {
+                    "submitted": True,
+                    "generation_phase": "face_anchor",
+                    **dict(response or {}),
+                    "status": self.status(project_id),
+                }
 
-            target, prompt = self._ensure_target_and_prompt(project_id, entity, prompt_override=prompt_override)
+            target, prompt = self._ensure_target_and_prompt(
+                project_id,
+                entity,
+                prompt_override=prompt_override,
+            )
             for row in self._candidate_rows(project_id, _clean(target.get("asset_id"))):
                 state = _clean(row.get("status")).lower()
                 if not _clean(row.get("confirmed_asset_id")) and state in _ACTIVE and force:
                     raise ValueError("三视图参考图仍在生成，请完成后再重新生成")
                 if not _clean(row.get("confirmed_asset_id")) and state in _PENDING and not force:
-                    return {"already_pending": True, "candidate": row, "generation_phase": "turnaround", "status": self.status(project_id)}
+                    return {
+                        "already_pending": True,
+                        "candidate": row,
+                        "generation_phase": "turnaround",
+                        "status": self.status(project_id),
+                    }
+
             payload = MediaGenerationPipeline().prepare_candidate(
                 self.director.production,
                 project_id,
@@ -428,7 +502,12 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
                 },
             )
             response = await self.submit_candidate(project_id, payload)
-            return {"submitted": True, "generation_phase": "turnaround", **dict(response or {}), "status": self.status(project_id)}
+            return {
+                "submitted": True,
+                "generation_phase": "turnaround",
+                **dict(response or {}),
+                "status": self.status(project_id),
+            }
 
         return await super().generate_candidate(
             project_id,
@@ -438,7 +517,11 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
             appearance_version=appearance_version,
         )
 
-    async def generate_first_missing_for_entities(self, project_id: str, entity_ids: list[str]) -> dict[str, Any] | None:
+    async def generate_first_missing_for_entities(
+        self,
+        project_id: str,
+        entity_ids: list[str],
+    ) -> dict[str, Any] | None:
         wanted = {_clean(value) for value in entity_ids if _clean(value)}
         for entity, _profile in self._formal_entities(project_id):
             if _clean(entity.get("entity_id")) not in wanted:
@@ -462,14 +545,19 @@ def create_canonical_reference_asset_router(legacy_runtime: Any) -> APIRouter:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @router.post("/api/v3/studio/projects/{project_id}/references/{entity_id}/generate")
-    async def generate_reference(project_id: str, entity_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def generate_reference(
+        project_id: str,
+        entity_id: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         try:
+            body = payload or {}
             return await service.generate_candidate(
                 project_id,
                 entity_id,
-                force=bool((payload or {}).get("force")),
-                prompt_override=_clean((payload or {}).get("prompt") or (payload or {}).get("prompt_text")),
-                appearance_version=_clean((payload or {}).get("appearance_version")) or "v1",
+                force=bool(body.get("force")),
+                prompt_override=_clean(body.get("prompt") or body.get("prompt_text")),
+                appearance_version=_clean(body.get("appearance_version")) or "v1",
             )
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc

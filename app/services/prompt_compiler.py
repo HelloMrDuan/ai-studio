@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import re
 from typing import Any
 
@@ -21,6 +22,32 @@ _CN_DIGITS = {
     "七": 7,
     "八": 8,
     "九": 9,
+}
+
+_ANCHOR_TECHNICAL_KEYS = {
+    "schema_version",
+    "asset_id",
+    "entity_id",
+    "character_id",
+    "character_entity_id",
+    "appearance_id",
+    "appearance_version",
+    "logical_key",
+    "source_asset_id",
+    "parent_asset_ids",
+    "evidence",
+    "source",
+}
+_ANCHOR_TRANSIENT_KEYS = {
+    "action",
+    "pose",
+    "expression",
+    "camera",
+    "camera_direction",
+    "shot",
+    "shot_id",
+    "scene_state",
+    "momentary_state",
 }
 
 
@@ -57,7 +84,6 @@ def _cn_number(value: str) -> int | None:
 
 def _cn_age_range(value: str) -> tuple[int, int] | None:
     text = str(value or "").strip()
-    # Colloquial Chinese forms: 十六七岁 / 二十七八岁.
     match = re.fullmatch(r"([二三四五六七八九])?十([一二三四五六七八九])([一二三四五六七八九])", text)
     if match:
         tens = _CN_DIGITS.get(match.group(1), 1) if match.group(1) else 1
@@ -76,7 +102,6 @@ def _valid_age_range(first: int, second: int | None = None) -> tuple[int, int] |
     high = int(second if second is not None else first)
     if low > high:
         low, high = high, low
-    # Character visual age outside this range is almost certainly another numeric field.
     if low < 1 or high > 120:
         return None
     return low, high
@@ -84,7 +109,6 @@ def _valid_age_range(first: int, second: int | None = None) -> tuple[int, int] |
 
 def _extract_visual_age(text: str) -> tuple[int, int] | None:
     source = str(text or "")
-    # Prefer explicitly labelled age fields so asset versions, years and IDs are never mistaken for age.
     labelled = re.search(
         r"(?:visual_age(?:_range)?|age|年龄)\s*[\"']?\s*[:：=]\s*[\"']?\s*(\d{1,3})"
         r"(?:\s*[-~—–至到]\s*(\d{1,3}))?",
@@ -128,7 +152,6 @@ def _character_age_constraints(text: str) -> tuple[str, str]:
     age = _extract_visual_age(text)
     source = str(text or "")
     if age is None:
-        # A profile may use a life-stage word without a numeric age. Keep this weaker than an explicit age.
         if re.search(r"少年|少女|青少年|teenager|adolescent|teenage", source, re.IGNORECASE):
             positive = (
                 "strict youthful age fidelity, teenage adolescent appearance, youthful facial proportions, "
@@ -182,12 +205,91 @@ def _character_age_constraints(text: str) -> tuple[str, str]:
     return strict, "age drift, visibly younger or older than the confirmed character age"
 
 
+def _anchor_rows(value: Any, prefix: str = "", depth: int = 0) -> list[str]:
+    """Convert stored profile JSON into concise visual language.
+
+    IDs, lineage fields and transient shot state are deliberately excluded: they
+    consume prompt budget but have no visual meaning. Stable profile/design data
+    remains renderable and human-readable.
+    """
+    if depth > 4:
+        return []
+    rows: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key or "").strip()
+            lowered = key_text.lower()
+            if lowered in _ANCHOR_TECHNICAL_KEYS or lowered in _ANCHOR_TRANSIENT_KEYS:
+                continue
+            next_prefix = key_text if not prefix else f"{prefix}.{key_text}"
+            rows.extend(_anchor_rows(item, next_prefix, depth + 1))
+        return rows
+    if isinstance(value, list):
+        scalar = [str(item).strip() for item in value if not isinstance(item, (dict, list)) and str(item).strip()]
+        if scalar and prefix:
+            rows.append(f"{prefix}: {' / '.join(scalar[:12])}")
+        else:
+            for item in value[:12]:
+                rows.extend(_anchor_rows(item, prefix, depth + 1))
+        return rows
+    text = str(value or "").strip()
+    if text:
+        rows.append(f"{prefix}: {text}" if prefix else text)
+    return rows
+
+
+def naturalize_visual_anchor(raw: Any) -> str:
+    """Return a compact, non-JSON visual anchor suitable for provider prompts."""
+    if raw is None:
+        return ""
+    if isinstance(raw, (dict, list)):
+        rows = _anchor_rows(raw)
+        return "; ".join(dict.fromkeys(rows))
+
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+
+    parsed_rows: list[str] = []
+    # identity_anchors can contain one JSON document per line.
+    chunks = [line.strip() for line in text.splitlines() if line.strip()]
+    all_json = bool(chunks)
+    for chunk in chunks:
+        try:
+            parsed = json.loads(chunk)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            all_json = False
+            break
+        parsed_rows.extend(_anchor_rows(parsed))
+    if all_json and parsed_rows:
+        return "; ".join(dict.fromkeys(parsed_rows))
+
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return text
+    rows = _anchor_rows(parsed)
+    return "; ".join(dict.fromkeys(rows))
+
+
+def _join_unique(parts: tuple[str, ...] | list[str]) -> str:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in parts:
+        text = str(value or "").strip().strip(",")
+        if text and text not in seen:
+            seen.add(text)
+            result.append(text)
+    return ", ".join(result)
+
+
 class PromptCompiler:
     """Unified media prompt compilation entry.
 
-    All media providers should receive compiled prompts instead of raw asset
-    descriptions. Project visual direction and asset identity constraints are
-    merged before provider execution.
+    Character identity, project visual direction and age constraints are placed
+    ahead of reference-sheet layout. This ordering is intentional: providers
+    with limited text-encoder context must not preserve the sheet layout while
+    truncating the actual character identity.
     """
 
     def __init__(self) -> None:
@@ -204,48 +306,60 @@ class PromptCompiler:
         contract: Any = None,
         reference: bool = True,
     ) -> CompiledPrompt:
+        kind = str(asset_kind or "").strip().lower()
         template = get_reference_template(asset_kind) if reference else None
+
+        anchor_text = ""
         if contract is not None:
             contract.validate()
-            contract_context = "\n".join(filter(None, [
-                contract_context, f"Asset {contract.asset_id} version {contract.asset_version}",
-                f"身份引用: {contract.entity_ids}; 形象版本: {contract.character_appearances}",
-                "固定视觉锚点: " + (contract.identity_anchors or "遵循已确认设定，不添加未确认外观"),
-            ]))
+            anchor_text = naturalize_visual_anchor(contract.identity_anchors)
 
-        compiled = self.visual_compiler.compile(
-            asset_description=asset_description,
-            direction=visual_direction,
-            contract_context=contract_context,
-        )
+        visual_context = _join_unique([
+            visual_direction.compile_context(),
+            anchor_text,
+            contract_context,
+        ])
 
         age_positive = ""
         age_negative = ""
-        if str(asset_kind or "").strip().lower() == "character":
+        if kind == "character":
             age_positive, age_negative = _character_age_constraints(
-                "\n".join(part for part in (asset_description, contract_context) if part)
+                "\n".join(part for part in (asset_description, anchor_text, contract_context) if part)
             )
 
-        positive = ", ".join(
-            part
-            for part in (
-                template.positive if template else "shot production, preserve established identities and visual anchors",
+        if reference:
+            # Identity and style come first. The layout is last and intentionally
+            # concise so it cannot crowd confirmed visual facts out of the model
+            # text-encoder context window.
+            positive = _join_unique([
+                visual_context,
+                age_positive,
+                asset_description,
+                template.positive if template else "",
+            ])
+            negative = _join_unique([
+                visual_direction.compile_negative_prompt(),
+                age_negative,
+                provider_negative,
+                template.negative if template else "",
+            ])
+        else:
+            compiled = self.visual_compiler.compile(
+                asset_description=asset_description,
+                direction=visual_direction,
+                contract_context=_join_unique([anchor_text, contract_context]),
+            )
+            positive = _join_unique([
                 age_positive,
                 compiled["positive_prompt"],
-            )
-            if part
-        )
-
-        negative = ", ".join(
-            part
-            for part in (
-                template.negative if template else "identity change, inconsistent visual anchors",
+                "shot production, preserve established identities and visual anchors",
+            ])
+            negative = _join_unique([
                 age_negative,
                 compiled["negative_prompt"],
                 provider_negative,
-            )
-            if part
-        )
+                "identity change, inconsistent visual anchors",
+            ])
 
         return CompiledPrompt(
             positive_prompt=positive,

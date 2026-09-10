@@ -19,9 +19,10 @@ REFERENCE_TEMPLATES = {
             "character identity reference, character turnaround sheet, single canvas model sheet, "
             "one prominent front facial close-up for identity and age locking, "
             "plus three full-body orthographic views arranged side by side: front view, exact 90-degree side view, back view, "
-            "same person in every view, same visible age in every view, same face structure, same hairstyle, same body proportions, "
-            "same clothing, footwear, accessories and color palette across all views, neutral expression, neutral standing pose, "
-            "full body visible from head to feet, clean plain background, strict age fidelity from the confirmed character profile, "
+            "same person in every view, same visible age in every view, fixed face shape, fixed hairstyle, fixed clothing, "
+            "same body proportions, same footwear, same accessories and same color palette across all views, "
+            "neutral expression, neutral standing pose, full body visible from head to feet, clean plain background, "
+            "strict age fidelity from the confirmed character profile, visible age must not drift older or younger, "
             "clear identity anchor, production-ready character turnaround reference"
         ),
         negative=(

@@ -30,11 +30,20 @@ from app.v3.shot_continuity_linker import ShotContinuityLinker
 from app.v3.authoring_progress import create_authoring_progress_tracker
 from app.v3.canonical_entity_reconciler import CanonicalEntityReconciler
 from app.v3.authoring_execution_timing import AuthoringExecutionTimingFix
+from app.v3.front_half_quality_gate import install_front_half_quality_gate
+from app.v3.character_generation_policy import install_character_generation_policy
 
 # A web-process restart must not resurrect persisted jobs created by the retired
 # multi-turn authoring driver. Only legacy active records carrying turn_count
 # are stopped; media generation jobs are left untouched.
 legacy_authoring_retirement = retire_legacy_authoring_jobs(settings)
+
+# Front-half outputs are production contracts, not suggestions. Extend the
+# built-in Skills with deterministic delivery schemas and reject incomplete
+# Qwen output before it can write entities/assets/handoffs. Character identity
+# semantics are installed before any stage/reference compiler uses them.
+install_front_half_quality_gate(legacy_runtime.director)
+install_character_generation_policy()
 
 production_skill_registry = ProductionSkillRegistry(legacy_runtime.director)
 production_skill_registry.install()
@@ -71,17 +80,10 @@ from app.v3.reference_generation_optimization import (
     create_reference_generation_optimization_router,
 )
 from app.v3.character_reference_package import CharacterReferencePackageBootstrap
-from app.v3.character_generation_policy import install_character_generation_policy
 from app.v3.runtime_model_contract import (
     V3RuntimeModelContract,
     create_runtime_model_contract_router,
 )
-
-# Install the character identity boundary before any reference bootstrap or
-# generation bridge starts accepting requests. Explicit gender/age/hair facts
-# are preserved into the provider-ready prompt and contradictory gender facts
-# fail before an expensive GPU task is launched.
-character_generation_policy = install_character_generation_policy()
 
 legacy_v3_bridge = ProductionReadyLegacyBridge(settings, legacy_runtime)
 legacy_v3_bridge.install()
@@ -160,7 +162,6 @@ __all__ = [
     "shot_continuity_linker",
     "postproduction_prefetch",
     "bgm_prefetch",
-    "character_generation_policy",
     "legacy_v3_bridge",
     "runtime_model_contract",
     "reference_generation_optimizer",

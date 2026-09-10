@@ -36,6 +36,17 @@ class VisualDirection:
         era = self.era or "未指定"
         art = self.art_style or "未指定，遵循已确认视觉锚点"
 
+        # Keep bilingual semantic anchors because local image text encoders may
+        # respond more strongly to either Chinese or English vocabulary.
+        if _has(self.world_style, "xianxia", "仙侠"):
+            world = "东方仙侠 xianxia"
+        if _has(self.culture, "chinese", "china", "中国", "中华"):
+            culture = "中国东方文化 chinese"
+        elif _has(self.culture, "东亚", "east asian"):
+            culture = "东亚文化 East Asian"
+        if _has(self.era, "ancient", "古代", "古风"):
+            era = "古代 ancient"
+
         parts = [
             f"世界观: {world}",
             f"文化背景: {culture}",

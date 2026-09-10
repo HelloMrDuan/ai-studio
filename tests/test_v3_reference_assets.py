@@ -46,7 +46,7 @@ class ReferenceAssetWorkflowTests(unittest.IsolatedAsyncioTestCase):
                 project_id,
                 entity_type="character",
                 name="少年",
-                metadata={"appearance": "黑发，深蓝冬装，黑色长靴"},
+                metadata={"appearance": "17岁，黑发，深蓝冬装，黑色长靴"},
             )
             p.create_entity(
                 project_id,
@@ -68,13 +68,17 @@ class ReferenceAssetWorkflowTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(state["manual_adoption_required"])
             self.assertEqual({item["entity_type"] for item in state["items"]}, {"character", "location", "prop"})
             character = next(item for item in state["items"] if item["entity_type"] == "character")
-            self.assertIn("4:3横向角色三视图设定图", character["prompt_text"])
-            self.assertIn("正面脸部近景", character["prompt_text"])
-            self.assertIn("正面全身", character["prompt_text"])
-            self.assertIn("严格90度侧面全身", character["prompt_text"])
-            self.assertIn("背面全身", character["prompt_text"])
-            self.assertIn("从头到脚完整可见", character["prompt_text"])
-            self.assertIn("不表现本镜头动作", character["prompt_text"])
+            prompt = character["prompt_text"]
+            self.assertIn("最高优先级", prompt)
+            self.assertIn("17岁", prompt)
+            self.assertIn("4:3横向角色三视图设定图", prompt)
+            self.assertIn("正面脸部近景", prompt)
+            self.assertIn("正面全身", prompt)
+            self.assertIn("严格90度侧面全身", prompt)
+            self.assertIn("背面全身", prompt)
+            self.assertIn("从头到脚完整可见", prompt)
+            self.assertIn("忽略表情", prompt)
+            self.assertLess(prompt.index("17岁"), prompt.index("4:3横向角色三视图设定图"))
 
     async def test_user_can_edit_reference_prompt_before_regeneration(self):
         with tempfile.TemporaryDirectory() as raw:
@@ -151,6 +155,7 @@ class ReferenceAssetWorkflowTests(unittest.IsolatedAsyncioTestCase):
             character = next(item for item in state["items"] if item["entity_id"] == entity["entity_id"])
             self.assertIn("角色三视图设定图", character["prompt_text"])
             self.assertIn("严格90度侧面全身", character["prompt_text"])
+            self.assertIn("最高优先级", character["prompt_text"])
             self.assertNotEqual(character["prompt_text"], old_prompt)
 
     async def test_generate_missing_submits_candidates_but_never_auto_adopts(self):
@@ -172,7 +177,10 @@ class ReferenceAssetWorkflowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(result["submitted_entity_ids"]), 2)
             self.assertEqual(len(calls), 2)
             self.assertTrue(all(call["params"]["semantic_compile"] == "auto" for call in calls))
-            character_call = next(call for call in calls if call["params"].get("positive_prompt") and "turnaround sheet" in call["params"]["positive_prompt"])
+            character_call = next(
+                call for call in calls
+                if call["params"].get("positive_prompt") and "turnaround sheet" in call["params"]["positive_prompt"]
+            )
             self.assertIn("front view", character_call["params"]["positive_prompt"])
             self.assertIn("side view", character_call["params"]["positive_prompt"])
             self.assertIn("back view", character_call["params"]["positive_prompt"])

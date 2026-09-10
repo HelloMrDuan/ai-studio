@@ -217,7 +217,7 @@ class FrontHalfAssetContractTests(unittest.TestCase):
 
     def test_stage02_revision_refreshes_raw_source_and_stable_projection(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
-            project_id = "r" * 24
+            project_id = "c" * 24
             director = _Director(Path(raw), project_id, "02", _STAGE02)
             character = self._stage02_entity(director, project_id)
             self.assertIn("深蓝色古代束袖长袍", character["metadata"]["authoring"]["stable_design"])

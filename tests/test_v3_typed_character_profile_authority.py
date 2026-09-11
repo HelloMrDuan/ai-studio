@@ -110,7 +110,11 @@ class TypedCharacterProfileAuthorityTests(unittest.TestCase):
             self.assertTrue(result["reconciled"])
             self.assertEqual(result["updated_count"], 1)
 
-            updated = director.production.get_entity(project_id, entity["entity_id"])
+            updated = next(
+                row
+                for row in director.production.list_entities(project_id, "character")
+                if row["entity_id"] == entity["entity_id"]
+            )
             contract = updated["metadata"]["continuity"]["core_profile"]["专业角色合同"]
             self.assertEqual(contract["年龄"], "17岁")
             self.assertEqual(contract["发型"], "黑色长发束起")

@@ -58,21 +58,21 @@ class CharacterPromptIntegrationPeriodTests(unittest.TestCase):
         self.assertNotIn("深蓝色古式长袍", prompt)
         self.assertNotIn("黑色布靴", prompt)
 
-    def test_face_anchor_blocks_modern_tshirt_even_before_visual_direction(self) -> None:
+    def test_face_anchor_blocks_modern_tshirt_without_relying_on_visual_direction(self) -> None:
         service = CharacterReferencePackageBootstrap.__new__(CharacterReferencePackageBootstrap)
         prompt = service._face_prompt(_entity())
         contract = GenerationContract(
             asset_id="face-anchor",
             asset_version="1",
             prompt=prompt,
-            visual_direction={},
+            visual_direction={"world_style": "neutral"},
             visual_context={"reference_phase": "face_anchor"},
             identity_anchors="性别：男性; 年龄：17岁; 脸部：东亚少年面孔; 发型：黑色长发束起",
         )
         compiled = PromptCompiler().compile(
             asset_kind="character",
             asset_description=prompt,
-            visual_direction=VisualDirection(),
+            visual_direction=VisualDirection(world_style="neutral"),
             contract=contract,
             reference=False,
         )

@@ -76,6 +76,7 @@ jobs:
           tests.test_v3_story_entity_sanitizer
           tests.test_v3_professional_output_runtime
           tests.test_v3_professional_source_grounding
+          tests.test_v3_project_source_snapshot
           tests.test_v3_llama_structured_output
           tests.test_v3_front_half_asset_contracts
           tests.test_v3_authoring_assets

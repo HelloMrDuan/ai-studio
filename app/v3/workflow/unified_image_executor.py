@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import secrets
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,14 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
                 seed = secrets.randbelow(2**63 - 1)
             width = int(payload.get("width") or 1024)
             height = int(payload.get("height") or 1024)
+            print(
+                "ZIMAGE_WORKER_INPUT "
+                f"project_id={input.project_id} workflow={input.workflow_id} step={input.step.step_id} "
+                f"cfg=1.0 size={width}x{height} "
+                f"positive={json.dumps(positive, ensure_ascii=False)} "
+                f"negative={json.dumps(negative, ensure_ascii=False)}",
+                flush=True,
+            )
             queued = await ZImageTemporalExecutor(selected.spec, adapter).queue(
                 positive_prompt=positive,
                 negative_prompt=negative,

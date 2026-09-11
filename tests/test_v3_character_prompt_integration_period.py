@@ -8,6 +8,7 @@ from app.services.visual_direction import VisualDirection
 from app.v3.character_identity_contract import build_face_anchor_prompt
 from app.v3.character_prompt_integration import install_character_prompt_integration
 from app.v3.character_reference_package import CharacterReferencePackageBootstrap
+from app.v3.typed_reference_profile_authority import enrich_reference_entity
 
 
 install_character_prompt_integration()
@@ -104,13 +105,10 @@ class CharacterPromptIntegrationPeriodTests(unittest.TestCase):
             contract=contract,
             reference=False,
         )
-        # Z-Image-Turbo is fixed at CFG=1.0, so the provider-ready positive
-        # prompt must itself carry the visible period garment contract.
         self.assertIn("FACE ANCHOR VISIBLE GARMENT CONTRACT", compiled.positive_prompt)
         self.assertIn("深蓝色古式长袍", compiled.positive_prompt)
         self.assertIn("17岁", compiled.positive_prompt)
         self.assertIn("黑色长发束起", compiled.positive_prompt)
-        # Keep negatives for compatibility/diagnostics, but they are secondary.
         self.assertIn("white T-shirt", compiled.negative_prompt)
         self.assertIn("crew-neck T-shirt", compiled.negative_prompt)
         self.assertIn("hoodie", compiled.negative_prompt)
@@ -150,6 +148,45 @@ class CharacterPromptIntegrationPeriodTests(unittest.TestCase):
         self.assertIn("modern T-shirt", compiled.negative_prompt)
         self.assertIn("white T-shirt", compiled.negative_prompt)
         self.assertIn("crew-neck T-shirt", compiled.negative_prompt)
+
+    def test_stale_formal_profile_is_enriched_from_typed_stage02_contract(self) -> None:
+        stale = {
+            "name": "沈川",
+            "metadata": {
+                "stable_profile": {"阶段正式设定": "17岁少年，古风武侠世界中的初遇角色。"},
+                "stable_design": "17岁少年，古风武侠世界中的初遇角色。",
+            },
+        }
+        contract = {
+            "性别呈现": "男",
+            "年龄": "17岁",
+            "脸部": "东亚少年面孔",
+            "发型": "黑发束起",
+            "发色": "黑色",
+            "服装": "深蓝色古式长袍",
+        }
+        enriched = enrich_reference_entity(stale, contract)
+        service = CharacterReferencePackageBootstrap.__new__(CharacterReferencePackageBootstrap)
+        prompt = service._face_prompt(enriched)
+        self.assertIn("黑发束起", prompt)
+        self.assertIn("深蓝色古式长袍", prompt)
+        compiled = PromptCompiler().compile(
+            asset_kind="character",
+            asset_description=prompt,
+            visual_direction=VisualDirection(world_style="neutral"),
+            contract=GenerationContract(
+                asset_id="face-anchor-stale-profile",
+                asset_version="1",
+                prompt=prompt,
+                visual_direction={"world_style": "neutral"},
+                visual_context={"reference_phase": "face_anchor"},
+                identity_anchors="",
+            ),
+            reference=False,
+        )
+        self.assertIn("FACE ANCHOR VISIBLE GARMENT CONTRACT", compiled.positive_prompt)
+        self.assertIn("深蓝色古式长袍", compiled.positive_prompt)
+        self.assertIn("modern T-shirt", compiled.negative_prompt)
 
 
 if __name__ == "__main__":

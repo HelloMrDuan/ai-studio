@@ -78,6 +78,7 @@ jobs:
           tests.test_v3_professional_source_grounding
           tests.test_v3_project_source_snapshot
           tests.test_v3_typed_front_half_authority
+          tests.test_v3_typed_entity_graph_authority
           tests.test_v3_llama_structured_output
           tests.test_v3_front_half_asset_contracts
           tests.test_v3_authoring_assets

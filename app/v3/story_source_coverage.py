@@ -34,14 +34,16 @@ _SECTION_LABELS = (
 # they are used only to detect obvious named characters that the Stage01 entity
 # table must not silently drop. Location/prop completeness is read from the
 # already-confirmed Stage01 entity tables instead of guessed from prose.
+# The name group is lazy so `陆沉没有回答` resolves to `陆沉` + `没有`, not
+# `陆沉没有` + `回答`.
 _CN_SUBJECT = re.compile(
-    r"(?<![\u4e00-\u9fff])([\u4e00-\u9fff]{2,4})"
+    r"(?<![\u4e00-\u9fff])([\u4e00-\u9fff]{2,4}?)"
     r"(?=(?:独自|站|坐|走|跑|来到|进入|离开|抬手|抬头|提着|提灯|握住|握紧|握|"
     r"看向|看了|看|望向|望|问|回答|答|说道|说|喊|笑|哭|转身|回头|勒马|翻身|"
     r"下马|拔剑|拔|按住|跟上|跟|穿过|听见|听到|没有|已经))"
 )
 _CN_SPEAKER = re.compile(
-    r"(?<![\u4e00-\u9fff])([\u4e00-\u9fff]{2,4})"
+    r"(?<![\u4e00-\u9fff])([\u4e00-\u9fff]{2,4}?)"
     r"(?:问|回答|答道|说道|说|喊道|喊|低声道|轻声道|沉声道|冷声道|笑道)"
 )
 _EN_SUBJECT = re.compile(

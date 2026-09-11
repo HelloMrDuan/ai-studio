@@ -34,8 +34,6 @@ _SECTION_LABELS = (
 # they are used only to detect obvious named characters that the Stage01 entity
 # table must not silently drop. Location/prop completeness is read from the
 # already-confirmed Stage01 entity tables instead of guessed from prose.
-# The name group is lazy so `陆沉没有回答` resolves to `陆沉` + `没有`, not
-# `陆沉没有` + `回答`.
 _CN_SUBJECT = re.compile(
     r"(?<![\u4e00-\u9fff])([\u4e00-\u9fff]{2,4}?)"
     r"(?=(?:独自|站|坐|走|跑|来到|进入|离开|抬手|抬头|提着|提灯|握住|握紧|握|"
@@ -51,6 +49,10 @@ _EN_SUBJECT = re.compile(
     r"(?=\s+(?:stood|sat|walked|ran|entered|left|looked|asked|answered|replied|said|"
     r"shouted|turned|drew|held|followed|heard)\b)"
 )
+_CN_CAPTURED_MODIFIERS = (
+    "没有", "已经", "正在", "仍然", "依然", "忽然", "突然",
+    "独自", "轻声", "低声", "沉声", "冷声", "笑着",
+)
 
 
 def _clean(value: Any) -> str:
@@ -59,6 +61,26 @@ def _clean(value: Any) -> str:
 
 def _norm(value: Any) -> str:
     return re.sub(r"[\s\u200b-\u200d\ufeff]+", "", _clean(value)).casefold()
+
+
+def _trim_cn_candidate(value: str) -> str:
+    """Remove narrative modifiers that a compact CJK regex may absorb.
+
+    Example: the sentence ``陆沉没有回答`` can otherwise be tokenized as
+    ``陆沉没有`` + ``回答`` by the speaker regex. `没有` describes the action,
+    not the canonical character name. Strip only a small allow-list and never
+    reduce a candidate below two Han characters.
+    """
+    text = _clean(value)
+    changed = True
+    while changed:
+        changed = False
+        for suffix in sorted(_CN_CAPTURED_MODIFIERS, key=len, reverse=True):
+            if text.endswith(suffix) and len(text) - len(suffix) >= 2:
+                text = text[:-len(suffix)]
+                changed = True
+                break
+    return text
 
 
 def _section(text: str, label: str) -> str:
@@ -142,11 +164,17 @@ def infer_source_character_candidates(source_text: str) -> list[str]:
         return []
     repeated: list[str] = []
     strong: list[str] = []
-    for pattern, sink in ((_CN_SUBJECT, repeated), (_EN_SUBJECT, repeated), (_CN_SPEAKER, strong)):
+
+    for pattern, sink in ((_CN_SUBJECT, repeated), (_CN_SPEAKER, strong)):
         for match in pattern.finditer(source):
-            name = _plausible_entity_name(match.group(1))
+            name = _plausible_entity_name(_trim_cn_candidate(match.group(1)))
             if name and name not in sink:
                 sink.append(name)
+    for match in _EN_SUBJECT.finditer(source):
+        name = _plausible_entity_name(match.group(1))
+        if name and name not in repeated:
+            repeated.append(name)
+
     result: list[str] = []
     for name in strong:
         if name not in result:

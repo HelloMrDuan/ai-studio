@@ -104,6 +104,16 @@ class StorySourceCoverageTests(unittest.TestCase):
         self.assertNotIn("古城", names)
         self.assertNotIn("烽火台", names)
 
+    def test_narrative_fragments_never_become_characters(self) -> None:
+        names = infer_source_character_candidates(_NATURAL_STORY)
+        for false_name in ("桥下的河", "他从马背", "只抬头", "城门后", "下一刻"):
+            self.assertNotIn(false_name, names, names)
+
+    def test_duplicate_authoritative_context_does_not_promote_one_off_phrases(self) -> None:
+        duplicated = _NATURAL_STORY + "\n\n" + _NATURAL_STORY
+        names = infer_source_character_candidates(duplicated)
+        self.assertEqual(set(names), {"沈璃", "陆沉"})
+
     def test_stage01_rejects_silent_character_omission(self) -> None:
         issues = source_coverage_issues(
             "xiaoduan-story-bible",
@@ -112,6 +122,7 @@ class StorySourceCoverageTests(unittest.TestCase):
         )
         self.assertTrue(any("沈璃" in item and "遗漏" in item for item in issues), issues)
         self.assertFalse(any("陆沉" in item and "遗漏" in item for item in issues), issues)
+        self.assertFalse(any("桥下的河" in item or "他从马背" in item or "只抬头" in item for item in issues), issues)
 
     def test_stage02_requires_every_confirmed_story_character(self) -> None:
         upstream = _NATURAL_STORY + "\n\n" + _STAGE01_COMPLETE

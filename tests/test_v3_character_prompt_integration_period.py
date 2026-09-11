@@ -5,6 +5,7 @@ import unittest
 from app.services.generation_contract import GenerationContract
 from app.services.prompt_compiler import PromptCompiler
 from app.services.visual_direction import VisualDirection
+from app.v3.character_identity_contract import build_face_anchor_prompt
 from app.v3.character_prompt_integration import install_character_prompt_integration
 from app.v3.character_reference_package import CharacterReferencePackageBootstrap
 
@@ -47,6 +48,32 @@ def _entity() -> dict:
     }
 
 
+def _production_profile_entity() -> dict:
+    return {
+        "name": "沈川",
+        "metadata": {
+            "stable_profile": {
+                "阶段正式设定": "17岁少年，古风武侠世界中的初遇角色。",
+                "专业角色合同": {
+                    "性别呈现": "男",
+                    "年龄": "17岁",
+                    "脸部": "黑发束起，深蓝色古式长袍。",
+                    "发型": "束发",
+                    "发色": "黑色",
+                    "肤色": "未指定",
+                    "体型": "未指定",
+                    "身高感": "未指定",
+                    "服装": "深蓝色古式长袍",
+                    "鞋履": "未指定",
+                    "固定身份锚点": ["古风武侠世界中的少年", "古剑持有者"],
+                },
+            },
+            "default_state": {},
+            "stable_design": "17岁少年，古风武侠世界中的初遇角色。",
+        },
+    }
+
+
 class CharacterPromptIntegrationPeriodTests(unittest.TestCase):
     def test_face_anchor_keeps_period_boundary_without_full_costume(self) -> None:
         service = CharacterReferencePackageBootstrap.__new__(CharacterReferencePackageBootstrap)
@@ -81,6 +108,36 @@ class CharacterPromptIntegrationPeriodTests(unittest.TestCase):
         self.assertIn("hoodie", compiled.negative_prompt)
         self.assertIn("17岁", compiled.positive_prompt)
         self.assertIn("黑色长发束起", compiled.positive_prompt)
+
+    def test_production_profile_shape_preserves_hair_and_period_boundary(self) -> None:
+        entity = _production_profile_entity()
+        prompt = build_face_anchor_prompt(entity)
+        self.assertIn("17岁", prompt)
+        self.assertIn("黑发束起", prompt)
+        self.assertIn("束发", prompt)
+        self.assertIn("黑色", prompt)
+        self.assertIn("古代东亚传统上衣领口", prompt)
+        self.assertNotIn("深蓝色古式长袍", prompt)
+
+        contract = GenerationContract(
+            asset_id="face-anchor-production-shape",
+            asset_version="1",
+            prompt=prompt,
+            visual_direction={"world_style": "neutral"},
+            visual_context={"reference_phase": "face_anchor"},
+            identity_anchors="17岁少年; 黑发束起; 束发; 黑色",
+        )
+        compiled = PromptCompiler().compile(
+            asset_kind="character",
+            asset_description=prompt,
+            visual_direction=VisualDirection(world_style="neutral"),
+            contract=contract,
+            reference=False,
+        )
+        self.assertIn("ancient East Asian traditional robe collar", compiled.positive_prompt)
+        self.assertIn("modern T-shirt", compiled.negative_prompt)
+        self.assertIn("white T-shirt", compiled.negative_prompt)
+        self.assertIn("crew-neck T-shirt", compiled.negative_prompt)
 
 
 if __name__ == "__main__":

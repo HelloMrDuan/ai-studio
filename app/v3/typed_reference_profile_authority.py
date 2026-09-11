@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import logging
 from typing import Any
 
 from . import professional_output_runtime as runtime
 from .canonical_reference_assets import CanonicalReferenceAssetBootstrap
+
+
+logger = logging.getLogger(__name__)
 
 
 def _clean(value: Any) -> str:
@@ -56,14 +60,60 @@ def _typed_contracts(production: Any, project_id: str) -> dict[str, dict[str, An
     return result
 
 
-def enrich_reference_entity(entity: dict[str, Any], contract: dict[str, Any]) -> dict[str, Any]:
-    """Make the typed Stage02 contract available to the reference compiler.
+def _contract_from_reference_entity(entity: dict[str, Any]) -> dict[str, Any]:
+    """Recover the typed contract already persisted in a formal profile.
 
-    Formal profile assets stay useful/versioned presentation resources, but the
-    strict Stage02 professional object is the semantic authority for stable
-    character identity. This prevents a stale/generic profile payload from
-    dropping hair or period clothing before Face Anchor compilation.
+    Old projects can have a Stage02 professional asset that has since become
+    stale/superseded while the canonical profile still correctly contains the
+    strict contract. Reference generation must not throw those facts away just
+    because the original writer asset is no longer the active row.
     """
+    metadata = entity.get("metadata") if isinstance(entity.get("metadata"), dict) else {}
+    direct = metadata.get("typed_character_contract")
+    if isinstance(direct, dict) and direct:
+        return deepcopy(direct)
+    stable_profile = metadata.get("stable_profile") if isinstance(metadata.get("stable_profile"), dict) else {}
+    for key in ("专业角色合同", "typed_character_contract", "character_contract"):
+        value = stable_profile.get(key)
+        if isinstance(value, dict) and value:
+            return deepcopy(value)
+    return {}
+
+
+def resolve_reference_contract(
+    production: Any,
+    project_id: str,
+    entity: dict[str, Any],
+) -> tuple[dict[str, Any], str]:
+    """Resolve one authoritative character contract at the final reference boundary.
+
+    Priority:
+    1. live strict Stage02 professional CharacterAsset;
+    2. the strict contract already persisted in the canonical profile.
+
+    The second source is a deterministic projection of the first, not a new
+    semantic writer. It is required for historical projects whose Stage02 writer
+    asset has already been superseded/staled by later editing/versioning.
+    """
+    name = _norm(entity.get("name"))
+    live = _typed_contracts(production, project_id).get(name) or {}
+    persisted = _contract_from_reference_entity(entity)
+    if live:
+        merged = deepcopy(persisted)
+        merged.update(deepcopy(live))
+        return merged, "stage02_professional_output"
+    if persisted:
+        return persisted, "canonical_profile_projection"
+    return {}, "missing"
+
+
+def enrich_reference_entity(
+    entity: dict[str, Any],
+    contract: dict[str, Any],
+    *,
+    authority_source: str = "stage02_professional_output",
+) -> dict[str, Any]:
+    """Make the typed Stage02 contract available to the reference compiler."""
     if not contract:
         return entity
     enriched = deepcopy(entity)
@@ -74,22 +124,52 @@ def enrich_reference_entity(entity: dict[str, Any], contract: dict[str, Any]) ->
     stable_profile["专业角色合同"] = deepcopy(contract)
     metadata["stable_profile"] = stable_profile
     metadata["typed_character_contract"] = deepcopy(contract)
-    metadata["typed_character_contract_authority"] = "stage02_professional_output"
+    metadata["typed_character_contract_authority"] = authority_source
     enriched["metadata"] = metadata
     return enriched
 
 
+def _enrich_for_project(
+    production: Any,
+    project_id: str,
+    entity: dict[str, Any],
+) -> dict[str, Any]:
+    if _clean(entity.get("entity_type")).lower() != "character":
+        return entity
+    contract, source = resolve_reference_contract(production, project_id, entity)
+    enriched = enrich_reference_entity(entity, contract, authority_source=source)
+    logger.info(
+        "REFERENCE_TYPED_CONTRACT project_id=%s entity_id=%s name=%s source=%s keys=%s clothing=%s hair=%s",
+        project_id,
+        _clean(entity.get("entity_id")),
+        _clean(entity.get("name")),
+        source,
+        sorted(contract.keys()),
+        _clean(contract.get("服装")),
+        _clean(contract.get("发型")),
+    )
+    return enriched
+
+
 def install_typed_reference_profile_authority() -> dict[str, Any]:
-    """Install one semantic authority boundary before reference prompt creation."""
+    """Install the semantic authority at every reference-entity read boundary.
+
+    Previous versions only enriched `_build_reference_candidates`. Production
+    proved that later lookup paths could still return a profile-shaped entity
+    without the typed contract. Patch `_entity` as the final gate too: no face,
+    costume or turnaround generation may proceed with a character entity that
+    has silently lost the strict Stage02 contract.
+    """
     current = CanonicalReferenceAssetBootstrap._build_reference_candidates
-    if getattr(current, "_xiaoduan_typed_reference_profile_authority", False):
+    if getattr(current, "_xiaoduan_typed_reference_profile_authority_v2", False):
         return {
             "installed": True,
             "status": "already_installed",
-            "authority": "stage02_professional_character_assets",
+            "authority": "stage02_professional_character_assets_or_profile_projection",
         }
 
     original_build = current
+    original_entity = CanonicalReferenceAssetBootstrap._entity
     original_appearance = CanonicalReferenceAssetBootstrap._appearance_entity
 
     def build_reference_candidates(
@@ -98,16 +178,18 @@ def install_typed_reference_profile_authority() -> dict[str, Any]:
         profiles: list[dict[str, Any]],
     ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
         rows = original_build(self, project_id, profiles)
-        contracts = _typed_contracts(self.director.production, project_id)
-        if not contracts:
-            return rows
-        enriched_rows: list[tuple[dict[str, Any], dict[str, Any]]] = []
-        for entity, profile in rows:
-            if _clean(entity.get("entity_type")).lower() == "character":
-                contract = contracts.get(_norm(entity.get("name"))) or {}
-                entity = enrich_reference_entity(entity, contract)
-            enriched_rows.append((entity, profile))
-        return enriched_rows
+        return [
+            (_enrich_for_project(self.director.production, project_id, entity), profile)
+            for entity, profile in rows
+        ]
+
+    def entity_for_generation(
+        self: CanonicalReferenceAssetBootstrap,
+        project_id: str,
+        entity_id: str,
+    ) -> dict[str, Any]:
+        entity = original_entity(self, project_id, entity_id)
+        return _enrich_for_project(self.director.production, project_id, entity)
 
     def appearance_entity(
         self: CanonicalReferenceAssetBootstrap,
@@ -115,24 +197,27 @@ def install_typed_reference_profile_authority() -> dict[str, Any]:
         entity: dict[str, Any],
         version: str,
     ) -> dict[str, Any]:
-        result = original_appearance(self, project_id, entity, version)
-        # Older implementation replaced metadata with appearance stable_design,
-        # accidentally discarding the typed identity contract. Appearance may
-        # override style/clothing version facts but never erase base identity.
-        base_meta = deepcopy(entity.get("metadata") if isinstance(entity.get("metadata"), dict) else {})
+        base = _enrich_for_project(self.director.production, project_id, entity)
+        result = original_appearance(self, project_id, base, version)
+        # Appearance may override version-specific style/clothing facts but never
+        # erase the base typed identity contract.
+        base_meta = deepcopy(base.get("metadata") if isinstance(base.get("metadata"), dict) else {})
         result_meta = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
         base_meta.update(deepcopy(result_meta))
         result["metadata"] = base_meta
-        return result
+        return _enrich_for_project(self.director.production, project_id, result)
 
-    setattr(build_reference_candidates, "_xiaoduan_typed_reference_profile_authority", True)
-    setattr(appearance_entity, "_xiaoduan_typed_reference_profile_authority", True)
+    setattr(build_reference_candidates, "_xiaoduan_typed_reference_profile_authority_v2", True)
+    setattr(entity_for_generation, "_xiaoduan_typed_reference_profile_authority_v2", True)
+    setattr(appearance_entity, "_xiaoduan_typed_reference_profile_authority_v2", True)
     CanonicalReferenceAssetBootstrap._build_reference_candidates = build_reference_candidates
+    CanonicalReferenceAssetBootstrap._entity = entity_for_generation
     CanonicalReferenceAssetBootstrap._appearance_entity = appearance_entity
     return {
         "installed": True,
         "status": "installed",
-        "authority": "stage02_professional_character_assets",
+        "authority": "stage02_professional_character_assets_or_profile_projection",
+        "final_entity_read_boundary_enforced": True,
         "formal_profile_is_not_allowed_to_drop_typed_identity": True,
         "appearance_version_preserves_typed_identity": True,
     }
@@ -140,5 +225,6 @@ def install_typed_reference_profile_authority() -> dict[str, Any]:
 
 __all__ = [
     "enrich_reference_entity",
+    "resolve_reference_contract",
     "install_typed_reference_profile_authority",
 ]

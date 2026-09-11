@@ -30,10 +30,10 @@ _SECTION_LABELS = (
     "创作计划",
 )
 
-# Strong Chinese narrative subject signals. These are intentionally narrow:
-# they are used only to detect obvious named characters that the Stage01 entity
-# table must not silently drop. Location/prop completeness is read from the
-# already-confirmed Stage01 entity tables instead of guessed from prose.
+# Natural-prose coverage is only a safety net for obvious character omissions.
+# It must be conservative: a false positive blocks Stage01 entirely. Therefore
+# candidates are accepted only when they are explicit dialogue speakers or are
+# observed as named subjects in at least two distinct narrative units.
 _CN_SUBJECT = re.compile(
     r"(?<![\u4e00-\u9fff])([\u4e00-\u9fff]{2,4}?)"
     r"(?=(?:独自|站|坐|走|跑|来到|进入|离开|抬手|抬头|提着|提灯|握住|握紧|握|"
@@ -53,6 +53,8 @@ _CN_CAPTURED_MODIFIERS = (
     "没有", "已经", "正在", "仍然", "依然", "忽然", "突然",
     "独自", "轻声", "低声", "沉声", "冷声", "笑着",
 )
+_CN_NON_NAME_MARKERS = ("的", "从", "把", "被")
+_CN_NON_NAME_PREFIXES = ("他", "她", "它", "只")
 
 
 def _clean(value: Any) -> str:
@@ -64,13 +66,7 @@ def _norm(value: Any) -> str:
 
 
 def _trim_cn_candidate(value: str) -> str:
-    """Remove narrative modifiers that a compact CJK regex may absorb.
-
-    Example: the sentence ``陆沉没有回答`` can otherwise be tokenized as
-    ``陆沉没有`` + ``回答`` by the speaker regex. `没有` describes the action,
-    not the canonical character name. Strip only a small allow-list and never
-    reduce a candidate below two Han characters.
-    """
+    """Remove compact narrative modifiers accidentally absorbed into a name."""
     text = _clean(value)
     changed = True
     while changed:
@@ -81,6 +77,42 @@ def _trim_cn_candidate(value: str) -> str:
                 changed = True
                 break
     return text
+
+
+def _narrative_cn_name(value: str) -> str:
+    """Return a conservative Chinese proper-name candidate or empty string.
+
+    Phrases such as ``桥下的河`` / ``他从马背`` / ``只抬头`` can sit directly
+    before a verb and used to be mistaken for characters. Grammatical markers
+    make them unsuitable for a fail-closed completeness gate.
+    """
+    text = _plausible_entity_name(_trim_cn_candidate(value))
+    if not text:
+        return ""
+    if any(marker in text for marker in _CN_NON_NAME_MARKERS):
+        return ""
+    if text.startswith(_CN_NON_NAME_PREFIXES):
+        return ""
+    return text
+
+
+def _unique_narrative_units(source_text: str) -> list[str]:
+    """Deduplicate story sentences before counting subject evidence.
+
+    Authoritative prompt context can contain the same original story more than
+    once. Counting raw occurrences would make a one-off noun phrase look like a
+    repeated character. Exact normalized narrative units are counted once.
+    """
+    rows: list[str] = []
+    seen: set[str] = set()
+    for raw in re.split(r"[。！？!?；;\n]+", _clean(source_text)):
+        unit = raw.strip(" \t\r\n\"'“”‘’|#>*_`-")
+        key = _norm(unit)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        rows.append(unit)
+    return rows
 
 
 def _section(text: str, label: str) -> str:
@@ -136,8 +168,6 @@ def extract_story_table_names(text: str, label: str) -> list[str]:
                 candidates.append(cells[0])
         else:
             line = re.sub(r"^[-*+]\s*", "", line)
-            # Split only the compact identity-list part; explanatory prose after
-            # the first sentence is not treated as additional identities.
             first_sentence = re.split(r"[。！？!?]", line, maxsplit=1)[0]
             candidates.extend(re.split(r"[；;、]", first_sentence))
             if len(candidates) == 1 and "：" in first_sentence:
@@ -152,38 +182,44 @@ def extract_story_table_names(text: str, label: str) -> list[str]:
 
 
 def infer_source_character_candidates(source_text: str) -> list[str]:
-    """Detect only obvious named narrative characters from natural prose.
+    """Detect only high-confidence named characters from natural prose.
 
-    Repeated named subjects and explicit dialogue speakers are strong enough to
-    enforce coverage. We deliberately do not run a broad NER guesser here: the
-    goal is to catch omissions such as `沈璃`/`陆沉`, not turn scenery nouns into
-    people.
+    The gate intentionally prefers a false negative over a false positive:
+    Stage01 already performs semantic extraction, while this function exists to
+    stop obvious silent omissions. Duplicate prompt copies never increase the
+    evidence count.
     """
-    source = _clean(source_text)
-    if not source:
+    units = _unique_narrative_units(source_text)
+    if not units:
         return []
-    repeated: list[str] = []
-    strong: list[str] = []
 
-    for pattern, sink in ((_CN_SUBJECT, repeated), (_CN_SPEAKER, strong)):
-        for match in pattern.finditer(source):
-            name = _plausible_entity_name(_trim_cn_candidate(match.group(1)))
-            if name and name not in sink:
-                sink.append(name)
-    for match in _EN_SUBJECT.finditer(source):
-        name = _plausible_entity_name(match.group(1))
-        if name and name not in repeated:
-            repeated.append(name)
+    strong: list[str] = []
+    subject_units: dict[str, set[str]] = {}
+    english_units: dict[str, set[str]] = {}
+
+    for unit in units:
+        unit_key = _norm(unit)
+        for match in _CN_SPEAKER.finditer(unit):
+            name = _narrative_cn_name(match.group(1))
+            if name and name not in strong:
+                strong.append(name)
+        for match in _CN_SUBJECT.finditer(unit):
+            name = _narrative_cn_name(match.group(1))
+            if name:
+                subject_units.setdefault(name, set()).add(unit_key)
+        for match in _EN_SUBJECT.finditer(unit):
+            name = _plausible_entity_name(match.group(1))
+            if name:
+                english_units.setdefault(name, set()).add(unit_key)
 
     result: list[str] = []
     for name in strong:
         if name not in result:
             result.append(name)
-    for name in repeated:
-        # Repetition makes the subject signal robust against a one-off common
-        # noun occurring at sentence start.
-        if source.count(name) >= 2 and name not in result:
-            result.append(name)
+    for bucket in (subject_units, english_units):
+        for name, evidence in bucket.items():
+            if len(evidence) >= 2 and name not in result:
+                result.append(name)
     return result
 
 
@@ -193,12 +229,7 @@ def _contains_name(text: str, name: str) -> bool:
 
 
 def source_coverage_issues(skill_name: str, content: str, source_text: str) -> list[str]:
-    """Bidirectional coverage checks missing from the original source guard.
-
-    The existing guard prevents *invented* downstream identities. This function
-    adds the opposite invariant: confirmed upstream identities may not silently
-    disappear from Stage01/02/03 deliverables.
-    """
+    """Bidirectional coverage checks missing from the original source guard."""
     skill = _clean(skill_name)
     issues: list[str] = []
 
@@ -211,8 +242,6 @@ def source_coverage_issues(skill_name: str, content: str, source_text: str) -> l
 
     if skill == "xiaoduan-character-assets":
         required = extract_story_table_names(source_text, "角色实体表")
-        # Natural source detection is a second safety net for legacy Story Bible
-        # text that was created before this completeness contract existed.
         for name in infer_source_character_candidates(source_text):
             if name not in required:
                 required.append(name)
@@ -284,13 +313,7 @@ def _materialize_stage01_characters(director: Any, project_id: str, content: str
 
 
 def install_story_source_coverage(director: Any) -> dict[str, str]:
-    """Harden the front-half gate and Stage01 entity materialization.
-
-    Install after ``install_front_half_quality_gate``. The existing Qwen repair
-    path then automatically receives the new missing-identity issues, while the
-    confirmation wrapper guarantees that every confirmed character-table row is
-    represented by a real Stage01 ProductionAsset entity.
-    """
+    """Harden front-half validation and materialize confirmed Stage01 roles."""
     if getattr(director, "_xiaoduan_story_source_coverage_installed", False):
         return {"policy": "source_coverage_v1", "status": "already_installed"}
 
@@ -302,7 +325,9 @@ def install_story_source_coverage(director: Any) -> dict[str, str]:
         extra = source_coverage_issues(skill, content, source_text)
         if extra:
             check = dict(check)
-            check["issues"] = list(check.get("issues") or []) + [item for item in extra if item not in (check.get("issues") or [])]
+            check["issues"] = list(check.get("issues") or []) + [
+                item for item in extra if item not in (check.get("issues") or [])
+            ]
             check["valid"] = False
         return check
 

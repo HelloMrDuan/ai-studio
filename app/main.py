@@ -34,6 +34,7 @@ from app.v3.front_half_quality_gate import install_front_half_quality_gate
 from app.v3.story_source_coverage import install_story_source_coverage
 from app.v3.story_entity_sanitizer import install_story_entity_sanitizer
 from app.v3.professional_output_runtime import install_professional_output_runtime
+from app.v3.professional_output_cache_epoch import install_professional_output_cache_epoch
 from app.v3.character_prompt_integration import install_character_prompt_integration
 from app.v3.reference_role_policy import install_reference_role_policy
 from app.v3.character_package_integrity import install_character_package_integrity
@@ -52,6 +53,7 @@ production_skill_registry = ProductionSkillRegistry(legacy_runtime.director)
 production_skill_registry.install()
 production_runtime_optimizer = ProductionRuntimeOptimizer(settings, legacy_runtime.director)
 production_runtime_optimizer.install()
+professional_output_cache_epoch = install_professional_output_cache_epoch(legacy_runtime.director)
 
 canonical_entity_reconciler = CanonicalEntityReconciler(settings, legacy_runtime.director)
 canonical_entity_reconciler.install()
@@ -148,6 +150,7 @@ __all__ = [
     "story_source_coverage",
     "story_entity_sanitizer",
     "professional_output_runtime",
+    "professional_output_cache_epoch",
     "character_prompt_contract",
     "reference_role_contract",
     "character_package_contract",

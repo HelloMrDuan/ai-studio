@@ -31,10 +31,15 @@ _MODERN_UPPER_NEGATIVE = (
     "modern T-shirt, crew-neck T-shirt, white T-shirt, hoodie, sweatshirt, "
     "modern casual shirt, western suit, contemporary sportswear, modern fashion collar"
 )
+_FACE_CLOTHING_COVERAGE_POSITIVE = (
+    "FACE ANCHOR CLOTHING COVERAGE: the person is visibly wearing a complete upper garment; "
+    "the neckline, both shoulders and upper chest are covered by clothing fabric; this is a clothed "
+    "head-and-shoulders identity portrait"
+)
 _FACE_PERIOD_POSITIVE = (
-    "FACE ANCHOR VISIBLE GARMENT CONTRACT: the visible neckline and shoulders must use the confirmed "
-    "historical period garment construction and period-appropriate fabric; keep the crop head-and-shoulders "
-    "and do not redesign the full costume"
+    "FACE ANCHOR VISIBLE GARMENT CONTRACT: the visible neckline, both shoulders and upper chest must use "
+    "the confirmed historical period garment construction, confirmed color family and period-appropriate "
+    "fabric; keep the crop head-and-shoulders and do not redesign the full costume"
 )
 
 
@@ -60,10 +65,13 @@ def _entity_contract_text(entity: dict[str, Any]) -> str:
 
 def _typed_character_contract(entity: dict[str, Any]) -> dict[str, Any]:
     metadata = entity.get("metadata") if isinstance(entity.get("metadata"), dict) else {}
+    direct = metadata.get("typed_character_contract")
+    if isinstance(direct, dict) and direct:
+        return direct
     stable_profile = metadata.get("stable_profile") if isinstance(metadata.get("stable_profile"), dict) else {}
     for key in ("专业角色合同", "typed_character_contract", "character_contract"):
         value = stable_profile.get(key)
-        if isinstance(value, dict):
+        if isinstance(value, dict) and value:
             return value
     authoring = metadata.get("authoring") if isinstance(metadata.get("authoring"), dict) else {}
     value = authoring.get("typed_character_contract")
@@ -80,31 +88,34 @@ def _confirmed_visible_garment(entity: dict[str, Any]) -> str:
 
 
 def _face_period_cue(entity: dict[str, Any]) -> str:
-    """Carry only the visible period neckline into Face Anchor rendering.
+    """Carry only visible upper-garment facts into Face Anchor rendering.
 
-    This is a render-policy cue, not a reusable identity fact. Z-Image-Turbo is
-    run at CFG=1.0, so provider negatives cannot be the primary mechanism for
-    excluding a modern T-shirt. The positive prompt must explicitly describe the
-    small amount of period clothing that remains visible in a head-and-shoulders
-    identity crop.
+    A Face Anchor is not a nude anatomy study. Z-Image-Turbo runs at CFG=1.0,
+    so the positive prompt must affirmatively state that the subject is clothed.
+    If Stage02 has a confirmed garment, the visible neckline/shoulders/chest use
+    that exact garment; otherwise we still require a neutral complete upper
+    garment so the model cannot fill the crop with bare shoulders/chest.
     """
     source = _entity_contract_text(entity)
-    if not _PERIOD_HINT.search(source):
-        return ""
-
     garment = _confirmed_visible_garment(entity)
     if garment:
         return (
-            f"锁脸构图可见服装边界：领口与肩部必须来自已确认服装「{garment}」，"
-            "保持其已确认颜色和古代服饰结构；画面仍只展示头肩，不展开完整服装设计。"
+            f"锁脸构图可见服装边界：人物明确穿着已确认服装「{garment}」；"
+            "领口、双肩与上胸均由该服装布料覆盖，保持其已确认颜色与结构；"
+            "画面仍只展示头肩，不展开完整服装设计。"
         )
-    if _EAST_ASIAN_HINT.search(source):
+    if _PERIOD_HINT.search(source):
+        if _EAST_ASIAN_HINT.search(source):
+            return (
+                "锁脸构图可见服装边界：人物穿着完整的古代东亚传统上衣；领口、双肩与上胸均有历史服装布料覆盖；"
+                "画面仍只展示头肩，不展开完整服装设计。"
+            )
         return (
-            "锁脸构图可见服装边界：领口与肩部采用古代东亚传统袍服结构和历史织物质感；"
+            "锁脸构图可见服装边界：人物穿着与已确认历史时代一致的完整传统上衣；领口、双肩与上胸均有服装布料覆盖；"
             "画面仍只展示头肩，不展开完整服装设计。"
         )
     return (
-        "锁脸构图可见服装边界：领口与肩部采用与已确认历史时代一致的传统服装结构和织物；"
+        "锁脸构图可见服装边界：人物必须穿着完整基础上衣，领口、双肩与上胸均有明确服装布料覆盖；"
         "画面仍只展示头肩，不展开完整服装设计。"
     )
 
@@ -139,32 +150,27 @@ def _strengthen_turnaround_template() -> None:
 
 
 def install_character_prompt_integration() -> dict[str, Any]:
-    """Install one idempotent character prompt boundary.
-
-    Stable identity projection, phase-specific prompt rules and provider-ready
-    positive/negative prompts are applied exactly once here. Face and costume
-    authoring prompts are both generated from the same stable-fact contract.
-    """
+    """Install one idempotent character prompt boundary."""
     _remove_legacy_adult_bias()
     _strengthen_turnaround_template()
 
-    if not getattr(CharacterReferencePackageBootstrap._face_prompt, "_xiaoduan_unified_character_prompt", False):
+    if not getattr(CharacterReferencePackageBootstrap._face_prompt, "_xiaoduan_unified_character_prompt_v2", False):
         def face_prompt(self: CharacterReferencePackageBootstrap, entity: dict[str, Any]) -> str:
             prompt = build_face_anchor_prompt(entity)
             cue = _face_period_cue(entity)
-            return f"{prompt}\n{cue}" if cue else prompt
+            return f"{prompt}\n{cue}"
 
-        setattr(face_prompt, "_xiaoduan_unified_character_prompt", True)
+        setattr(face_prompt, "_xiaoduan_unified_character_prompt_v2", True)
         CharacterReferencePackageBootstrap._face_prompt = face_prompt
 
-    if not getattr(CharacterReferencePackageBootstrap._costume_prompt, "_xiaoduan_unified_character_prompt", False):
+    if not getattr(CharacterReferencePackageBootstrap._costume_prompt, "_xiaoduan_unified_character_prompt_v2", False):
         def costume_prompt(self: CharacterReferencePackageBootstrap, entity: dict[str, Any]) -> str:
             return build_costume_reference_prompt(entity)
 
-        setattr(costume_prompt, "_xiaoduan_unified_character_prompt", True)
+        setattr(costume_prompt, "_xiaoduan_unified_character_prompt_v2", True)
         CharacterReferencePackageBootstrap._costume_prompt = costume_prompt
 
-    if not getattr(media_pipeline_module._phase_anchor_text, "_xiaoduan_unified_character_prompt", False):
+    if not getattr(media_pipeline_module._phase_anchor_text, "_xiaoduan_unified_character_prompt_v2", False):
         original_phase = media_pipeline_module._phase_anchor_text
 
         def phase_anchor(text: str, phase: str) -> str:
@@ -173,10 +179,10 @@ def install_character_prompt_integration() -> dict[str, Any]:
                 return project_character_anchor(text, current)
             return original_phase(text, phase)
 
-        setattr(phase_anchor, "_xiaoduan_unified_character_prompt", True)
+        setattr(phase_anchor, "_xiaoduan_unified_character_prompt_v2", True)
         media_pipeline_module._phase_anchor_text = phase_anchor
 
-    if not getattr(PromptCompiler.compile, "_xiaoduan_unified_character_prompt", False):
+    if not getattr(PromptCompiler.compile, "_xiaoduan_unified_character_prompt_v2", False):
         original_compile = PromptCompiler.compile
 
         def compile_once(self: PromptCompiler, *args: Any, **kwargs: Any) -> CompiledPrompt:
@@ -204,12 +210,12 @@ def install_character_prompt_integration() -> dict[str, Any]:
             positive = constraints.positive
             negative = constraints.negative
 
-            # Z-Image-Turbo runs with CFG=1.0. A negative prompt is therefore not
-            # a reliable way to keep a modern T-shirt out of Face Anchor output.
-            # Make the visible period neckline an affirmative provider-ready rule;
-            # retain negatives as secondary metadata/compatibility for other image
-            # providers that do use classifier-free negative guidance.
             if phase == "face_anchor":
+                # CFG=1 means negative guidance is secondary. Clothing coverage
+                # must always be stated affirmatively so a portrait crop cannot
+                # collapse into bare shoulders/chest when upstream period facts
+                # are temporarily incomplete.
+                positive = tuple(dict.fromkeys((*positive, _FACE_CLOTHING_COVERAGE_POSITIVE)))
                 period_probe = "\n".join((asset_description, anchor, contract_context))
                 if _PERIOD_HINT.search(period_probe):
                     positive = tuple(dict.fromkeys((*positive, _FACE_PERIOD_POSITIVE)))
@@ -220,18 +226,18 @@ def install_character_prompt_integration() -> dict[str, Any]:
                 negative_prompt=_prepend(result.negative_prompt, negative),
             )
 
-        setattr(compile_once, "_xiaoduan_unified_character_prompt", True)
+        setattr(compile_once, "_xiaoduan_unified_character_prompt_v2", True)
         PromptCompiler.compile = compile_once
 
     return {
         "installed": True,
-        "compiler_boundary": "single_idempotent_character_prompt_contract",
+        "compiler_boundary": "single_idempotent_character_prompt_contract_v2",
         "identity_projection": "phase_scoped",
-        "face_prompt": "affirmative_identity_plus_visible_period_garment_boundary",
+        "face_prompt": "affirmative_identity_plus_mandatory_clothing_coverage",
         "costume_prompt": "body_clothing_wearables_only_no_story_props",
         "provider_prompt": "frozen_positive_negative_contract",
         "adult_bias_removed": True,
-        "zimage_cfg1_period_clothing_enforced_in_positive": True,
+        "zimage_cfg1_clothing_coverage_enforced_in_positive": True,
     }
 
 

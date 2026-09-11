@@ -36,6 +36,7 @@ from app.v3.story_entity_sanitizer import install_story_entity_sanitizer
 from app.v3.professional_source_grounding import install_professional_source_grounding
 from app.v3.llama_structured_output import install_llama_structured_output
 from app.v3.professional_output_runtime import install_professional_output_runtime
+from app.v3.project_source_snapshot import install_project_source_snapshot
 from app.v3.professional_output_cache_epoch import install_professional_output_cache_epoch
 from app.v3.character_prompt_integration import install_character_prompt_integration
 from app.v3.reference_role_policy import install_reference_role_policy
@@ -46,13 +47,16 @@ legacy_authoring_retirement = retire_legacy_authoring_jobs(settings)
 install_front_half_quality_gate(legacy_runtime.director)
 story_source_coverage = install_story_source_coverage(legacy_runtime.director)
 story_entity_sanitizer = install_story_entity_sanitizer(legacy_runtime.director)
-# Provenance is server-owned. Install exact authoritative-source extraction and
-# evidence grounding before the strict professional runtime binds its validator.
+# Legacy/history source parsing remains available only as a migration fallback.
 professional_source_grounding = install_professional_source_grounding()
 # Follow llama.cpp's own JSON-Schema response_format contract before the strict
 # professional runtime captures its lower-level tracked LLM call boundary.
 llama_structured_output = install_llama_structured_output(legacy_runtime.director)
 professional_output_runtime = install_professional_output_runtime(settings, legacy_runtime.director)
+# Wao-style source boundary: the first real Stage01 source becomes an immutable,
+# versioned project resource. Regeneration and provenance no longer depend on
+# chat-history recovery; source_evidence is bound by the server to this snapshot.
+project_source_snapshot = install_project_source_snapshot(settings, legacy_runtime.director)
 character_prompt_contract = install_character_prompt_integration()
 reference_role_contract = install_reference_role_policy()
 character_package_contract = install_character_package_integrity()
@@ -160,6 +164,7 @@ __all__ = [
     "professional_source_grounding",
     "llama_structured_output",
     "professional_output_runtime",
+    "project_source_snapshot",
     "professional_output_cache_epoch",
     "character_prompt_contract",
     "reference_role_contract",

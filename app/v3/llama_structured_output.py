@@ -20,13 +20,33 @@ from app.services.gemma import (
 
 logger = logging.getLogger(__name__)
 
-# llama.cpp's official OpenAI-compatible example constrains generation with:
-#   response_format={"type":"json_object","schema": <JSON Schema>}
-# Keep that transport contract here instead of asking the model to "please emit
-# valid JSON" and trying to repair malformed text afterwards.
+# llama.cpp accepts JSON Schema only through the subset its JSON-Schema -> GBNF
+# converter can compile. Pydantic is still the canonical business schema owner;
+# this module projects that schema to a transport-safe grammar schema only.
 _STRUCTURED_CALL: ContextVar[dict[str, Any] | None] = ContextVar(
     "xiaoduan_llama_structured_call", default=None
 )
+
+_LLAMA_SCHEMA_KEYS = {
+    "type",
+    "properties",
+    "required",
+    "items",
+    "enum",
+    "additionalProperties",
+    "anyOf",
+    "oneOf",
+    "allOf",
+}
+_LLAMA_SCHEMA_METADATA = {
+    "$schema",
+    "$id",
+    "$anchor",
+    "title",
+    "description",
+    "default",
+    "examples",
+}
 
 
 def _json_after_marker(text: str, marker: str) -> dict[str, Any] | None:
@@ -49,7 +69,7 @@ def response_schema_from_call(
     system_prompt: str,
     messages: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    """Recover only the schema explicitly supplied by the professional runtime."""
+    """Recover only the canonical schema supplied by the professional runtime."""
     schema = _json_after_marker(system_prompt, "AUTHORITATIVE_JSON_SCHEMA=")
     if schema is not None:
         return schema
@@ -79,11 +99,90 @@ def output_kind_from_schema(schema: dict[str, Any]) -> str:
     return ""
 
 
+def _resolve_local_ref(root: dict[str, Any], ref: str) -> Any:
+    """Resolve one local JSON pointer without fetching or inventing schema."""
+    if not ref.startswith("#/"):
+        raise ValueError(f"llama transport only supports local schema refs: {ref}")
+    node: Any = root
+    for raw in ref[2:].split("/"):
+        token = raw.replace("~1", "/").replace("~0", "~")
+        if not isinstance(node, dict) or token not in node:
+            raise ValueError(f"unresolved local schema ref: {ref}")
+        node = node[token]
+    return node
+
+
+def llama_transport_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Project canonical Pydantic JSON Schema to llama.cpp's grammar subset.
+
+    llama.cpp's converter documents only a subset of JSON Schema and its C++
+    converter has known trouble with nested refs. Pydantic emits `$defs/$ref`
+    heavily for nested models, which is exactly what caused the production
+    `failed to parse grammar` error. We therefore inline local refs and keep only
+    structural generation constraints. The original schema is never mutated and
+    remains the authority for Pydantic validation after generation.
+    """
+    root = copy.deepcopy(schema)
+
+    def project(node: Any, stack: tuple[str, ...] = ()) -> Any:
+        if isinstance(node, list):
+            return [project(item, stack) for item in node]
+        if not isinstance(node, dict):
+            return copy.deepcopy(node)
+
+        ref = node.get("$ref")
+        if isinstance(ref, str):
+            if ref in stack:
+                raise ValueError(f"circular local schema ref: {ref}")
+            target = _resolve_local_ref(root, ref)
+            if not isinstance(target, dict):
+                raise ValueError(f"schema ref does not target an object: {ref}")
+            merged = copy.deepcopy(target)
+            for key, value in node.items():
+                if key != "$ref":
+                    merged[key] = copy.deepcopy(value)
+            return project(merged, stack + (ref,))
+
+        result: dict[str, Any] = {}
+        for key, value in node.items():
+            if key in {"$defs", "definitions"} or key in _LLAMA_SCHEMA_METADATA:
+                continue
+            if key == "const":
+                # Single-value enum is supported by older llama.cpp converters
+                # more consistently than JSON-Schema const.
+                result["enum"] = [copy.deepcopy(value)]
+                continue
+            if key == "properties":
+                if not isinstance(value, dict):
+                    raise ValueError("schema properties must be an object")
+                result[key] = {
+                    str(name): project(child, stack)
+                    for name, child in value.items()
+                }
+                continue
+            if key not in _LLAMA_SCHEMA_KEYS:
+                # Length/pattern/title/etc. remain canonical Pydantic rules. They
+                # are deliberately not grammar rules because the deployed local
+                # llama.cpp build is older and rejected the richer projection.
+                continue
+            result[key] = project(value, stack)
+        return result
+
+    projected = project(root)
+    if not isinstance(projected, dict):
+        raise ValueError("llama transport schema root must be an object")
+
+    serialized = json.dumps(projected, ensure_ascii=False, separators=(",", ":"))
+    if '"$ref"' in serialized or '"$defs"' in serialized or '"definitions"' in serialized:
+        raise ValueError("llama transport schema still contains refs/definitions")
+    return projected
+
+
 def llama_response_format(schema: dict[str, Any]) -> dict[str, Any]:
-    """Exact llama.cpp JSON-schema response_format shape used by its examples."""
+    """Build llama.cpp response_format from the transport-safe schema projection."""
     return {
         "type": "json_object",
-        "schema": copy.deepcopy(schema),
+        "schema": llama_transport_schema(schema),
     }
 
 
@@ -244,14 +343,14 @@ async def _request_messages_structured(
                 "request_retries": total_attempts - 1,
                 "finish_reason": finish_reason,
                 "structured_output": True,
-                "structured_output_transport": "llama.cpp-response_format-json-schema",
+                "structured_output_transport": "llama.cpp-response_format-flat-structural-schema-v2",
                 "output_kind": output_kind,
             }
             if finish_reason == "length":
                 if not aggressive:
                     continue
                 error = RuntimeError(
-                    "Qwen 严格 JSON Schema 输出连续两次达到 token 上限；"
+                    "Qwen 严格结构输出连续两次达到 token 上限；"
                     "已拒绝把截断 JSON 交给业务层"
                 )
                 error.llm_metrics = metrics
@@ -261,12 +360,11 @@ async def _request_messages_structured(
             return content, response_model, metrics
         except httpx.HTTPStatusError as exc:
             last_error = exc
-            # Do not silently fall back to prompt-only JSON. That is the exact
-            # failure mode this layer exists to remove.
             if exc.response is not None and exc.response.status_code in {400, 422}:
                 error = RuntimeError(
-                    "当前 llama.cpp 不接受 JSON Schema response_format；"
-                    "请升级/更换支持 schema grammar 的 llama-server。"
+                    "本机 llama.cpp 已收到 response_format，但仍拒绝平台投影后的"
+                    "扁平结构 Schema；这是本地 grammar 转换兼容错误，不再归因于"
+                    "业务 Schema。"
                     f" server={exc.response.text[:1200]}"
                 )
                 error.llm_metrics = {
@@ -275,6 +373,7 @@ async def _request_messages_structured(
                     "request_attempts": total_attempts,
                     "request_retries": total_attempts - 1,
                     "structured_output": True,
+                    "structured_output_transport": "llama.cpp-response_format-flat-structural-schema-v2",
                 }
                 raise error from exc
             if not aggressive:
@@ -290,28 +389,28 @@ async def _request_messages_structured(
                 continue
             break
 
-    error = RuntimeError(f"Qwen JSON Schema 请求失败：{last_error}")
+    error = RuntimeError(f"Qwen 结构化请求失败：{last_error}")
     error.llm_metrics = {
         "usage": {},
         "timings": {},
         "request_attempts": total_attempts,
         "request_retries": max(0, total_attempts - 1),
         "structured_output": True,
+        "structured_output_transport": "llama.cpp-response_format-flat-structural-schema-v2",
     }
     raise error
 
 
 def install_llama_structured_output(director: DirectorService) -> dict[str, Any]:
-    """Install schema-constrained decoding before ProfessionalOutputRuntime.
+    """Install provider-adapted schema-constrained decoding.
 
-    This deliberately follows llama.cpp's own response_format+JSON-Schema
-    contract. The existing Director remains the owner of prompt/context/telemetry;
-    only the transport for strict professional objects is constrained.
+    ProfessionalOutputRegistry/Pydantic owns canonical semantics. llama.cpp only
+    receives a flattened structural projection that its GBNF converter can parse.
     """
     if getattr(DirectorService, "_xiaoduan_llama_structured_output_installed", False):
         return {
             "status": "already_installed",
-            "policy": "llama_cpp_json_schema_v1",
+            "policy": "llama_cpp_json_schema_v2",
         }
 
     original_tracked = DirectorService._tracked_llm_chat
@@ -385,8 +484,9 @@ def install_llama_structured_output(director: DirectorService) -> dict[str, Any]
     director._xiaoduan_llama_structured_output = True
     return {
         "status": "installed",
-        "policy": "llama_cpp_json_schema_v1",
-        "transport": "response_format.json_object.schema",
+        "policy": "llama_cpp_json_schema_v2",
+        "transport": "response_format.flat_structural_schema",
+        "canonical_schema_owner": "professional_output_registry+pydantic",
         "unconstrained_fallback": False,
         "truncation_retry": True,
         "repair_reuses_raw_output": False,
@@ -397,6 +497,7 @@ __all__ = [
     "build_structured_payload",
     "install_llama_structured_output",
     "llama_response_format",
+    "llama_transport_schema",
     "output_kind_from_schema",
     "response_schema_from_call",
 ]

@@ -29,7 +29,10 @@ from app.v3.bgm_prefetch import BGMPrefetchService
 from app.v3.shot_continuity_linker import ShotContinuityLinker
 from app.v3.authoring_progress import create_authoring_progress_tracker
 from app.v3.canonical_entity_reconciler import CanonicalEntityReconciler
-from app.v3.typed_entity_graph_authority import TypedEntityGraphAuthority
+from app.v3.typed_entity_graph_authority import (
+    TypedEntityGraphAuthority,
+    create_typed_entity_graph_router,
+)
 from app.v3.authoring_execution_timing import AuthoringExecutionTimingFix
 from app.v3.front_half_quality_gate import install_front_half_quality_gate
 from app.v3.story_source_coverage import install_story_source_coverage
@@ -49,18 +52,10 @@ legacy_authoring_retirement = retire_legacy_authoring_jobs(settings)
 install_front_half_quality_gate(legacy_runtime.director)
 story_source_coverage = install_story_source_coverage(legacy_runtime.director)
 story_entity_sanitizer = install_story_entity_sanitizer(legacy_runtime.director)
-# Legacy/history source parsing remains available only as a migration fallback.
 professional_source_grounding = install_professional_source_grounding()
-# Follow llama.cpp's own JSON-Schema response_format contract before the strict
-# professional runtime captures its lower-level tracked LLM call boundary.
 llama_structured_output = install_llama_structured_output(legacy_runtime.director)
 professional_output_runtime = install_professional_output_runtime(settings, legacy_runtime.director)
-# Wao-style source boundary: the first real Stage01 source becomes an immutable,
-# versioned project resource. Regeneration and provenance no longer depend on
-# chat-history recovery; source_evidence is bound by the server to this snapshot.
 project_source_snapshot = install_project_source_snapshot(settings, legacy_runtime.director)
-# Typed professional outputs are the only authority for new Stage01-03 projects.
-# The retired Markdown quality/identity gates remain only for legacy projects.
 typed_front_half_authority = install_typed_front_half_authority(settings, legacy_runtime.director)
 character_prompt_contract = install_character_prompt_integration()
 reference_role_contract = install_reference_role_policy()
@@ -74,9 +69,6 @@ professional_output_cache_epoch = install_professional_output_cache_epoch(legacy
 
 canonical_entity_reconciler = CanonicalEntityReconciler(settings, legacy_runtime.director)
 canonical_entity_reconciler.install()
-# Once a typed Story Bible exists it is the sole reusable Entity registry.
-# This second boundary runs after legacy/canonical wrappers, retires stale
-# untagged ghosts such as “手中”, and keeps reads reconciled thereafter.
 typed_entity_graph_authority = TypedEntityGraphAuthority(settings, legacy_runtime.director)
 typed_entity_graph_authority_installation = typed_entity_graph_authority.install()
 
@@ -108,8 +100,6 @@ from app.v3.runtime_model_contract import (
 
 legacy_v3_bridge = UnifiedProductionBridge(settings, legacy_runtime)
 legacy_v3_bridge.install()
-# Text is Qwen. Reference-free image requests are Z-Image-Turbo. Reference-
-# conditioned image requests remain on the proven SDXL FaceID/IP-Adapter graph.
 runtime_model_contract = V3RuntimeModelContract(settings, legacy_runtime, legacy_v3_bridge)
 runtime_model_contract.install()
 legacy_v3_bridge.reference_bootstrap = CharacterReferencePackageBootstrap(
@@ -162,6 +152,7 @@ app.include_router(create_bgm_prefetch_router(settings, legacy_runtime))
 app.include_router(create_asset_explorer_router(settings, legacy_runtime))
 app.include_router(create_authoring_progress_router(stage_progress_tracker))
 app.include_router(create_single_pass_finalizer_router(legacy_runtime, stage_progress_tracker))
+app.include_router(create_typed_entity_graph_router(typed_entity_graph_authority))
 app.include_router(original_workbench_router)
 app.title = "小段映画 · 漫剧工作台"
 

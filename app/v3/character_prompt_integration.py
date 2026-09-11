@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 import app.services.media_generation_pipeline as media_pipeline_module
@@ -16,6 +18,21 @@ from app.v3.character_identity_contract import (
 from app.v3.character_reference_package import CharacterReferencePackageBootstrap
 
 
+_PERIOD_HINT = re.compile(
+    r"古代|古风|古式|古装|汉服|长袍|交领|襦裙|武侠|仙侠|"
+    r"ancient|historical|period|traditional\s+(?:robe|garment)|\brobe\b",
+    re.IGNORECASE,
+)
+_EAST_ASIAN_HINT = re.compile(
+    r"中国|中华|中式|东亚|武侠|仙侠|chinese|east\s*asian",
+    re.IGNORECASE,
+)
+_MODERN_UPPER_NEGATIVE = (
+    "modern T-shirt, crew-neck T-shirt, white T-shirt, hoodie, sweatshirt, "
+    "modern casual shirt, western suit, contemporary sportswear, modern fashion collar"
+)
+
+
 def _prepend(value: str, additions: tuple[str, ...]) -> str:
     parts = [str(item or "").strip().strip(",") for item in additions]
     tail = str(value or "").strip().strip(",")
@@ -26,6 +43,35 @@ def _prepend(value: str, additions: tuple[str, ...]) -> str:
         if part and part not in seen:
             seen.append(part)
     return ", ".join(seen)
+
+
+def _entity_contract_text(entity: dict[str, Any]) -> str:
+    metadata = entity.get("metadata") if isinstance(entity.get("metadata"), dict) else {}
+    try:
+        return json.dumps(metadata, ensure_ascii=False, sort_keys=True)
+    except Exception:
+        return str(metadata or "")
+
+
+def _face_period_cue(entity: dict[str, Any]) -> str:
+    """Carry only the era/culture silhouette into Face Anchor clothing.
+
+    Face Anchor must not inherit the full costume, but it also must not invent a
+    modern T-shirt when Stage02 already established a historical costume. The
+    cue is derived from the typed stable profile, never from the character name.
+    """
+    source = _entity_contract_text(entity)
+    if not _PERIOD_HINT.search(source):
+        return ""
+    if _EAST_ASIAN_HINT.search(source):
+        return (
+            "服装时代边界：画面只露出低存在感的古代东亚传统上衣领口，"
+            "与已确认古式服装处于同一时代文化体系；不展示完整服装。"
+        )
+    return (
+        "服装时代边界：画面只露出低存在感、与已确认历史服装同一时代体系的上衣领口；"
+        "不展示完整服装。"
+    )
 
 
 def _remove_legacy_adult_bias() -> None:
@@ -69,7 +115,9 @@ def install_character_prompt_integration() -> dict[str, Any]:
 
     if not getattr(CharacterReferencePackageBootstrap._face_prompt, "_xiaoduan_unified_character_prompt", False):
         def face_prompt(self: CharacterReferencePackageBootstrap, entity: dict[str, Any]) -> str:
-            return build_face_anchor_prompt(entity)
+            prompt = build_face_anchor_prompt(entity)
+            cue = _face_period_cue(entity)
+            return f"{prompt}\n{cue}" if cue else prompt
 
         setattr(face_prompt, "_xiaoduan_unified_character_prompt", True)
         CharacterReferencePackageBootstrap._face_prompt = face_prompt
@@ -109,16 +157,30 @@ def install_character_prompt_integration() -> dict[str, Any]:
             if not isinstance(direction, VisualDirection):
                 direction = VisualDirection()
 
+            asset_description = str(kwargs.get("asset_description") or "")
+            contract_context = str(kwargs.get("contract_context") or "")
             constraints = compile_character_constraints(
-                asset_description=str(kwargs.get("asset_description") or ""),
+                asset_description=asset_description,
                 identity_anchors=anchor,
-                contract_context=str(kwargs.get("contract_context") or ""),
+                contract_context=contract_context,
                 visual_direction=direction,
                 reference_phase=phase,
             )
+            positive = constraints.positive
+            negative = constraints.negative
+
+            # The Stage02 typed profile can establish period costume before a
+            # Stage03 VisualDirection exists. Face Anchor intentionally removes
+            # full costume facts, but must retain the period boundary so the
+            # image model cannot fill the visible neckline with a modern T-shirt.
+            if phase == "face_anchor":
+                period_probe = "\n".join((asset_description, anchor, contract_context))
+                if _PERIOD_HINT.search(period_probe):
+                    negative = tuple(dict.fromkeys((*negative, _MODERN_UPPER_NEGATIVE)))
+
             return CompiledPrompt(
-                positive_prompt=_prepend(result.positive_prompt, constraints.positive),
-                negative_prompt=_prepend(result.negative_prompt, constraints.negative),
+                positive_prompt=_prepend(result.positive_prompt, positive),
+                negative_prompt=_prepend(result.negative_prompt, negative),
             )
 
         setattr(compile_once, "_xiaoduan_unified_character_prompt", True)
@@ -128,10 +190,11 @@ def install_character_prompt_integration() -> dict[str, Any]:
         "installed": True,
         "compiler_boundary": "single_idempotent_character_prompt_contract",
         "identity_projection": "phase_scoped",
-        "face_prompt": "affirmative_identity_only",
+        "face_prompt": "affirmative_identity_only_with_period_boundary",
         "costume_prompt": "body_clothing_wearables_only_no_story_props",
         "provider_prompt": "frozen_positive_negative_contract",
         "adult_bias_removed": True,
+        "modern_face_anchor_clothing_blocked_when_period_is_known": True,
     }
 
 

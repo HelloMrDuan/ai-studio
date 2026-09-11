@@ -49,8 +49,8 @@ story_entity_sanitizer = install_story_entity_sanitizer(legacy_runtime.director)
 # Provenance is server-owned. Install exact authoritative-source extraction and
 # evidence grounding before the strict professional runtime binds its validator.
 professional_source_grounding = install_professional_source_grounding()
-# Follow llama.cpp's own JSON-Schema response_format contract. Install it before
-# ProfessionalOutputRuntime captures DirectorService._tracked_llm_chat.
+# Follow llama.cpp's own JSON-Schema response_format contract before the strict
+# professional runtime captures its lower-level tracked LLM call boundary.
 llama_structured_output = install_llama_structured_output(legacy_runtime.director)
 professional_output_runtime = install_professional_output_runtime(settings, legacy_runtime.director)
 character_prompt_contract = install_character_prompt_integration()

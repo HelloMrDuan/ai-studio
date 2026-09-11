@@ -12,6 +12,7 @@ from .character_identity_cleanup import CharacterIdentityCleanupService
 from .stage_asset_materialization import StageOutputAssetMaterializer
 from .stage_asset_materialization_guard import install_stage_asset_materialization_guard
 from .stage_visual_asset_alias_recovery import install_stage_visual_asset_alias_recovery
+from .story_source_coverage import reconcile_stage01_story_characters
 
 
 install_stage_asset_materialization_guard()
@@ -56,6 +57,16 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
         return _STAGE_ORDER_INDEX.get(current, 0) > _STAGE_ORDER_INDEX[required]
 
     def sync(self, project_id: str) -> dict[str, Any]:
+        # Stage①'s validated character table is part of the shared Entity graph,
+        # not a UI-only document. Single-pass authoring reaches ready state before
+        # manual confirmation, so reconcile it first; otherwise the story-elements
+        # panel can still show an older one-character continuity extraction.
+        stage01_reconciliation = reconcile_stage01_story_characters(
+            self.director,
+            project_id,
+            require_ready=True,
+        )
+
         # First materialize the ready Stage②/③ draft. Then repair historical
         # character ownership before creating canonical profiles so one person's
         # appearance can never be attached to another person's entity id.
@@ -94,6 +105,7 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
 
         return {
             **result,
+            "stage01_story_entity_reconciliation": stage01_reconciliation,
             "stage_output_materialization": materialized,
             "character_ownership_repair": {
                 "before": ownership_before,
@@ -127,13 +139,15 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
                 result = self.sync(project_id)
             except Exception:
                 continue
+            stage01 = result.get("stage01_story_entity_reconciliation") or {}
             materialized = result.get("stage_output_materialization") or {}
             cleanup = result.get("character_identity_cleanup") or {}
             appearance_materialization = result.get("character_appearance_materialization") or {}
             ownership = result.get("character_ownership_repair") or {}
             ownership_changed = any(bool((ownership.get(key) or {}).get("changed")) for key in ("before", "after", "final"))
             if (
-                bool(materialized.get("materialized"))
+                bool(stage01.get("reconciled"))
+                or bool(materialized.get("materialized"))
                 or bool(cleanup.get("changed"))
                 or bool(appearance_materialization.get("materialized"))
                 or ownership_changed

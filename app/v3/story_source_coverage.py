@@ -29,6 +29,11 @@ _SECTION_LABELS = (
     "连续性事件",
     "创作计划",
 )
+_TABLE_NAME_HEADERS = {
+    "角色实体表": ("稳定唯一名称", "角色名称", "人物名称", "姓名", "名称", "角色", "人物"),
+    "地点实体表": ("稳定唯一名称", "地点名称", "场景名称", "名称", "地点", "场景"),
+    "道具实体表": ("稳定唯一名称", "道具名称", "关键物件", "物件名称", "名称", "道具", "物件"),
+}
 
 # Natural-prose coverage is only a safety net for obvious character omissions.
 # It must be conservative: a false positive blocks Stage01 entirely. Therefore
@@ -80,12 +85,7 @@ def _trim_cn_candidate(value: str) -> str:
 
 
 def _narrative_cn_name(value: str) -> str:
-    """Return a conservative Chinese proper-name candidate or empty string.
-
-    Phrases such as ``桥下的河`` / ``他从马背`` / ``只抬头`` can sit directly
-    before a verb and used to be mistaken for characters. Grammatical markers
-    make them unsuitable for a fail-closed completeness gate.
-    """
+    """Return a conservative Chinese proper-name candidate or empty string."""
     text = _plausible_entity_name(_trim_cn_candidate(value))
     if not text:
         return ""
@@ -97,12 +97,7 @@ def _narrative_cn_name(value: str) -> str:
 
 
 def _unique_narrative_units(source_text: str) -> list[str]:
-    """Deduplicate story sentences before counting subject evidence.
-
-    Authoritative prompt context can contain the same original story more than
-    once. Counting raw occurrences would make a one-off noun phrase look like a
-    repeated character. Exact normalized narrative units are counted once.
-    """
+    """Deduplicate story sentences before counting subject evidence."""
     rows: list[str] = []
     seen: set[str] = set()
     for raw in re.split(r"[。！？!?；;\n]+", _clean(source_text)):
@@ -147,36 +142,76 @@ def _plausible_entity_name(value: str) -> str:
     return text
 
 
+def _looks_like_table_id(value: str) -> bool:
+    text = _clean(value)
+    return bool(
+        re.fullmatch(r"(?:[A-Za-z]{0,8}[-_.]?)?\d{1,6}", text)
+        or re.fullmatch(r"[A-Za-z]{1,8}[-_.]?\d{1,6}", text)
+        or re.fullmatch(r"N\d+(?:[-_.]\d+)*", text, flags=re.I)
+    )
+
+
 def extract_story_table_names(text: str, label: str) -> list[str]:
     """Read stable names from one Stage01 entity-table section.
 
-    Supports markdown tables, bullet lists and compact `甲；乙。` prose while
-    rejecting schema/header words. This parser never invents identities.
+    Supports markdown tables (including an ID column before the name), bullet
+    lists and compact `甲；乙。` prose. Schema/header cells and row IDs are never
+    treated as identities.
     """
     body = _section(text, label)
     if not body:
         return []
     names: list[str] = []
+    table_name_index: int | None = None
+    headers = {_norm(item) for item in _TABLE_NAME_HEADERS.get(label, ("名称",))}
+
     for raw_line in body.splitlines():
         line = raw_line.strip()
         if not line:
             continue
         candidates: list[str] = []
         if line.startswith("|"):
-            cells = [cell.strip() for cell in line.strip("|").split("|") if cell.strip()]
-            if cells:
-                candidates.append(cells[0])
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            if not cells or all(re.fullmatch(r"\s*:?-{3,}:?\s*", cell or "") for cell in cells):
+                continue
+            if table_name_index is None:
+                normalized = [_norm(cell) for cell in cells]
+                for index, cell in enumerate(normalized):
+                    if cell in headers:
+                        table_name_index = index
+                        break
+                if table_name_index is not None:
+                    # This row is the table header itself.
+                    continue
+            if table_name_index is not None and table_name_index < len(cells):
+                candidates.append(cells[table_name_index])
+            else:
+                # Legacy tables without a recognizable header: select the first
+                # plausible non-ID cell rather than blindly taking column zero.
+                for cell in cells:
+                    value = _plausible_entity_name(cell)
+                    if value and not _looks_like_table_id(value):
+                        candidates.append(value)
+                        break
         else:
             line = re.sub(r"^[-*+]\s*", "", line)
             first_sentence = re.split(r"[。！？!?]", line, maxsplit=1)[0]
-            candidates.extend(re.split(r"[；;、]", first_sentence))
-            if len(candidates) == 1 and "：" in first_sentence:
-                candidates = [first_sentence.split("：", 1)[0]]
-            elif len(candidates) == 1 and ":" in first_sentence:
-                candidates = [first_sentence.split(":", 1)[0]]
+            pieces = re.split(r"[；;、]", first_sentence)
+            if len(pieces) > 1:
+                candidates.extend(pieces)
+            else:
+                separator = "：" if "：" in first_sentence else ":" if ":" in first_sentence else ""
+                if separator:
+                    left, right = first_sentence.split(separator, 1)
+                    if _norm(left) in headers:
+                        candidates = [right]
+                    else:
+                        candidates = [left]
+                else:
+                    candidates = [first_sentence]
         for candidate in candidates:
             name = _plausible_entity_name(candidate)
-            if name and name not in names:
+            if name and not _looks_like_table_id(name) and name not in names:
                 names.append(name)
     return names
 
@@ -252,8 +287,8 @@ def source_coverage_issues(skill_name: str, content: str, source_text: str) -> l
         return issues
 
     if skill == "xiaoduan-visual-assets":
-        for label, kind in (("地点实体表", "地点"), ("道具实体表", "道具")):
-            required = extract_story_table_names(source_text, label)
+        for table_label, kind in (("地点实体表", "地点"), ("道具实体表", "道具")):
+            required = extract_story_table_names(source_text, table_label)
             actual = [name for name, _body in gate._heading_blocks(content, kind)]
             for name in required:
                 if not any(_norm(name) == _norm(item) for item in actual):
@@ -263,7 +298,13 @@ def source_coverage_issues(skill_name: str, content: str, source_text: str) -> l
     return issues
 
 
-def _materialize_stage01_characters(director: Any, project_id: str, content: str, source_text: str) -> list[str]:
+def _materialize_stage01_characters(
+    director: Any,
+    project_id: str,
+    content: str,
+    source_text: str,
+) -> list[str]:
+    """Project validated Stage01 character rows into the shared Entity graph."""
     production = getattr(director, "production", None)
     if production is None:
         return []
@@ -276,6 +317,8 @@ def _materialize_stage01_characters(director: Any, project_id: str, content: str
     existing = production.list_entities(project_id)
     created_ids: list[str] = []
     for name in required:
+        # Stage01 can contain design labels, so do not create a character unless
+        # the canonical name is actually present in the authoritative source.
         if not _contains_name(source_text, name):
             continue
         current = next(
@@ -298,12 +341,13 @@ def _materialize_stage01_characters(director: Any, project_id: str, content: str
             stage="01",
             skill="xiaoduan-story-bible",
             metadata={
-                "story_entity_contract": "source_coverage_v1",
+                "story_entity_contract": "source_coverage_v2",
                 "source_stage": "01",
                 "source_table": "角色实体表",
+                "materialized_from_validated_story_bible": True,
             },
             evidence={
-                "type": "confirmed_stage01_entity_table",
+                "type": "validated_stage01_entity_table",
                 "name": name,
             },
         )
@@ -312,10 +356,87 @@ def _materialize_stage01_characters(director: Any, project_id: str, content: str
     return [item for item in created_ids if item]
 
 
+def reconcile_stage01_story_characters(
+    director: Any,
+    project_id: str,
+    *,
+    require_ready: bool = True,
+) -> dict[str, Any]:
+    """Synchronize validated Stage01 roles into the graph before Stage02.
+
+    Single-pass authoring reaches ``stage_ready`` before the user presses the
+    manual confirm button. The story-elements panel reads the shared Entity
+    graph at that point, so confirmation-only projection is too late. This
+    reconciler is idempotent and is safe from both the ready-state finalizer and
+    authoring-asset status/startup reconciliation paths.
+    """
+    project = director.get_project(project_id)
+    completed = {_clean(item) for item in project.get("completed_stages") or []}
+    state = ((project.get("stage_state") or {}).get("01") or {})
+    runtime = state.get("skill_runtime") if isinstance(state.get("skill_runtime"), dict) else {}
+    completion = runtime.get("completion") if isinstance(runtime.get("completion"), dict) else {}
+    ready = (
+        "01" in completed
+        or bool(state.get("stage_ready"))
+        or bool(completion.get("ready"))
+        or _clean(project.get("current_stage")) not in {"", "01"}
+    )
+    if require_ready and not ready:
+        return {
+            "project_id": project_id,
+            "reconciled": False,
+            "reason": "stage01_not_ready",
+            "character_entity_ids": [],
+            "character_count": 0,
+        }
+
+    content = ""
+    getter = getattr(director, "_latest_stage_output", None)
+    if callable(getter):
+        try:
+            content = _clean(getter(project, "01"))
+        except Exception:
+            content = ""
+    if not content:
+        content = _clean(((project.get("confirmed_outputs") or {}).get("01") or {}).get("handoff"))
+    if not content or not _section(content, "角色实体表"):
+        return {
+            "project_id": project_id,
+            "reconciled": False,
+            "reason": "stage01_character_table_unavailable",
+            "character_entity_ids": [],
+            "character_count": 0,
+        }
+
+    source_text = gate._project_authoritative_source(director, project, "01")
+    ids = _materialize_stage01_characters(director, project_id, content, source_text)
+    names = [
+        _clean(item.get("name"))
+        for item in director.production.list_entities(project_id, "character")
+        if _clean(item.get("name"))
+    ]
+    required = [
+        name for name in infer_source_character_candidates(source_text)
+        if _contains_name(_section(content, "角色实体表"), name)
+    ]
+    missing = [name for name in required if not any(_norm(name) == _norm(item) for item in names)]
+    if missing:
+        raise RuntimeError("Stage01 角色实体图同步失败，仍缺少：" + "、".join(missing))
+    return {
+        "project_id": project_id,
+        "reconciled": True,
+        "policy": "source_coverage_v2",
+        "character_entity_ids": ids,
+        "character_count": len(ids),
+        "character_names": names,
+        "required_character_names": required,
+    }
+
+
 def install_story_source_coverage(director: Any) -> dict[str, str]:
-    """Harden front-half validation and materialize confirmed Stage01 roles."""
+    """Harden front-half validation and materialize validated Stage01 roles."""
     if getattr(director, "_xiaoduan_story_source_coverage_installed", False):
-        return {"policy": "source_coverage_v1", "status": "already_installed"}
+        return {"policy": "source_coverage_v2", "status": "already_installed"}
 
     original_validate = gate._validate_with_source
     original_confirm = director.confirm_stage
@@ -342,7 +463,7 @@ def install_story_source_coverage(director: Any) -> dict[str, str]:
             if isinstance(result, dict):
                 result = dict(result)
                 result["stage01_source_coverage"] = {
-                    "policy": "source_coverage_v1",
+                    "policy": "source_coverage_v2",
                     "character_entity_ids": materialized,
                     "character_count": len(materialized),
                 }
@@ -351,12 +472,13 @@ def install_story_source_coverage(director: Any) -> dict[str, str]:
     gate._validate_with_source = enhanced_validate
     director.confirm_stage = MethodType(confirm_with_story_entities, director)
     director._xiaoduan_story_source_coverage_installed = True
-    return {"policy": "source_coverage_v1", "status": "installed"}
+    return {"policy": "source_coverage_v2", "status": "installed"}
 
 
 __all__ = [
     "extract_story_table_names",
     "infer_source_character_candidates",
     "install_story_source_coverage",
+    "reconcile_stage01_story_characters",
     "source_coverage_issues",
 ]

@@ -19,7 +19,7 @@ from .project_source_snapshot import (
 )
 
 
-_CJK = "\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff"
+_CJK = "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
 _ROLE = (
     "少年|少女|青年|老者|老人|男子|女子|男人|女人|男孩|女孩|姑娘|小伙|"
     "先生|女士|公子|小姐|师父|师兄|师姐|师弟|师妹|将军|王子|公主|"
@@ -32,17 +32,17 @@ _PREDICATE = (
     "提着|提灯|握住|握紧|握|身穿|穿着|穿|拿着|拿|背着|背负|背"
 )
 _ROLE_NAME = re.compile(
-    rf"(?:{_ROLE})\\s*([{_CJK}]{{2,4}}?)(?=(?:{_PREDICATE})|[，。！？!?；;、\\s])"
+    rf"(?:{_ROLE})\s*([{_CJK}]{{2,4}}?)(?=(?:{_PREDICATE})|[，。！？!?；;、\s])"
 )
 _SPEAKER = re.compile(
-    rf"(?:^|[，。！？!?；;：:\\n\\s“”‘’\"'])"
+    rf"(?:^|[，。！？!?；;：:\n\s“”‘’\"'])"
     rf"([{_CJK}]{{2,4}}?)(?=(?:问|回答|答道|说道|说|喊道|喊|低声道|轻声道|沉声道|冷声道|笑道))"
 )
 _CLAUSE_SUBJECT = re.compile(
-    rf"(?:^|[，。！？!?；;：:\\n\\s“”‘’\"'])"
+    rf"(?:^|[，。！？!?；;：:\n\s“”‘’\"'])"
     rf"([{_CJK}]{{2,4}}?)(?=(?:{_PREDICATE}))"
 )
-_UNIT_SPLIT = re.compile(r"[。！？!?；;\\n]+")
+_UNIT_SPLIT = re.compile(r"[。！？!?；;\n]+")
 
 _RETIRED_ASSET_ROLES = {
     "character_profile", "character_appearance", "character_reference",
@@ -50,6 +50,11 @@ _RETIRED_ASSET_ROLES = {
     "location_reference", "scene_reference", "prop_profile", "prop_reference",
     "item_reference",
 }
+_OLD_MACHINE_BLOCKS = (
+    "```story-entities-json",
+    "```appearance-versions-json",
+    "```visual-direction-json",
+)
 
 
 def _clean(value: Any) -> str:
@@ -57,7 +62,7 @@ def _clean(value: Any) -> str:
 
 
 def _norm(value: Any) -> str:
-    return re.sub(r"[\\s\\u200b-\\u200d\\ufeff]+", "", _clean(value)).casefold()
+    return re.sub(r"[\s\u200b-\u200d\ufeff]+", "", _clean(value)).casefold()
 
 
 def _sha(value: Any) -> str:
@@ -68,7 +73,7 @@ def _units(source_text: str) -> list[str]:
     rows: list[str] = []
     seen: set[str] = set()
     for raw in _UNIT_SPLIT.split(_clean(source_text)):
-        unit = raw.strip(" \\t\\r\\n\\\"'“”‘’|#>*_`-")
+        unit = raw.strip(" \t\r\n\"'“”‘’|#>*_`-")
         key = _norm(unit)
         if not key or key in seen:
             continue
@@ -78,12 +83,11 @@ def _units(source_text: str) -> list[str]:
 
 
 def infer_canonical_characters(source_text: str) -> list[str]:
-    """Conservative exact-source character identities for the typed path.
+    """Return stable, independently nameable characters from exact source text.
 
-    This follows the same boundary used by wao asset-development: a reusable
-    character identity must be independently nameable from the exact source;
-    locative/body/action fragments are not identities. We do not NER arbitrary
-    nouns. A Chinese identity is accepted when the source introduces it with a
+    This intentionally follows the reusable-identity boundary used by wao's
+    asset-development skill instead of treating arbitrary source substrings as
+    entities. A Chinese name is accepted when the source introduces it with a
     human-role cue, uses it as a dialogue speaker, or uses the same clause-start
     subject in at least two distinct narrative units.
     """
@@ -157,13 +161,15 @@ def _exact_sentence(source_text: str, name: str) -> str:
     return source[left:right].strip()
 
 
-def normalize_story_bible_characters(payload: dict[str, Any], source_text: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Make Stage01 character identity server-owned from the immutable source.
+def normalize_story_bible_characters(
+    payload: dict[str, Any],
+    source_text: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Make Stage01 canonical character identity server-owned.
 
-    The model still writes the professional object, but it cannot promote a
-    grammatical fragment (for example a body/location phrase) into a canonical
-    character. High-confidence exact-source identities are added if omitted and
-    unsupported model rows are dropped before the object is persisted.
+    The model writes the professional object, but it cannot promote a grammar
+    fragment such as ``手中`` into a reusable character. Missing exact-source
+    canonical characters are restored before persistence.
     """
     value = copy.deepcopy(payload)
     if _clean(value.get("output_kind")) != "story_bible":
@@ -212,6 +218,24 @@ def normalize_story_bible_characters(payload: dict[str, Any], source_text: str) 
         "added": added,
         "canonical": canonical,
     }
+
+
+def _typed_document_issues(payload: dict[str, Any]) -> list[str]:
+    """Presentation checks for typed results; never revive legacy Markdown gates."""
+    document = _clean(payload.get("document"))
+    issues: list[str] = []
+    if not document:
+        return ["专业输出 document 不能为空"]
+    for marker in _OLD_MACHINE_BLOCKS:
+        if marker in document:
+            issues.append(f"document 不得再内嵌旧机器块：{marker}")
+    if _clean(payload.get("output_kind")) == "story_bible":
+        lowered = document.casefold()
+        for token in ("最终图片 prompt", "最终图片提示词", "镜头焦段参数", "comfyui 参数"):
+            if token.casefold() in lowered:
+                issues.append("Stage01 混入了后续媒体/镜头执行参数")
+                break
+    return issues
 
 
 def _retire_noncanonical_entities(
@@ -457,7 +481,6 @@ def install_typed_front_half_authority(settings: Any, director: Any) -> dict[str
     if getattr(director, "_xiaoduan_typed_front_half_authority_installed", False):
         return {"status": "already_installed", "policy": "typed_front_half_authority_v1"}
 
-    # Strengthen the one-writer prompt with wao's canonical asset boundary.
     original_schema_prompt = runtime._runtime_schema_prompt
 
     def schema_prompt(output_kind: str) -> str:
@@ -473,14 +496,16 @@ action fragment, pronoun/group phrase, field label or other sentence fragment is
 never a character even when the same characters occur in the source text.
 Use the shortest canonical identity name that can refer to the same character
 across multiple sentences. Do not promote incidental visible nouns into assets.
-This is the same reusable-identity boundary used by asset-development: identity
+This follows the reusable-identity boundary used by asset-development: identity
 must survive reuse; transient sentence state does not.
 === END CANONICAL IDENTITY SCOPE ===
 """.strip()
 
     runtime._runtime_schema_prompt = schema_prompt
+    # Make typed presentation checks self-contained; installer order can no
+    # longer resurrect the retired Markdown template gate.
+    runtime._document_issues = _typed_document_issues
 
-    # Normalize Stage01 machine identity before the existing typed validator.
     previous_validate = runtime.validate_professional_output
 
     def validate_professional_output(
@@ -502,8 +527,6 @@ must survive reuse; transient sentence state does not.
     runtime.validate_professional_output = validate_professional_output
     registry.validate_professional_output = validate_professional_output
 
-    # Required character coverage for Stage01/02 comes from the immutable exact
-    # source rather than the retired Markdown entity table parser.
     previous_required_names = runtime._required_names
 
     def required_names(output_kind: str, source_text: str) -> dict[str, list[str]]:
@@ -539,7 +562,6 @@ must survive reuse; transient sentence state does not.
                 + json.dumps(issues, ensure_ascii=False)
             )
 
-        # Typed projects bypass the retired Markdown/front-half confirm wrappers.
         result = await base_confirm(project_id)
         if isinstance(result, dict):
             result = dict(result)
@@ -552,7 +574,6 @@ must survive reuse; transient sentence state does not.
 
     director.confirm_stage = MethodType(confirm_stage, director)
 
-    # Ready-state/startup asset sync must not re-run the retired Markdown parser.
     try:
         from . import production_authoring_assets as authoring_assets
 

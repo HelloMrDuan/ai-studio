@@ -75,17 +75,18 @@ def _production_profile_entity() -> dict:
 
 
 class CharacterPromptIntegrationPeriodTests(unittest.TestCase):
-    def test_face_anchor_keeps_period_boundary_without_full_costume(self) -> None:
+    def test_face_anchor_uses_exact_confirmed_garment_only_as_visible_crop_policy(self) -> None:
         service = CharacterReferencePackageBootstrap.__new__(CharacterReferencePackageBootstrap)
         prompt = service._face_prompt(_entity())
         self.assertIn("17岁", prompt)
         self.assertIn("黑色长发束起", prompt)
         self.assertIn("东亚少年面孔", prompt)
-        self.assertIn("古代东亚传统上衣领口", prompt)
-        self.assertNotIn("深蓝色古式长袍", prompt)
+        self.assertIn("领口与肩部必须来自已确认服装", prompt)
+        self.assertIn("深蓝色古式长袍", prompt)
+        self.assertIn("只展示头肩", prompt)
         self.assertNotIn("黑色布靴", prompt)
 
-    def test_face_anchor_blocks_modern_tshirt_without_relying_on_visual_direction(self) -> None:
+    def test_face_anchor_period_clothing_is_affirmative_for_zimage_cfg1(self) -> None:
         service = CharacterReferencePackageBootstrap.__new__(CharacterReferencePackageBootstrap)
         prompt = service._face_prompt(_entity())
         contract = GenerationContract(
@@ -103,21 +104,31 @@ class CharacterPromptIntegrationPeriodTests(unittest.TestCase):
             contract=contract,
             reference=False,
         )
+        # Z-Image-Turbo is fixed at CFG=1.0, so the provider-ready positive
+        # prompt must itself carry the visible period garment contract.
+        self.assertIn("FACE ANCHOR VISIBLE GARMENT CONTRACT", compiled.positive_prompt)
+        self.assertIn("深蓝色古式长袍", compiled.positive_prompt)
+        self.assertIn("17岁", compiled.positive_prompt)
+        self.assertIn("黑色长发束起", compiled.positive_prompt)
+        # Keep negatives for compatibility/diagnostics, but they are secondary.
         self.assertIn("white T-shirt", compiled.negative_prompt)
         self.assertIn("crew-neck T-shirt", compiled.negative_prompt)
         self.assertIn("hoodie", compiled.negative_prompt)
-        self.assertIn("17岁", compiled.positive_prompt)
-        self.assertIn("黑色长发束起", compiled.positive_prompt)
 
     def test_production_profile_shape_preserves_hair_and_period_boundary(self) -> None:
         entity = _production_profile_entity()
-        prompt = build_face_anchor_prompt(entity)
-        self.assertIn("17岁", prompt)
-        self.assertIn("黑发束起", prompt)
-        self.assertIn("束发", prompt)
-        self.assertIn("黑色", prompt)
-        self.assertIn("古代东亚传统上衣领口", prompt)
-        self.assertNotIn("深蓝色古式长袍", prompt)
+        base_prompt = build_face_anchor_prompt(entity)
+        self.assertIn("17岁", base_prompt)
+        self.assertIn("黑发束起", base_prompt)
+        self.assertIn("束发", base_prompt)
+        self.assertIn("黑色", base_prompt)
+        self.assertIn("古代东亚传统上衣领口", base_prompt)
+        self.assertNotIn("黑色布靴", base_prompt)
+
+        service = CharacterReferencePackageBootstrap.__new__(CharacterReferencePackageBootstrap)
+        prompt = service._face_prompt(entity)
+        self.assertIn("深蓝色古式长袍", prompt)
+        self.assertIn("领口与肩部", prompt)
 
         contract = GenerationContract(
             asset_id="face-anchor-production-shape",
@@ -134,7 +145,8 @@ class CharacterPromptIntegrationPeriodTests(unittest.TestCase):
             contract=contract,
             reference=False,
         )
-        self.assertIn("ancient East Asian traditional robe collar", compiled.positive_prompt)
+        self.assertIn("FACE ANCHOR VISIBLE GARMENT CONTRACT", compiled.positive_prompt)
+        self.assertIn("深蓝色古式长袍", compiled.positive_prompt)
         self.assertIn("modern T-shirt", compiled.negative_prompt)
         self.assertIn("white T-shirt", compiled.negative_prompt)
         self.assertIn("crew-neck T-shirt", compiled.negative_prompt)

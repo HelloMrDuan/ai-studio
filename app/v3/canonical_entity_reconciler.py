@@ -8,6 +8,17 @@ from typing import Any
 
 
 _CANONICAL_TYPES = {"character", "location", "prop"}
+_TYPE_FAMILY = {
+    "character": "character",
+    "location": "location",
+    "prop": "prop",
+    # Continuity extraction historically used these generic labels for physical
+    # story objects. If a formal prop with the same normalized name exists they
+    # are aliases, not two visible story elements.
+    "object": "prop",
+    "item": "prop",
+    "weapon": "prop",
+}
 _STAGE_RANK = {"": 0, "01": 1, "02": 2, "03": 3, "04": 4, "make": 5, "final": 6}
 _ZERO_WIDTH = {"\u200b", "\u200c", "\u200d", "\ufeff", "\u2060"}
 
@@ -64,11 +75,10 @@ def _replace_ids(value: Any, aliases: dict[str, str]) -> Any:
 class CanonicalEntityReconciler:
     """Collapse duplicate reusable entities without deleting historical IDs.
 
-    Older extraction passes could create two entity IDs for the same visible
-    character/location/prop.  The reconciler elects one canonical ID, merges
-    stable metadata/evidence into it, rewrites production-asset references and
-    marks the old IDs as aliases.  Alias entities stay in the graph for historic
-    lookup but are hidden from normal ``list_entities`` consumers.
+    Same-name character/location/prop duplicates are merged. Historical generic
+    physical-object types (object/item/weapon) are also merged into an existing
+    formal ``prop`` of the same normalized name. Narrative ``scene`` entities
+    remain separate from reusable ``location`` identities.
     """
 
     def __init__(self, settings: Any, director: Any) -> None:
@@ -87,13 +97,15 @@ class CanonicalEntityReconciler:
                 count += 1
         return count
 
-    def _score(self, graph: dict[str, Any], entity: dict[str, Any]) -> tuple[int, int, int, int, str]:
+    def _score(self, graph: dict[str, Any], entity: dict[str, Any], family: str) -> tuple[int, int, int, int, int, str]:
         entity_id = _clean(entity.get("entity_id"))
+        kind = _clean(entity.get("entity_type")).lower()
         try:
             metadata_size = len(json.dumps(entity.get("metadata") or {}, ensure_ascii=False, sort_keys=True))
         except Exception:
             metadata_size = 0
         return (
+            1 if kind == family else 0,
             self._profile_count(graph, entity_id),
             _STAGE_RANK.get(_clean(entity.get("stage")), 0),
             len(entity.get("asset_ids") or []),
@@ -107,29 +119,37 @@ class CanonicalEntityReconciler:
         groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for entity in entities.values():
             kind = _clean(entity.get("entity_type")).lower()
-            if kind not in _CANONICAL_TYPES:
+            family = _TYPE_FAMILY.get(kind)
+            if not family:
                 continue
             metadata = entity.get("metadata") if isinstance(entity.get("metadata"), dict) else {}
             if _clean(metadata.get("canonical_entity_id")) and bool(metadata.get("merged_duplicate")):
                 continue
-            key = (kind, _normal_name(entity.get("name")))
+            key = (family, _normal_name(entity.get("name")))
             if not key[1]:
                 continue
             groups.setdefault(key, []).append(entity)
 
         aliases: dict[str, str] = {}
         merged_groups = 0
-        for rows in groups.values():
+        for (family, _name), rows in groups.items():
             if len(rows) < 2:
                 continue
-            rows.sort(key=lambda item: self._score(graph, item), reverse=True)
+            # Cross-type physical-object aliases are merged only when a formal
+            # prop exists. A lone legacy object/item/weapon keeps its type until
+            # the formal Story/Visual asset pipeline creates the prop identity.
+            if family == "prop" and not any(_clean(row.get("entity_type")).lower() == "prop" for row in rows):
+                continue
+            rows.sort(key=lambda item: self._score(graph, item, family), reverse=True)
             canonical = rows[0]
             canonical_id = _clean(canonical.get("entity_id"))
             source_ids = [canonical_id]
+            source_types = {_clean(canonical.get("entity_type")).lower()}
             for duplicate in rows[1:]:
                 duplicate_id = _clean(duplicate.get("entity_id"))
                 if not duplicate_id or duplicate_id == canonical_id:
                     continue
+                source_types.add(_clean(duplicate.get("entity_type")).lower())
                 aliases[duplicate_id] = canonical_id
                 source_ids.append(duplicate_id)
                 canonical["metadata"] = _merge_value(
@@ -144,8 +164,13 @@ class CanonicalEntityReconciler:
                 duplicate.setdefault("metadata", {})["canonical_entity_id"] = canonical_id
                 duplicate["metadata"]["merged_duplicate"] = True
                 duplicate["metadata"]["hidden_from_normal_lists"] = True
-                duplicate["metadata"]["merge_reason"] = "same_type_same_normalized_name"
+                duplicate["metadata"]["merge_reason"] = (
+                    "same_prop_identity_across_legacy_object_types"
+                    if len(source_types) > 1 and family == "prop"
+                    else "same_type_same_normalized_name"
+                )
             canonical.setdefault("metadata", {})["canonical_source_entity_ids"] = sorted(set(source_ids))
+            canonical["metadata"]["canonical_source_entity_types"] = sorted(source_types)
             canonical["metadata"]["canonicalized"] = True
             merged_groups += 1
 

@@ -3,9 +3,14 @@ from __future__ import annotations
 from types import MethodType
 from typing import Any
 
+from fastapi import APIRouter
+
 from . import professional_output_runtime as runtime
 from .project_source_snapshot import _snapshot_payload
-from .typed_front_half_authority import normalize_story_bible_characters
+from .typed_front_half_authority import (
+    infer_canonical_characters,
+    normalize_story_bible_characters,
+)
 
 
 _CANONICAL_TYPES = ("character", "location", "prop")
@@ -35,15 +40,11 @@ def _norm(value: Any) -> str:
 class TypedEntityGraphAuthority:
     """Keep the reusable Entity graph exactly aligned with typed Story Bible.
 
-    Wao's asset-development contract has one machine authority for reusable
-    character/location/prop identities. Once this project has a typed
-    ``professional_story_bible`` resource, legacy provenance no longer grants
-    an entity the right to stay visible. This is deliberately stricter than the
-    old cleanup code: an untagged legacy fragment such as ``手中`` is retired
-    even if it was created before the typed runtime existed.
-
-    Markdown/continuity/control extraction remains readable historical data, but
-    it is not a second writer of the reusable entity registry.
+    The old workbench snapshot can still contain continuity/control entities.
+    Those are historical/narrative data, not the reusable asset registry. Once
+    the typed Story Bible exists, character/location/prop visibility comes only
+    from the typed professional resource. A dedicated story-elements projection
+    is exposed so the UI never falls back to the legacy snapshot's mixed list.
     """
 
     def __init__(self, settings: Any, director: Any) -> None:
@@ -52,18 +53,25 @@ class TypedEntityGraphAuthority:
         self.production = director.production
         self._original_list_entities = self.production.list_entities
 
-    def _authority(self, project_id: str) -> tuple[dict[str, set[str]], dict[str, Any]] | None:
+    def _typed_payload(self, project_id: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
         payload, asset = runtime._latest_professional_output(
             self.production,
             project_id,
             "01",
         )
-        if not isinstance(payload, dict) or _clean(payload.get("output_kind")) != "story_bible":
-            return None
-
         snapshot = _snapshot_payload(self.production, project_id)
+        if not isinstance(payload, dict) or _clean(payload.get("output_kind")) != "story_bible":
+            return None, asset, snapshot
         source_text = _clean((snapshot or {}).get("text"))
-        normalized, normalization = normalize_story_bible_characters(payload, source_text)
+        normalized, _normalization = normalize_story_bible_characters(payload, source_text)
+        return normalized, asset, snapshot
+
+    def _authority(self, project_id: str) -> tuple[dict[str, set[str]], dict[str, Any]] | None:
+        normalized, asset, snapshot = self._typed_payload(project_id)
+        if not isinstance(normalized, dict):
+            return None
+        source_text = _clean((snapshot or {}).get("text"))
+        _normalized, normalization = normalize_story_bible_characters(normalized, source_text)
         valid = {
             "character": {
                 _norm(row.get("name"))
@@ -100,10 +108,6 @@ class TypedEntityGraphAuthority:
         graph = self.production.ensure_project(project_id)
         retired: list[str] = []
 
-        # The typed Story Bible is the sole registry authority. Do not preserve
-        # an unsupported reusable identity merely because an older writer forgot
-        # to tag it with stage/typed metadata. That exact loophole allowed the
-        # production ghost character ``手中`` to survive the previous fix.
         for entity_id, entity in (graph.get("entities") or {}).items():
             if not isinstance(entity, dict):
                 continue
@@ -163,6 +167,81 @@ class TypedEntityGraphAuthority:
             "model_calls": 0,
         }
 
+    def story_elements(self, project_id: str) -> dict[str, Any]:
+        """Return the strict reusable story-element projection for the UI.
+
+        This endpoint intentionally does not use ``snap.entities`` because the
+        legacy snapshot mixes continuity/control entities into that array. The
+        typed Story Bible is preferred. If an old project lacks typed Stage01,
+        immutable source text still provides a deterministic character boundary
+        so grammar fragments such as ``手中`` cannot be rendered as characters.
+        Location/prop fallback stays read-only and conservative for old projects.
+        """
+        self.reconcile(project_id)
+        normalized, asset, snapshot = self._typed_payload(project_id)
+        rows: list[dict[str, Any]] = []
+
+        if isinstance(normalized, dict):
+            for kind, field in (
+                ("character", "characters"),
+                ("location", "locations"),
+                ("prop", "props"),
+            ):
+                seen: set[str] = set()
+                for item in normalized.get(field) or []:
+                    if not isinstance(item, dict):
+                        continue
+                    name = _clean(item.get("name"))
+                    key = _norm(name)
+                    if not key or key in seen:
+                        continue
+                    seen.add(key)
+                    rows.append({
+                        "entity_type": kind,
+                        "name": name,
+                        "source_evidence": _clean(item.get("source_evidence")),
+                    })
+            mode = "typed_story_bible"
+        else:
+            raw = [
+                item for item in self._original_list_entities(project_id)
+                if _clean(item.get("entity_type")).lower() in _CANONICAL_TYPES
+            ]
+            source_text = _clean((snapshot or {}).get("text"))
+            canonical_characters = infer_canonical_characters(source_text)
+            canonical_character_keys = {_norm(name) for name in canonical_characters}
+            seen: set[tuple[str, str]] = set()
+            for item in raw:
+                kind = _clean(item.get("entity_type")).lower()
+                name = _clean(item.get("name"))
+                key = (kind, _norm(name))
+                if not name or key in seen:
+                    continue
+                if kind == "character" and canonical_character_keys and key[1] not in canonical_character_keys:
+                    continue
+                seen.add(key)
+                rows.append({
+                    "entity_id": _clean(item.get("entity_id")),
+                    "entity_type": kind,
+                    "name": name,
+                })
+            mode = "immutable_source_character_fallback"
+
+        counts = {kind: 0 for kind in _CANONICAL_TYPES}
+        for row in rows:
+            kind = _clean(row.get("entity_type")).lower()
+            if kind in counts:
+                counts[kind] += 1
+        return {
+            "project_id": project_id,
+            "policy": "typed_story_elements_projection_v1",
+            "mode": mode,
+            "professional_asset_id": _clean((asset or {}).get("asset_id")),
+            "entities": rows,
+            "counts": counts,
+            "model_calls": 0,
+        }
+
     def reconcile_existing_projects(self) -> dict[str, int]:
         scanned = 0
         changed = 0
@@ -205,4 +284,14 @@ class TypedEntityGraphAuthority:
         }
 
 
-__all__ = ["TypedEntityGraphAuthority"]
+def create_typed_entity_graph_router(authority: TypedEntityGraphAuthority) -> APIRouter:
+    router = APIRouter()
+
+    @router.get("/api/v3/studio/projects/{project_id}/story-elements")
+    async def story_elements(project_id: str) -> dict[str, Any]:
+        return authority.story_elements(project_id)
+
+    return router
+
+
+__all__ = ["TypedEntityGraphAuthority", "create_typed_entity_graph_router"]

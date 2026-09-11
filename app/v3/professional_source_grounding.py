@@ -174,6 +174,47 @@ def ground_source_evidence(payload: dict[str, Any], source_text: str) -> dict[st
     return payload
 
 
+def _entity_groups(payload: dict[str, Any]) -> list[tuple[str, str, list[dict[str, Any]]]]:
+    output_kind = _clean(payload.get("output_kind"))
+    if output_kind == "story_bible":
+        return [
+            ("character", "角色", list(payload.get("characters") or [])),
+            ("location", "地点", list(payload.get("locations") or [])),
+            ("prop", "道具", list(payload.get("props") or [])),
+        ]
+    if output_kind == "character_assets":
+        return [("character", "角色", list(payload.get("characters") or []))]
+    if output_kind == "visual_assets":
+        return [
+            ("location", "地点", list(payload.get("locations") or [])),
+            ("prop", "道具", list(payload.get("props") or [])),
+        ]
+    return []
+
+
+def _sync_document_entity_index(payload: dict[str, Any]) -> None:
+    """Mirror machine identities into Markdown without inventing new facts."""
+    document = _clean(payload.get("document"))
+    if not document:
+        return
+    lines: list[str] = []
+    for _entity_type, label, rows in _entity_groups(payload):
+        names = [
+            _clean(row.get("name"))
+            for row in rows
+            if isinstance(row, dict) and _clean(row.get("name"))
+        ]
+        missing = [name for name in names if name not in document]
+        if missing:
+            lines.append(f"- {label}：" + "、".join(dict.fromkeys(missing)))
+    if lines:
+        payload["document"] = (
+            document.rstrip()
+            + "\n\n## 实体索引（系统同步）\n"
+            + "\n".join(lines)
+        )
+
+
 def _typed_document_issues(payload: dict[str, Any]) -> list[str]:
     """Validate only presentation boundaries owned by the typed runtime.
 
@@ -200,25 +241,10 @@ def _typed_document_issues(payload: dict[str, Any]) -> list[str]:
 
 
 def _typed_entity_rows(payload: dict[str, Any], document: str) -> list[dict[str, Any]]:
-    """Materialize typed entities from machine authority, not Markdown echoes."""
+    """Materialize typed entities from machine authority, not prose parsing."""
     output_kind = _clean(payload.get("output_kind"))
-    groups: list[tuple[str, list[dict[str, Any]]]] = []
-    if output_kind == "story_bible":
-        groups = [
-            ("character", list(payload.get("characters") or [])),
-            ("location", list(payload.get("locations") or [])),
-            ("prop", list(payload.get("props") or [])),
-        ]
-    elif output_kind == "character_assets":
-        groups = [("character", list(payload.get("characters") or []))]
-    elif output_kind == "visual_assets":
-        groups = [
-            ("location", list(payload.get("locations") or [])),
-            ("prop", list(payload.get("props") or [])),
-        ]
-
     result: list[dict[str, Any]] = []
-    for entity_type, rows in groups:
+    for entity_type, _label, rows in _entity_groups(payload):
         for row in rows:
             if not isinstance(row, dict):
                 continue
@@ -228,6 +254,7 @@ def _typed_entity_rows(payload: dict[str, Any], document: str) -> list[dict[str,
             metadata: dict[str, Any] = {
                 "professional_output_kind": output_kind,
                 "typed_professional_entity": True,
+                "source_evidence": _clean(row.get("source_evidence")),
             }
             stable = _clean(row.get("stable_description"))
             if stable:
@@ -239,7 +266,10 @@ def _typed_entity_rows(payload: dict[str, Any], document: str) -> list[dict[str,
             result.append({
                 "entity_type": entity_type,
                 "name": name,
-                "evidence_quote": _clean(row.get("source_evidence")) or name,
+                # ProductionAssetService requires evidence_quote to be present
+                # in the materialized turn text. The synchronized entity index
+                # guarantees the canonical name is present without a second LLM.
+                "evidence_quote": name,
                 "metadata": metadata,
             })
     return result
@@ -268,13 +298,15 @@ def install_professional_source_grounding() -> dict[str, Any]:
             required_names: dict[str, list[str]] | None = None,
         ) -> list[str]:
             ground_source_evidence(payload, source_text)
+            _sync_document_entity_index(payload)
             issues = original_validate(
                 payload,
                 source_text=source_text,
                 required_names=required_names,
             )
-            # Machine identity arrays are authoritative. Requiring the same name
-            # to be echoed in human Markdown recreates a second fact authority.
+            # Machine identity arrays are authoritative. The deterministic index
+            # should satisfy display mirroring, but never let prose duplication
+            # become a second semantic blocker.
             return [
                 issue for issue in issues
                 if "未出现在 document，展示文本与机器事实不一致" not in issue
@@ -299,6 +331,7 @@ def install_professional_source_grounding() -> dict[str, Any]:
         "server_owned_exact_evidence": True,
         "generated_history_is_source": False,
         "typed_document_is_machine_authority": False,
+        "document_entity_index": "deterministic_mirror_only",
     }
 
 

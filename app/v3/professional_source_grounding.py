@@ -20,7 +20,14 @@ _AUTHORITATIVE_SECTIONS = {
     "CURRENT USER MESSAGE",
     "CURRENT USER INPUT",
 }
+_RECENT_HISTORY_SECTION = "RECENT CURRENT-STAGE HISTORY"
+_HISTORY_ROLE = re.compile(r"(?m)^(user|assistant):\s*")
 _SENTENCE_BOUNDARY = re.compile(r"[。！？!?；;\n]")
+_OLD_MACHINE_BLOCKS = (
+    "```story-entities-json",
+    "```appearance-versions-json",
+    "```visual-direction-json",
+)
 
 
 def _clean(value: Any) -> str:
@@ -35,15 +42,45 @@ def _compact(value: Any) -> str:
     ).casefold()
 
 
+def _user_history_sources(value: str) -> list[str]:
+    """Recover only user-authored records from Director stage history.
+
+    A regenerate click usually makes CURRENT USER MESSAGE equal to a control
+    command such as ``重新生成``. The original story still exists in
+    RECENT CURRENT-STAGE HISTORY, mixed with generated assistant turns. Only
+    user records are authoritative; assistant records remain excluded.
+    """
+    text = str(value or "")
+    matches = list(_HISTORY_ROLE.finditer(text))
+    rows: list[str] = []
+    for index, match in enumerate(matches):
+        if match.group(1).casefold() != "user":
+            continue
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        item = _clean(text[start:end])
+        if item:
+            rows.append(item)
+    return rows
+
+
 def authoritative_message_source(messages: list[dict[str, Any]]) -> str:
     """Read only Director sections explicitly declared authoritative.
 
-    The Director owns the prompt envelope. This reader follows its real section
-    names instead of guessing from prose. Generated history, routing metadata,
-    Skill text and runtime state are never accepted as source evidence.
+    Current authoritative sections are accepted verbatim. For regeneration,
+    user-authored records are additionally recovered from recent stage history;
+    generated assistant history is never accepted as evidence.
     """
     rows: list[str] = []
     seen: set[str] = set()
+
+    def add(value: str) -> None:
+        item = _clean(value)
+        if not item or item in {"<none>", "<omitted>"} or item in seen:
+            return
+        seen.add(item)
+        rows.append(item)
+
     for message in messages:
         if not isinstance(message, dict):
             continue
@@ -51,15 +88,14 @@ def authoritative_message_source(messages: list[dict[str, Any]]) -> str:
         matches = list(_SECTION_MARKER.finditer(text))
         for index, match in enumerate(matches):
             label = _clean(match.group(1)).upper()
-            if label not in _AUTHORITATIVE_SECTIONS:
-                continue
             start = match.end()
             end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
             value = _clean(text[start:end])
-            if not value or value in {"<none>", "<omitted>"} or value in seen:
-                continue
-            seen.add(value)
-            rows.append(value)
+            if label in _AUTHORITATIVE_SECTIONS:
+                add(value)
+            elif label == _RECENT_HISTORY_SECTION:
+                for item in _user_history_sources(value):
+                    add(item)
     return "\n\n".join(rows)
 
 
@@ -138,41 +174,131 @@ def ground_source_evidence(payload: dict[str, Any], source_text: str) -> dict[st
     return payload
 
 
+def _typed_document_issues(payload: dict[str, Any]) -> list[str]:
+    """Validate only presentation boundaries owned by the typed runtime.
+
+    Machine arrays/objects are the source of truth. The human Markdown document
+    is no longer forced to duplicate the retired legacy heading template.
+    """
+    document = _clean(payload.get("document"))
+    issues: list[str] = []
+    if not document:
+        issues.append("专业输出 document 不能为空")
+        return issues
+    for old_block in _OLD_MACHINE_BLOCKS:
+        if old_block in document:
+            issues.append(f"document 不得再内嵌旧机器块：{old_block}")
+    if _clean(payload.get("output_kind")) == "story_bible" and gate._contains(
+        document,
+        "最终图片 prompt",
+        "最终图片提示词",
+        "镜头焦段参数",
+        "comfyui 参数",
+    ):
+        issues.append("Stage01 混入了后续媒体/镜头执行参数")
+    return issues
+
+
+def _typed_entity_rows(payload: dict[str, Any], document: str) -> list[dict[str, Any]]:
+    """Materialize typed entities from machine authority, not Markdown echoes."""
+    output_kind = _clean(payload.get("output_kind"))
+    groups: list[tuple[str, list[dict[str, Any]]]] = []
+    if output_kind == "story_bible":
+        groups = [
+            ("character", list(payload.get("characters") or [])),
+            ("location", list(payload.get("locations") or [])),
+            ("prop", list(payload.get("props") or [])),
+        ]
+    elif output_kind == "character_assets":
+        groups = [("character", list(payload.get("characters") or []))]
+    elif output_kind == "visual_assets":
+        groups = [
+            ("location", list(payload.get("locations") or [])),
+            ("prop", list(payload.get("props") or [])),
+        ]
+
+    result: list[dict[str, Any]] = []
+    for entity_type, rows in groups:
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            name = _clean(row.get("name"))
+            if not name:
+                continue
+            metadata: dict[str, Any] = {
+                "professional_output_kind": output_kind,
+                "typed_professional_entity": True,
+            }
+            stable = _clean(row.get("stable_description"))
+            if stable:
+                metadata["authoring"] = {
+                    "stable_design": stable,
+                    "source_design": stable,
+                    "stable_projection": "typed_professional_output_v1",
+                }
+            result.append({
+                "entity_type": entity_type,
+                "name": name,
+                "evidence_quote": _clean(row.get("source_evidence")) or name,
+                "metadata": metadata,
+            })
+    return result
+
+
+def _patch_runtime(runtime: Any) -> None:
+    # Runtime functions look these names up dynamically, so patching the module
+    # keeps one typed authority without another model pass.
+    setattr(runtime, "_document_issues", _typed_document_issues)
+    setattr(runtime, "_entity_rows", _typed_entity_rows)
+
+
 def install_professional_source_grounding() -> dict[str, Any]:
-    """Install the canonical source/provenance boundary before runtime import."""
-    if getattr(gate, "_xiaoduan_professional_source_grounding_installed", False):
-        return {"status": "already_installed", "policy": "professional_source_grounding_v1"}
+    """Install canonical source/provenance and typed presentation boundaries."""
+    already_installed = bool(
+        getattr(gate, "_xiaoduan_professional_source_grounding_installed", False)
+    )
 
-    original_validate = registry.validate_professional_output
+    if not already_installed:
+        original_validate = registry.validate_professional_output
 
-    def validate_professional_output(
-        payload: dict[str, Any],
-        *,
-        source_text: str,
-        required_names: dict[str, list[str]] | None = None,
-    ) -> list[str]:
-        ground_source_evidence(payload, source_text)
-        return original_validate(
-            payload,
-            source_text=source_text,
-            required_names=required_names,
-        )
+        def validate_professional_output(
+            payload: dict[str, Any],
+            *,
+            source_text: str,
+            required_names: dict[str, list[str]] | None = None,
+        ) -> list[str]:
+            ground_source_evidence(payload, source_text)
+            issues = original_validate(
+                payload,
+                source_text=source_text,
+                required_names=required_names,
+            )
+            # Machine identity arrays are authoritative. Requiring the same name
+            # to be echoed in human Markdown recreates a second fact authority.
+            return [
+                issue for issue in issues
+                if "未出现在 document，展示文本与机器事实不一致" not in issue
+            ]
 
-    gate._authoritative_message_source = authoritative_message_source
-    registry.validate_professional_output = validate_professional_output
+        gate._authoritative_message_source = authoritative_message_source
+        registry.validate_professional_output = validate_professional_output
+        gate._xiaoduan_professional_source_grounding_installed = True
 
-    # Be robust if a test/import loaded the runtime module before app.main.
+    # Be robust if a test/import loaded the runtime module before or after the
+    # first installer call.
     runtime = sys.modules.get("app.v3.professional_output_runtime")
     if runtime is not None:
-        setattr(runtime, "validate_professional_output", validate_professional_output)
+        setattr(runtime, "validate_professional_output", registry.validate_professional_output)
+        _patch_runtime(runtime)
 
-    gate._xiaoduan_professional_source_grounding_installed = True
     return {
-        "status": "installed",
-        "policy": "professional_source_grounding_v1",
+        "status": "already_installed" if already_installed else "installed",
+        "policy": "professional_source_grounding_v2",
         "authoritative_sections": sorted(_AUTHORITATIVE_SECTIONS),
+        "regenerate_user_history_source": True,
         "server_owned_exact_evidence": True,
         "generated_history_is_source": False,
+        "typed_document_is_machine_authority": False,
     }
 
 

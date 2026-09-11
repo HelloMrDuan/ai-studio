@@ -9,6 +9,7 @@ from app.services.production_assets import ProductionAssetService
 from app.v3.professional_output_registry import (
     PROFESSIONAL_OUTPUT_REGISTRY,
     parse_professional_output,
+    professional_output_json_schema,
     validate_professional_output,
 )
 from app.v3.professional_output_runtime import (
@@ -147,6 +148,20 @@ class ProfessionalOutputRuntimeTests(unittest.TestCase):
         payload["invented_runtime_field"] = True
         with self.assertRaises(ValueError):
             parse_professional_output(payload, expected_output_kind="story_bible")
+
+    def test_human_document_has_no_arbitrary_300_500_character_floor(self) -> None:
+        for output_kind in ("story_bible", "character_assets", "visual_assets"):
+            schema = professional_output_json_schema(output_kind)
+            self.assertEqual(schema["properties"]["document"]["minLength"], 1)
+
+        payload = story_payload()
+        payload["document"] = (
+            "# 故事生产圣经\n"
+            "沈璃与陆沉在城外石桥会合；六角青铜灯笼与乌木剑鞘保持连续。"
+        )
+        parsed = parse_professional_output(payload, expected_output_kind="story_bible")
+        self.assertEqual(parsed["document"], payload["document"])
+        self.assertLess(len(parsed["document"]), 500)
 
     def test_story_source_lineage_and_entity_completeness_are_deterministic(self) -> None:
         payload = parse_professional_output(story_payload(), expected_output_kind="story_bible")

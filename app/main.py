@@ -44,6 +44,7 @@ from app.v3.professional_output_runtime import install_professional_output_runti
 from app.v3.project_source_snapshot import install_project_source_snapshot
 from app.v3.typed_front_half_authority import install_typed_front_half_authority
 from app.v3.professional_output_cache_epoch import install_professional_output_cache_epoch
+from app.v3.typed_reference_profile_authority import install_typed_reference_profile_authority
 from app.v3.character_prompt_integration import install_character_prompt_integration
 from app.v3.reference_role_policy import install_reference_role_policy
 from app.v3.character_package_integrity import install_character_package_integrity
@@ -58,6 +59,10 @@ llama_structured_output = install_llama_structured_output(legacy_runtime.directo
 professional_output_runtime = install_professional_output_runtime(settings, legacy_runtime.director)
 project_source_snapshot = install_project_source_snapshot(settings, legacy_runtime.director)
 typed_front_half_authority = install_typed_front_half_authority(settings, legacy_runtime.director)
+# Reference generation must consume the strict Stage02 character object directly.
+# A stale/generic formal profile is presentation/versioning metadata, not a second
+# semantic authority allowed to erase hair, age or period clothing facts.
+typed_reference_profile_authority = install_typed_reference_profile_authority()
 character_prompt_contract = install_character_prompt_integration()
 reference_role_contract = install_reference_role_policy()
 character_package_contract = install_character_package_integrity()
@@ -173,6 +178,7 @@ __all__ = [
     "project_source_snapshot",
     "typed_front_half_authority",
     "professional_output_cache_epoch",
+    "typed_reference_profile_authority",
     "character_prompt_contract",
     "reference_role_contract",
     "character_package_contract",

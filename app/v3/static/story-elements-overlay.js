@@ -1,4 +1,7 @@
 (() => {
+  let canonicalCache = { projectId: '', rows: [], loadedAt: 0 };
+  let canonicalLoading = null;
+
   function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>"']/g, c => ({
       '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'
@@ -12,7 +15,12 @@
       .toLowerCase();
   }
 
-  function canonicalRows() {
+  function currentProjectId() {
+    try { return String(current || '').trim(); }
+    catch (_) { return ''; }
+  }
+
+  function legacyFallbackRows() {
     let rows = [];
     try { rows = Array.isArray(snap?.entities) ? snap.entities : []; }
     catch (_) { rows = []; }
@@ -31,12 +39,54 @@
     return result;
   }
 
-  function renderCanonicalStoryElements() {
+  function canonicalRows() {
+    const projectId = currentProjectId();
+    if (projectId && canonicalCache.projectId === projectId && canonicalCache.loadedAt) {
+      return canonicalCache.rows;
+    }
+    return legacyFallbackRows();
+  }
+
+  async function refreshCanonicalProjection(force = false) {
+    const projectId = currentProjectId();
+    if (!projectId) return;
+    const now = Date.now();
+    if (!force && canonicalCache.projectId === projectId && now - canonicalCache.loadedAt < 2500) return;
+    if (canonicalLoading) return canonicalLoading;
+
+    canonicalLoading = (async () => {
+      try {
+        const response = await fetch(`/api/v3/studio/projects/${encodeURIComponent(projectId)}/story-elements`, {
+          headers: { 'Accept': 'application/json' },
+          cache: 'no-store',
+        });
+        if (!response.ok) throw new Error(`story-elements ${response.status}`);
+        const payload = await response.json();
+        const rows = Array.isArray(payload?.entities) ? payload.entities : [];
+        canonicalCache = {
+          projectId,
+          rows,
+          loadedAt: Date.now(),
+        };
+        renderCanonicalStoryElements(false);
+      } catch (error) {
+        console.error('规范故事元素读取失败，暂时保留旧快照显示：', error);
+      } finally {
+        canonicalLoading = null;
+      }
+    })();
+    return canonicalLoading;
+  }
+
+  function renderCanonicalStoryElements(scheduleRefresh = true) {
     const target = document.getElementById('entities');
     if (!target) return;
     const rows = canonicalRows();
     const counts = {character: 0, location: 0, prop: 0};
-    for (const row of rows) counts[row.entity_type] += 1;
+    for (const row of rows) {
+      const kind = String(row?.entity_type || '');
+      if (Object.prototype.hasOwnProperty.call(counts, kind)) counts[kind] += 1;
+    }
 
     const overview = [
       ['角色', counts.character],
@@ -57,21 +107,26 @@
     target.innerHTML = rows.length
       ? `<div class="entityOverview">${overview}</div><div class="entityPills">${sample}</div>${more}`
       : '<div class="empty">暂无故事元素</div>';
+
+    if (scheduleRefresh) refreshCanonicalProjection(false);
   }
 
-  // Narrative scene/shot nodes belong to continuity and should not inflate the
-  // reusable story-asset summary. Replace the original global renderer while
-  // keeping the existing page and continuity view intact.
   window.renderEntities = renderCanonicalStoryElements;
   window.__v3StoryElementsCanonical = {
     enabled: true,
+    source: 'typed-story-elements-projection',
     entityTypes: ['character', 'location', 'prop'],
     excludesNarrativeScenes: true,
+    refresh: () => refreshCanonicalProjection(true),
   };
 
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', renderCanonicalStoryElements);
+    document.addEventListener('DOMContentLoaded', () => {
+      renderCanonicalStoryElements(true);
+      refreshCanonicalProjection(true);
+    });
   } else {
-    renderCanonicalStoryElements();
+    renderCanonicalStoryElements(true);
+    refreshCanonicalProjection(true);
   }
 })();

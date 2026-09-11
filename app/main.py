@@ -37,6 +37,7 @@ from app.v3.professional_source_grounding import install_professional_source_gro
 from app.v3.llama_structured_output import install_llama_structured_output
 from app.v3.professional_output_runtime import install_professional_output_runtime
 from app.v3.project_source_snapshot import install_project_source_snapshot
+from app.v3.typed_front_half_authority import install_typed_front_half_authority
 from app.v3.professional_output_cache_epoch import install_professional_output_cache_epoch
 from app.v3.character_prompt_integration import install_character_prompt_integration
 from app.v3.reference_role_policy import install_reference_role_policy
@@ -57,6 +58,9 @@ professional_output_runtime = install_professional_output_runtime(settings, lega
 # versioned project resource. Regeneration and provenance no longer depend on
 # chat-history recovery; source_evidence is bound by the server to this snapshot.
 project_source_snapshot = install_project_source_snapshot(settings, legacy_runtime.director)
+# Typed professional outputs are the only authority for new Stage01-03 projects.
+# The retired Markdown quality/identity gates remain only for legacy projects.
+typed_front_half_authority = install_typed_front_half_authority(settings, legacy_runtime.director)
 character_prompt_contract = install_character_prompt_integration()
 reference_role_contract = install_reference_role_policy()
 character_package_contract = install_character_package_integrity()
@@ -165,6 +169,7 @@ __all__ = [
     "llama_structured_output",
     "professional_output_runtime",
     "project_source_snapshot",
+    "typed_front_half_authority",
     "professional_output_cache_epoch",
     "character_prompt_contract",
     "reference_role_contract",

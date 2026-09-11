@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import copy
+import tempfile
 import unittest
+from pathlib import Path
 
+from app.services.production_assets import ProductionAssetService
 from app.v3.story_source_coverage import (
     extract_story_table_names,
     infer_source_character_candidates,
+    reconcile_stage01_story_characters,
     source_coverage_issues,
 )
 
@@ -71,6 +76,15 @@ N01 石桥会合；N02 烽火亮起；N03 城门异响。
 
 _STAGE01_COMPLETE = _STAGE01_MISSING_SHENLI.replace("## 角色实体表\n陆沉。", "## 角色实体表\n沈璃；陆沉。")
 
+_STAGE01_TABLE_WITH_IDS = _STAGE01_COMPLETE.replace(
+    "## 角色实体表\n沈璃；陆沉。",
+    """## 角色实体表
+| ID | 稳定唯一名称 | 身份 | 原文证据 |
+| --- | --- | --- | --- |
+| C01 | 沈璃 | 女主角 | 原文多次出现 |
+| C02 | 陆沉 | 男主角 | 原文多次出现 |""",
+)
+
 _STAGE02_ONLY_SHENLI = """
 ## 角色资产：沈璃
 - 性别呈现：女性
@@ -94,6 +108,37 @@ _STAGE02_ONLY_SHENLI = """
 {"versions":[{"appearance_id":"default","name":"默认造型","stable_design":"低髻、银色梅花簪、深红交领长裙、布靴","change_reason":"基础造型","effective_story_node_ids":[]}]}
 ```
 """
+
+
+class _ReadyStage01Director:
+    def __init__(self, root: Path, project_id: str) -> None:
+        self.production = ProductionAssetService(root)
+        self.project = {
+            "project_id": project_id,
+            "title": "雪夜归城",
+            "current_stage": "01",
+            "completed_stages": [],
+            "confirmed_outputs": {},
+            "history": [
+                {"role": "user", "stage": "01", "content": _NATURAL_STORY},
+                {"role": "assistant", "stage": "01", "content": _STAGE01_TABLE_WITH_IDS},
+            ],
+            "stage_state": {
+                "01": {
+                    "stage_ready": True,
+                    "skill_runtime": {"completion": {"ready": True}},
+                }
+            },
+        }
+        self.production.ensure_project(project_id, "雪夜归城")
+
+    def get_project(self, project_id: str):
+        if project_id != self.project["project_id"]:
+            raise FileNotFoundError(project_id)
+        return copy.deepcopy(self.project)
+
+    def _latest_stage_output(self, project, stage: str):
+        return _STAGE01_TABLE_WITH_IDS if stage == "01" else ""
 
 
 class StorySourceCoverageTests(unittest.TestCase):
@@ -136,6 +181,34 @@ class StorySourceCoverageTests(unittest.TestCase):
     def test_story_table_parser_handles_compact_semicolon_names(self) -> None:
         names = extract_story_table_names(_STAGE01_COMPLETE, "角色实体表")
         self.assertEqual(names, ["沈璃", "陆沉"])
+
+    def test_story_table_parser_uses_name_column_instead_of_id_column(self) -> None:
+        names = extract_story_table_names(_STAGE01_TABLE_WITH_IDS, "角色实体表")
+        self.assertEqual(names, ["沈璃", "陆沉"])
+
+    def test_ready_stage01_repairs_one_character_graph_without_manual_confirm(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            director = _ReadyStage01Director(Path(raw), "d" * 24)
+            director.production.create_entity(
+                director.project["project_id"],
+                entity_type="character",
+                name="陆沉",
+                logical_key="legacy:character:luchen",
+                stage="01",
+            )
+            before = director.production.list_entities(director.project["project_id"], "character")
+            self.assertEqual({item["name"] for item in before}, {"陆沉"})
+
+            result = reconcile_stage01_story_characters(
+                director,
+                director.project["project_id"],
+                require_ready=True,
+            )
+
+            after = director.production.list_entities(director.project["project_id"], "character")
+            self.assertEqual({item["name"] for item in after}, {"沈璃", "陆沉"})
+            self.assertEqual(set(result["required_character_names"]), {"沈璃", "陆沉"})
+            self.assertEqual(result["character_count"], 2)
 
 
 if __name__ == "__main__":

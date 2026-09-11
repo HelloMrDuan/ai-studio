@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import secrets
 from pathlib import Path
 from typing import Any
@@ -117,6 +118,8 @@ async def health() -> dict[str, Any]:
         "product": "xiaoduan映画",
         "engineering_name": "Xiaoduan Studio",
         "version": "3.0.0-alpha",
+        "build_sha": os.environ.get("XIAODUAN_BUILD_SHA", "unknown"),
+        "process_id": os.getpid(),
         "legacy_stage_router": False,
         "skills": len(skill_registry.list()),
         "providers": len(provider_registry.list()),

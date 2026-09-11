@@ -73,9 +73,6 @@ def _seed_typed_story(director: _Director, project_id: str) -> None:
             "source_sha256": source_sha,
         },
     )
-    # Reproduce the real failed model output: the typed result itself once
-    # contained the grammar fragment “手中”. The graph authority must normalize
-    # character identity from immutable source before deciding visibility.
     payload = {
         "schema_version": 1,
         "output_kind": "story_bible",
@@ -111,6 +108,28 @@ def _seed_typed_story(director: _Director, project_id: str) -> None:
     )
 
 
+def _seed_legacy_entities(director: _Director, project_id: str) -> dict[str, dict]:
+    created = {}
+    for kind, name in (
+        ("character", "手中"),
+        ("character", "沈川"),
+        ("character", "苏瑶"),
+        ("location", "青云山"),
+        ("prop", "古剑"),
+        ("prop", "玉佩"),
+    ):
+        created[name] = director.production.create_entity(
+            project_id,
+            entity_type=kind,
+            logical_key=f"legacy:{kind}:{hashlib.sha256(name.encode()).hexdigest()[:8]}",
+            name=name,
+            stage="",
+            skill="",
+            metadata={},
+        )
+    return created
+
+
 class TypedEntityGraphAuthorityTests(unittest.TestCase):
     def test_untagged_legacy_hand_fragment_is_retired_from_visible_graph(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -118,63 +137,7 @@ class TypedEntityGraphAuthorityTests(unittest.TestCase):
             project_id = "b" * 24
             director = _Director(root, project_id)
             _seed_typed_story(director, project_id)
-
-            # This is what the previous regression missed: the production ghost
-            # came from a legacy writer and had no typed/stage ownership metadata.
-            ghost = director.production.create_entity(
-                project_id,
-                entity_type="character",
-                logical_key="legacy:control:hand-fragment",
-                name="手中",
-                stage="",
-                skill="",
-                metadata={},
-            )
-            director.production.create_entity(
-                project_id,
-                entity_type="character",
-                logical_key="legacy:character:shenchuan",
-                name="沈川",
-                stage="",
-                skill="",
-                metadata={},
-            )
-            director.production.create_entity(
-                project_id,
-                entity_type="character",
-                logical_key="legacy:character:suyao",
-                name="苏瑶",
-                stage="",
-                skill="",
-                metadata={},
-            )
-            director.production.create_entity(
-                project_id,
-                entity_type="location",
-                logical_key="legacy:location:qingyunshan",
-                name="青云山",
-                stage="",
-                skill="",
-                metadata={},
-            )
-            director.production.create_entity(
-                project_id,
-                entity_type="prop",
-                logical_key="legacy:prop:sword",
-                name="古剑",
-                stage="",
-                skill="",
-                metadata={},
-            )
-            director.production.create_entity(
-                project_id,
-                entity_type="prop",
-                logical_key="legacy:prop:jade",
-                name="玉佩",
-                stage="",
-                skill="",
-                metadata={},
-            )
+            created = _seed_legacy_entities(director, project_id)
 
             authority = TypedEntityGraphAuthority(SimpleNamespace(data_dir=root), director)
             install = authority.install()
@@ -184,7 +147,7 @@ class TypedEntityGraphAuthorityTests(unittest.TestCase):
             self.assertEqual({row["name"] for row in characters}, {"沈川", "苏瑶"})
 
             raw_graph = director.production.get_graph(project_id)
-            raw_ghost = raw_graph["entities"][ghost["entity_id"]]
+            raw_ghost = raw_graph["entities"][created["手中"]["entity_id"]]
             self.assertEqual(raw_ghost["entity_type"], "retired_fragment")
             self.assertTrue(raw_ghost["metadata"]["hidden_from_normal_lists"])
             self.assertEqual(
@@ -192,46 +155,35 @@ class TypedEntityGraphAuthorityTests(unittest.TestCase):
                 "typed_story_graph_single_authority_v1",
             )
 
-    def test_startup_reconcile_yields_exact_two_one_two_story_elements(self) -> None:
+    def test_canonical_projection_yields_exact_two_one_two_even_if_legacy_snapshot_was_dirty(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             project_id = "c" * 24
             director = _Director(root, project_id)
             _seed_typed_story(director, project_id)
-
-            for kind, name in (
-                ("character", "手中"),
-                ("character", "沈川"),
-                ("character", "苏瑶"),
-                ("location", "青云山"),
-                ("prop", "古剑"),
-                ("prop", "玉佩"),
-            ):
-                director.production.create_entity(
-                    project_id,
-                    entity_type=kind,
-                    logical_key=f"legacy:{kind}:{hashlib.sha256(name.encode()).hexdigest()[:8]}",
-                    name=name,
-                    stage="",
-                    skill="",
-                    metadata={},
-                )
+            _seed_legacy_entities(director, project_id)
 
             authority = TypedEntityGraphAuthority(SimpleNamespace(data_dir=root), director)
             result = authority.install()
             self.assertEqual(result["startup_reconciliation"]["scanned"], 1)
+
+            projection = authority.story_elements(project_id)
+            self.assertEqual(projection["mode"], "typed_story_bible")
             self.assertEqual(
-                {row["name"] for row in director.production.list_entities(project_id, "character")},
-                {"沈川", "苏瑶"},
+                projection["counts"],
+                {"character": 2, "location": 1, "prop": 2},
             )
             self.assertEqual(
-                {row["name"] for row in director.production.list_entities(project_id, "location")},
-                {"青云山"},
+                {(row["entity_type"], row["name"]) for row in projection["entities"]},
+                {
+                    ("character", "沈川"),
+                    ("character", "苏瑶"),
+                    ("location", "青云山"),
+                    ("prop", "古剑"),
+                    ("prop", "玉佩"),
+                },
             )
-            self.assertEqual(
-                {row["name"] for row in director.production.list_entities(project_id, "prop")},
-                {"古剑", "玉佩"},
-            )
+            self.assertNotIn("手中", {row["name"] for row in projection["entities"]})
 
 
 if __name__ == "__main__":

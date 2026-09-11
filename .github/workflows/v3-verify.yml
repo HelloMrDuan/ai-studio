@@ -74,6 +74,7 @@ jobs:
           tests.test_v3_front_half_quality_gate
           tests.test_v3_story_source_coverage
           tests.test_v3_story_entity_sanitizer
+          tests.test_v3_professional_output_runtime
           tests.test_v3_front_half_asset_contracts
           tests.test_v3_authoring_assets
           tests.test_v3_asset_model_refined

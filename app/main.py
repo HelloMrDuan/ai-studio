@@ -29,6 +29,7 @@ from app.v3.bgm_prefetch import BGMPrefetchService
 from app.v3.shot_continuity_linker import ShotContinuityLinker
 from app.v3.authoring_progress import create_authoring_progress_tracker
 from app.v3.canonical_entity_reconciler import CanonicalEntityReconciler
+from app.v3.typed_entity_graph_authority import TypedEntityGraphAuthority
 from app.v3.authoring_execution_timing import AuthoringExecutionTimingFix
 from app.v3.front_half_quality_gate import install_front_half_quality_gate
 from app.v3.story_source_coverage import install_story_source_coverage
@@ -73,6 +74,11 @@ professional_output_cache_epoch = install_professional_output_cache_epoch(legacy
 
 canonical_entity_reconciler = CanonicalEntityReconciler(settings, legacy_runtime.director)
 canonical_entity_reconciler.install()
+# Once a typed Story Bible exists it is the sole reusable Entity registry.
+# This second boundary runs after legacy/canonical wrappers, retires stale
+# untagged ghosts such as “手中”, and keeps reads reconciled thereafter.
+typed_entity_graph_authority = TypedEntityGraphAuthority(settings, legacy_runtime.director)
+typed_entity_graph_authority_installation = typed_entity_graph_authority.install()
 
 stage_progress_tracker = create_authoring_progress_tracker(settings, legacy_runtime.director)
 authoring_execution_timing = AuthoringExecutionTimingFix(stage_progress_tracker)
@@ -177,6 +183,8 @@ __all__ = [
     "production_skill_registry",
     "production_runtime_optimizer",
     "canonical_entity_reconciler",
+    "typed_entity_graph_authority",
+    "typed_entity_graph_authority_installation",
     "stage_progress_tracker",
     "authoring_execution_timing",
     "authoring_asset_service",

@@ -607,7 +607,9 @@ RAW_OUTPUT={raw}
             content=content,
             turn_id=turn_id,
             raw_entities=(
-                _entity_rows(payload, content)
+                raw_entities
+                if payload is not None and raw_entities is not None
+                else _entity_rows(payload, content)
                 if payload is not None
                 else raw_entities
             ),

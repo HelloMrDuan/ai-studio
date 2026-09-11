@@ -13,6 +13,7 @@ from app.v3.continuity_entity_authority import (
     install_continuity_entity_authority,
     sanitize_continuity_chunk,
 )
+from app.v3.typed_entity_graph_authority import TypedEntityGraphAuthority
 
 
 _SOURCE = """《青云山的第一场雪》
@@ -148,6 +149,79 @@ def _bad_continuity_chunk() -> dict:
 
 
 class ContinuityEntityAuthorityTests(unittest.TestCase):
+    def test_frozen_story_bible_survives_every_downstream_writer_and_second_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            project_id = "f" * 24
+            director = _Director(root, project_id)
+            _seed(director, project_id)
+            service = StoryContinuityService(SimpleNamespace(data_dir=root), director)
+            authority = TypedEntityGraphAuthority(SimpleNamespace(data_dir=root), director)
+
+            def assert_characters() -> None:
+                characters = director.production.list_entities(project_id, "character")
+                self.assertEqual({row["name"] for row in characters}, {"沈川", "苏瑶"})
+                graph = director.production.get_graph(project_id)
+                self.assertFalse(any(
+                    row.get("entity_type") == "character" and row.get("name") == "手中"
+                    for row in (graph.get("entities") or {}).values()
+                ))
+
+            assert_characters()  # Stage01 typed professional output materialization.
+            for skill, candidate_name in (
+                ("xiaoduan-causal-continuity", "手中"),
+                ("xiaoduan-creative-plan", "身前"),
+                ("xiaoduan-stage-asset-materializer", "此时"),
+                ("xiaoduan-asset-registration", "少女"),
+                ("xiaoduan-stage-finalizer", "剑身"),
+            ):
+                unresolved = director.production.create_entity(
+                    project_id,
+                    entity_type="character",
+                    name=candidate_name,
+                    logical_key=f"{skill}:candidate",
+                    stage="01",
+                    skill=skill,
+                    evidence={"source": "downstream_typed_output"},
+                )
+                self.assertEqual(unresolved["entity_type"], "unresolved_reusable")
+                self.assertEqual(
+                    unresolved["metadata"]["reusable_entity_authority"]["resolution"],
+                    "unresolved",
+                )
+                assert_characters()
+
+            original = StoryContinuityService._merge_chunk
+            old_flag = getattr(
+                StoryContinuityService,
+                "_xiaoduan_typed_entity_authority_installed",
+                False,
+            )
+            if not old_flag:
+                install_continuity_entity_authority()
+            try:
+                for _ in range(2):
+                    state = service._empty(project_id)
+                    service._merge_chunk(
+                        project_id,
+                        state,
+                        _bad_continuity_chunk(),
+                        chunk_start=0,
+                        chunk_end=len(_SOURCE),
+                        chunk_index=0,
+                    )
+                    assert_characters()
+            finally:
+                if not old_flag:
+                    StoryContinuityService._merge_chunk = original
+                    delattr(StoryContinuityService, "_xiaoduan_typed_entity_authority_installed")
+
+            projection = authority.story_elements(project_id)
+            self.assertEqual(
+                {row["name"] for row in projection["entities"] if row["entity_type"] == "character"},
+                {"沈川", "苏瑶"},
+            )
+
     def test_sanitizer_drops_hand_before_continuity_writer(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

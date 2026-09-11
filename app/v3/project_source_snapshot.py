@@ -70,7 +70,36 @@ def _active_snapshot(production: Any, project_id: str) -> dict[str, Any] | None:
         and _clean(row.get("dependency_state")).lower() != "stale"
     ]
     rows.sort(key=lambda row: int(row.get("version") or 0))
-    return rows[0] if rows else None
+    return rows[-1] if rows else None
+
+
+def _studio_source_payload(production: Any, project_id: str) -> dict[str, Any] | None:
+    """Return the original source asset created by the Studio project boundary."""
+    rows = production.list_assets(
+        project_id,
+        asset_role="source_full",
+        active_only=True,
+    )
+    rows = [
+        row for row in rows
+        if _clean(row.get("status")).lower() == "ready"
+        and _clean(row.get("dependency_state")).lower() != "stale"
+    ]
+    rows.sort(key=lambda row: (int(row.get("version") or 0), _clean(row.get("created_at"))))
+    if not rows:
+        return None
+    asset = rows[-1]
+    try:
+        text = production.read_text_asset(
+            project_id,
+            _clean(asset.get("asset_id")),
+            max_chars=2_000_000,
+        )
+    except Exception:
+        return None
+    if not _clean(text):
+        return None
+    return {"asset": asset, "text": text, "sha256": _sha(text)}
 
 
 def _snapshot_payload(production: Any, project_id: str) -> dict[str, Any] | None:
@@ -94,12 +123,51 @@ def _snapshot_payload(production: Any, project_id: str) -> dict[str, Any] | None
 
 def _ensure_snapshot(director: Any, project_id: str, user_text: str) -> dict[str, Any] | None:
     existing = _snapshot_payload(director.production, project_id)
+    project = director.get_project(project_id)
+    studio_source = _studio_source_payload(director.production, project_id)
+    if studio_source is not None:
+        text = _clean(studio_source["text"])
+        digest = _clean(studio_source["sha256"])
+        if existing is not None and _clean(existing.get("source_sha256")) == digest:
+            return existing
+        source_asset = studio_source["asset"]
+        source_id = f"src_{digest[:20]}"
+        asset = director.production.create_text_asset(
+            project_id,
+            stage="source",
+            skill="project-source-ingest",
+            logical_key="project:source:original",
+            asset_role="project_source_snapshot",
+            name="原始创作源文本",
+            content=text,
+            extension=".txt",
+            source={
+                "type": "studio_source_full",
+                "source_asset_id": _clean(source_asset.get("asset_id")),
+            },
+            parent_asset_ids=[_clean(source_asset.get("asset_id"))],
+            metadata={
+                "immutable": True,
+                "source_id": source_id,
+                "source_version": int((existing or {}).get("source_version") or 0) + 1,
+                "source_sha256": digest,
+                "provenance_authority": True,
+                "replaces_incorrect_snapshot_asset_id": _clean((existing or {}).get("asset_id")),
+            },
+        )
+        return {
+            "source_id": source_id,
+            "source_version": int((asset.get("metadata") or {}).get("source_version") or 1),
+            "source_sha256": digest,
+            "asset_id": _clean(asset.get("asset_id")),
+            "text": text,
+            "origin": "studio_source_full",
+        }
+
+    if _clean(project.get("current_stage")) != "01":
+        return existing
     if existing is not None:
         return existing
-
-    project = director.get_project(project_id)
-    if _clean(project.get("current_stage")) != "01":
-        return None
 
     text = _clean(user_text)
     origin = "initial_stage01_user_source"
@@ -286,6 +354,11 @@ def install_project_source_snapshot(settings: Any, director: Any) -> dict[str, A
         source_text = _clean((snapshot or {}).get("text"))
         bind_server_owned_evidence(payload, source_text)
         kind = _clean(payload.get("output_kind"))
+        if kind == "story_bible":
+            from .typed_front_half_authority import normalize_story_bible_characters
+
+            payload, _normalization = normalize_story_bible_characters(payload, source_text)
+            sidecar.put(payload)
         groups = {
             "story_bible": (("character", "characters"), ("location", "locations"), ("prop", "props")),
             "character_assets": (("character", "characters"),),
@@ -313,26 +386,86 @@ def install_project_source_snapshot(settings: Any, director: Any) -> dict[str, A
                         "source_design": stable,
                         "stable_projection": "typed_professional_output_v1",
                     }
-                entity = production_instance.create_entity(
-                    project_id,
-                    entity_type=entity_type,
-                    logical_key=typed_entity_logical_key(entity_type, name),
-                    name=name,
-                    stage=stage,
-                    skill=skill,
-                    metadata=metadata,
-                    evidence={
-                        "turn_id": turn_id,
-                        "evidence_quote": evidence_quote,
-                        "source_asset_id": _clean((snapshot or {}).get("asset_id")) or turn_asset_id,
-                        "source_snapshot_sha256": _clean((snapshot or {}).get("source_sha256")),
-                    },
-                )
-                result.append(entity)
-        return result
+                result.append({
+                    "entity_type": entity_type,
+                    "logical_key": typed_entity_logical_key(entity_type, name),
+                    "name": name,
+                    # The base recorder verifies that this display evidence is
+                    # present in the generated document. The exact source quote
+                    # remains separate and is persisted as graph evidence.
+                    "evidence_quote": name,
+                    "source_evidence": evidence_quote,
+                    "source_asset_id": _clean((snapshot or {}).get("asset_id")) or turn_asset_id,
+                    "source_snapshot_sha256": _clean((snapshot or {}).get("source_sha256")),
+                    "metadata": metadata,
+                })
+        return original_record(
+            project_id,
+            stage=stage,
+            skill=skill,
+            content=content,
+            turn_id=turn_id,
+            raw_entities=result,
+            turn_asset_id=turn_asset_id,
+        )
 
     production.record_control_entities = MethodType(record_control_entities, production)
     director._xiaoduan_project_source_snapshot_installed = True
+    repaired_snapshots = 0
+    backfilled_story_bibles = 0
+    list_projects = getattr(director, "list_projects", None)
+    if callable(list_projects):
+        for project in list_projects():
+            project_id = _clean((project or {}).get("project_id"))
+            if not project_id:
+                continue
+            before = _snapshot_payload(production, project_id)
+            try:
+                after = _ensure_snapshot(director, project_id, "")
+            except Exception:
+                continue
+            if _clean((after or {}).get("asset_id")) != _clean((before or {}).get("asset_id")):
+                repaired_snapshots += 1
+            formal = production.list_assets(
+                project_id,
+                asset_role="professional_story_bible",
+                active_only=True,
+            )
+            if formal:
+                continue
+            turns = [
+                item for item in production.list_assets(project_id, stage="01", active_only=True)
+                if _clean(item.get("asset_role")) == "director_turn_output"
+                and _clean(item.get("status")).lower() == "ready"
+                and _clean(item.get("dependency_state")).lower() != "stale"
+            ]
+            turns.sort(key=lambda item: (int(item.get("version") or 0), _clean(item.get("created_at"))))
+            if not turns:
+                continue
+            turn_asset = turns[-1]
+            try:
+                content = production.read_text_asset(
+                    project_id, _clean(turn_asset.get("asset_id")), max_chars=600_000,
+                )
+            except Exception:
+                continue
+            payload = sidecar.get_by_document(content)
+            if not isinstance(payload, dict) or _clean(payload.get("output_kind")) != "story_bible":
+                continue
+            turn_source = turn_asset.get("source") if isinstance(turn_asset.get("source"), dict) else {}
+            try:
+                production.record_control_entities(
+                    project_id,
+                    stage="01",
+                    skill=_clean(turn_asset.get("skill")) or "xiaoduan-story-bible",
+                    content=content,
+                    turn_id=_clean(turn_source.get("turn_id")),
+                    raw_entities=None,
+                    turn_asset_id=_clean(turn_asset.get("asset_id")),
+                )
+            except Exception:
+                continue
+            backfilled_story_bibles += 1
     return {
         "status": "installed",
         "policy": "immutable_project_source_v1",
@@ -340,6 +473,8 @@ def install_project_source_snapshot(settings: Any, director: Any) -> dict[str, A
         "model_owns_source_evidence": False,
         "typed_entity_identity": "unicode_sha256",
         "legacy_history": "one_time_snapshot_migration_only",
+        "repaired_studio_source_snapshots": repaired_snapshots,
+        "backfilled_professional_story_bibles": backfilled_story_bibles,
     }
 
 

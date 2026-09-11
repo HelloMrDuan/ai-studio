@@ -9,10 +9,12 @@ from app.services.production_assets import ProductionAssetService
 from app.v3 import front_half_quality_gate as gate
 from app.v3.project_source_snapshot import (
     _ensure_snapshot,
+    _snapshot_payload,
     bind_server_owned_evidence,
     install_project_source_snapshot,
     typed_entity_logical_key,
 )
+from app.v3.typed_front_half_authority import infer_canonical_characters
 
 
 SOURCE = """《青云山的第一场雪》
@@ -39,6 +41,36 @@ class FakeDirector:
 
 
 class ProjectSourceSnapshotTests(unittest.IsolatedAsyncioTestCase):
+    async def test_studio_source_full_wins_over_generated_continuity_fact_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            project_id = "0" * 24
+            project = {"project_id": project_id, "current_stage": "01", "history": []}
+            director = FakeDirector(Path(tmp), project)
+            director.production.ensure_project(project_id, "test")
+            director.production.create_text_asset(
+                project_id,
+                stage="source",
+                skill="manju-studio",
+                logical_key="studio:source:full",
+                asset_role="source_full",
+                name="作品完整源文本",
+                content=SOURCE,
+                source={"type": "studio_source", "source_type": "story"},
+            )
+            generated_fact_pack = (
+                '角色:沈川、苏瑶｜状态:苏瑶:{"equipment":"手中握着一枚玉佩"}\n'
+                + SOURCE
+            )
+            install_project_source_snapshot(SimpleNamespace(data_dir=Path(tmp)), director)
+
+            await director.message(project_id, generated_fact_pack)
+
+            snapshot = _snapshot_payload(director.production, project_id)
+            self.assertEqual(snapshot["text"], SOURCE)
+            self.assertEqual(snapshot["origin"], "studio_source_full")
+            self.assertEqual(director.seen_sources, [SOURCE])
+            self.assertEqual(infer_canonical_characters(snapshot["text"]), ["沈川", "苏瑶"])
+
     async def test_first_source_is_immutable_across_regenerate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             project_id = "1" * 24

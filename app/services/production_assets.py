@@ -5,6 +5,7 @@ import json
 import mimetypes
 import re
 import secrets
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,11 @@ def _clean(value: Any) -> str:
 
 def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _identity_key(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", _clean(value)).casefold()
+    return "".join(ch for ch in text if not ch.isspace() and ch not in "\u200b\u200c\u200d\ufeff\u2060")
 
 
 def _slug(value: str, default: str = "asset") -> str:
@@ -321,6 +327,75 @@ class ProductionAssetService:
         items.sort(key=lambda x: (_clean(x.get("entity_type")), _clean(x.get("name"))))
         return items
 
+    def _frozen_reusable_registry(
+        self,
+        graph: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Read the READY typed Story Bible as the reusable identity boundary."""
+        assets = [
+            item for item in (graph.get("assets") or {}).values()
+            if isinstance(item, dict)
+            and bool(item.get("active"))
+            and _clean(item.get("asset_role")) == "professional_story_bible"
+            and _clean(item.get("status")).lower() == "ready"
+            and _clean(item.get("dependency_state")).lower() != "stale"
+        ]
+        assets.sort(key=lambda item: (int(item.get("version") or 0), _clean(item.get("updated_at"))))
+        if not assets:
+            return None
+        asset = assets[-1]
+        storage = asset.get("storage") if isinstance(asset.get("storage"), dict) else {}
+        path_value = _clean(storage.get("path"))
+        path = Path(path_value) if path_value else None
+        if path is None or not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not isinstance(payload, dict) or _clean(payload.get("output_kind")) != "story_bible":
+            return None
+
+        bound_ids = {_clean(item) for item in asset.get("entity_ids") or [] if _clean(item)}
+        by_type: dict[str, dict[str, dict[str, Any]]] = {
+            "character": {}, "location": {}, "prop": {},
+        }
+        names: dict[str, set[str]] = {"character": set(), "location": set(), "prop": set()}
+        for kind, field in (
+            ("character", "characters"),
+            ("location", "locations"),
+            ("prop", "props"),
+        ):
+            for row in payload.get(field) or []:
+                if not isinstance(row, dict):
+                    continue
+                name = _clean(row.get("name"))
+                key = _identity_key(name)
+                if not key:
+                    continue
+                names[kind].add(key)
+                matches = [
+                    entity for entity in (graph.get("entities") or {}).values()
+                    if isinstance(entity, dict)
+                    and _clean(entity.get("entity_type")).lower() == kind
+                    and _identity_key(entity.get("name")) == key
+                ]
+                matches.sort(
+                    key=lambda entity: (
+                        1 if _clean(entity.get("entity_id")) in bound_ids else 0,
+                        1 if bool((entity.get("metadata") or {}).get("typed_professional_entity")) else 0,
+                        _clean(entity.get("created_at")),
+                    ),
+                    reverse=True,
+                )
+                if matches:
+                    by_type[kind][key] = matches[0]
+        return {
+            "asset_id": _clean(asset.get("asset_id")),
+            "by_type": by_type,
+            "names": names,
+        }
+
     def create_entity(
         self,
         project_id: str,
@@ -336,6 +411,40 @@ class ProductionAssetService:
         graph = self.ensure_project(project_id)
         etype = _clean(entity_type).lower() or "generic"
         ekey = _clean(logical_key) or f"{etype}:{_slug(name, 'entity')}"
+        frozen = self._frozen_reusable_registry(graph)
+        story_bible_writer = (
+            _clean(stage) == "01"
+            and _clean(skill) == "xiaoduan-story-bible"
+            and bool((metadata or {}).get("typed_professional_entity"))
+        )
+        if frozen is not None and etype in {"character", "location", "prop"} and not story_bible_writer:
+            identity = _identity_key(name)
+            canonical = frozen["by_type"][etype].get(identity)
+            if canonical is not None:
+                if metadata:
+                    canonical.setdefault("metadata", {}).update(_json_copy(metadata, {}))
+                if evidence:
+                    canonical.setdefault("evidence", []).append(_json_copy(evidence, {}))
+                canonical["updated_at"] = _utcnow()
+                self._save(graph)
+                return canonical
+            if identity not in frozen["names"][etype]:
+                requested_type = etype
+                requested_key = ekey
+                etype = "unresolved_reusable"
+                ekey = f"unresolved:{requested_type}:{_sha(identity)[:20]}"
+                authority = {
+                    "policy": "typed_story_bible_frozen_registry_v1",
+                    "resolution": "unresolved",
+                    "requested_entity_type": requested_type,
+                    "requested_name": _clean(name),
+                    "requested_logical_key": requested_key,
+                    "professional_story_bible_asset_id": frozen["asset_id"],
+                    "stage": _clean(stage),
+                    "skill": _clean(skill),
+                }
+                metadata = _json_copy(metadata or {}, {})
+                metadata["reusable_entity_authority"] = authority
         # Entity keys are stable: later extraction updates the same entity.
         for item in (graph.get("entities") or {}).values():
             if _clean(item.get("logical_key")) == ekey:
@@ -378,6 +487,20 @@ class ProductionAssetService:
         item = (graph.get("entities") or {}).get(entity_id)
         if not isinstance(item, dict):
             raise FileNotFoundError(f"项目实体不存在：{entity_id}")
+        patch = _json_copy(patch, {})
+        frozen = self._frozen_reusable_registry(graph)
+        current_type = _clean(item.get("entity_type")).lower()
+        if frozen is not None and current_type in {"character", "location", "prop"} and "name" in patch:
+            requested_name = _clean(patch.get("name"))
+            canonical = frozen["by_type"][current_type].get(_identity_key(requested_name))
+            if canonical is None or _clean(canonical.get("entity_id")) != _clean(entity_id):
+                patch.pop("name", None)
+                item.setdefault("metadata", {})["reusable_identity_update_rejected"] = {
+                    "policy": "typed_story_bible_frozen_registry_v1",
+                    "requested_name": requested_name,
+                    "professional_story_bible_asset_id": frozen["asset_id"],
+                    "rejected_at": _utcnow(),
+                }
         for key in ("name", "stage", "skill"):
             if key in patch:
                 item[key] = _clean(patch.get(key))
@@ -1001,6 +1124,7 @@ class ProductionAssetService:
             if not isinstance(raw, dict):
                 continue
             quote = _clean(raw.get("evidence_quote"))
+            source_evidence = _clean(raw.get("source_evidence")) or quote
             name = _clean(raw.get("name"))
             if not quote or quote not in content or not name:
                 continue
@@ -1012,7 +1136,12 @@ class ProductionAssetService:
                 stage=stage,
                 skill=skill,
                 metadata=_json_copy(raw.get("metadata") or {}, {}),
-                evidence={"turn_id": turn_id, "evidence_quote": quote, "source_asset_id": turn_asset_id},
+                evidence={
+                    "turn_id": turn_id,
+                    "evidence_quote": source_evidence,
+                    "source_asset_id": _clean(raw.get("source_asset_id")) or turn_asset_id,
+                    "source_snapshot_sha256": _clean(raw.get("source_snapshot_sha256")),
+                },
             )
             result.append(entity)
         return result

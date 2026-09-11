@@ -16,10 +16,12 @@ class SourceEntity(StrictModel):
     source_evidence: str = Field(min_length=1, max_length=2000)
 
 
+# Human-readable document quality is stage/semantic-gated below, not character-count-gated.
+# Short source fragments must not be rejected or padded merely to satisfy an arbitrary prose floor.
 class StoryBibleOutput(StrictModel):
     schema_version: Literal[1]
     output_kind: Literal["story_bible"]
-    document: str = Field(min_length=500, max_length=600000)
+    document: str = Field(min_length=1, max_length=600000)
     characters: list[SourceEntity]
     locations: list[SourceEntity]
     props: list[SourceEntity]
@@ -59,7 +61,7 @@ class CharacterAsset(StrictModel):
 class CharacterAssetsOutput(StrictModel):
     schema_version: Literal[1]
     output_kind: Literal["character_assets"]
-    document: str = Field(min_length=300, max_length=600000)
+    document: str = Field(min_length=1, max_length=600000)
     characters: list[CharacterAsset]
     assumptions: list[str] = Field(default_factory=list, max_length=64)
     warnings: list[str] = Field(default_factory=list, max_length=64)
@@ -107,7 +109,7 @@ class PropAsset(StrictModel):
 class VisualAssetsOutput(StrictModel):
     schema_version: Literal[1]
     output_kind: Literal["visual_assets"]
-    document: str = Field(min_length=500, max_length=600000)
+    document: str = Field(min_length=1, max_length=600000)
     visual_direction: VisualDirection
     locations: list[LocationAsset]
     props: list[PropAsset]

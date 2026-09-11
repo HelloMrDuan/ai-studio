@@ -63,6 +63,15 @@ _HAIR = re.compile(
     re.IGNORECASE,
 )
 _AGE = re.compile(r"(?<!\d)(\d{1,3})(?:\s*[-~—–至到]\s*(\d{1,3}))?\s*岁")
+_PERIOD_SIGNAL = re.compile(
+    r"古代|古风|古式|古装|汉服|长袍|交领|襦裙|武侠|仙侠|"
+    r"ancient|historical|period|traditional\s+(?:robe|garment)|\brobe\b",
+    re.IGNORECASE,
+)
+_EAST_ASIAN_SIGNAL = re.compile(
+    r"中国|中华|中式|东亚|武侠|仙侠|chinese|east\s*asian|xianxia|wuxia",
+    re.IGNORECASE,
+)
 _PROP_TERMS = (
     ("剑鞘", "scabbard"), ("长剑", "sword"), ("古剑", "sword"), ("剑", "sword"),
     ("刀", "blade"), ("枪", "weapon"), ("青铜铃", "bronze bell"), ("铃铛", "bell"),
@@ -118,6 +127,53 @@ def _segments(value: str) -> list[str]:
     ]
 
 
+def _find_character_contract(value: Any, depth: int = 0) -> dict[str, Any]:
+    """Find the typed Stage02 character contract inside the formal profile payload.
+
+    Production profiles nest it under stable_profile/专业角色合同. Do not rely on
+    flattened prose when a typed contract is already available.
+    """
+    if depth > 5 or not isinstance(value, dict):
+        return {}
+    for key in ("专业角色合同", "typed_character_contract", "character_contract"):
+        item = value.get(key)
+        if isinstance(item, dict):
+            return item
+    for item in value.values():
+        found = _find_character_contract(item, depth + 1)
+        if found:
+            return found
+    return {}
+
+
+def _structured_face_facts(metadata: dict[str, Any]) -> list[str]:
+    contract = _find_character_contract(metadata)
+    if not contract:
+        return []
+    selected: list[str] = []
+    for key in ("脸部", "发型", "发色", "肤色"):
+        value = _text(contract.get(key))
+        if not value or _PLACEHOLDER.search(value):
+            continue
+        for segment in _segments(value):
+            if not segment or _PLACEHOLDER.search(segment):
+                continue
+            if key == "脸部" and _FACE_NOISE.search(segment) and not _HAIR_ORNAMENT.search(segment):
+                continue
+            if segment not in selected:
+                selected.append(segment)
+    return selected
+
+
+def _period_cue(metadata: dict[str, Any]) -> str:
+    source = json.dumps(metadata, ensure_ascii=False, sort_keys=True)
+    if not _PERIOD_SIGNAL.search(source):
+        return "只保留低存在感且符合项目时代的基础上衣领。"
+    if _EAST_ASIAN_SIGNAL.search(source):
+        return "可见服装只保留低存在感的古代东亚传统上衣领口，与已确认古式服装处于同一时代文化体系。"
+    return "可见服装只保留低存在感、与已确认历史服装同一时代体系的传统上衣领口。"
+
+
 def infer_character_gender(text: str) -> str:
     source = _text(text)
     labelled: set[str] = set()
@@ -154,7 +210,7 @@ def extract_age_label(text: str) -> str:
 
 
 def strict_face_facts(metadata: dict[str, Any], limit: int = 14) -> list[str]:
-    selected: list[str] = []
+    selected: list[str] = list(_structured_face_facts(metadata))
     for row in _atomic_rows(metadata):
         key, value = _split_row(row)
         if not value or _PLACEHOLDER.search(value):
@@ -233,13 +289,14 @@ def build_face_anchor_prompt(entity: dict[str, Any]) -> str:
     identity = list(dict.fromkeys(item for item in identity if item))
     if not identity:
         identity.append("仅使用上游已确认的脸部、年龄与发型事实，不依据姓名补造身份")
+    collar = _period_cue(metadata)
     return (
         f"角色「{name}」身份锚点。\n"
         "冻结范围仅包括稳定可见身份：性别呈现、年龄感、脸型、五官、肤色、发型、发色和明确发饰。\n"
         "已确认身份事实：\n- " + "\n- ".join(identity) + "\n\n"
         "生成单人正面头肩身份肖像，视线自然朝向镜头，中性自然表情，脸部占画面主要区域。"
         "双眼、鼻、口、下颌比例自然，皮肤纹理清晰自然。"
-        "只保留低存在感且符合项目时代的基础上衣领，背景为干净浅灰或米白，画面只服务于身份锁定。"
+        f"{collar}背景为干净浅灰或米白，画面只服务于身份锁定。"
     )
 
 
@@ -258,7 +315,7 @@ def build_costume_reference_prompt(entity: dict[str, Any]) -> str:
     )
 
 
-def _period_flags(direction: VisualDirection) -> tuple[bool, bool]:
+def _period_flags(direction: VisualDirection, source: str = "") -> tuple[bool, bool]:
     payload = json.dumps(
         {
             "world_style": direction.world_style,
@@ -269,8 +326,9 @@ def _period_flags(direction: VisualDirection) -> tuple[bool, bool]:
         },
         ensure_ascii=False,
     ).lower()
-    ancient = any(token in payload for token in ("古代", "古风", "ancient", "historical", "period"))
-    chinese = any(token in payload for token in ("中国", "中华", "中式", "东亚", "chinese", "east asian", "xianxia", "仙侠"))
+    combined = payload + "\n" + _text(source).lower()
+    ancient = bool(_PERIOD_SIGNAL.search(combined))
+    chinese = bool(_EAST_ASIAN_SIGNAL.search(combined))
     return ancient, chinese
 
 
@@ -332,21 +390,23 @@ def compile_character_constraints(
     else:
         positive.append("HAIRSTYLE POLICY: no confirmed hairstyle means do not invent one from gender stereotypes")
 
-    ancient, chinese = _period_flags(visual_direction)
+    ancient, chinese = _period_flags(visual_direction, source)
     if phase == "face_anchor":
         positive.append(
             "FACE ANCHOR ISOLATION: one head-and-shoulders identity portrait; face, confirmed age, confirmed gender and confirmed hairstyle are the only identity priorities"
         )
         if ancient and chinese:
-            positive.append("visible clothing is minimal: simple conservative ancient Chinese upper collar only")
+            positive.append("visible neckline is a simple conservative ancient East Asian traditional robe collar")
         elif ancient:
-            positive.append("visible clothing is minimal: simple conservative period-compatible upper garment only")
+            positive.append("visible neckline is a simple conservative historical period-compatible upper garment collar")
         negative.extend([
             "story prop", "handheld prop", "waist-hanging prop", "weapon", "full costume showcase",
             "full body", "action pose", "cinematic scene background", "modern fashion portrait",
         ])
         if ancient:
             negative.extend([
+                "modern T-shirt", "white T-shirt", "crew-neck T-shirt", "hoodie", "sweatshirt",
+                "modern casual shirt", "western suit", "contemporary sportswear", "modern fashion collar",
                 "spaghetti straps", "sleeveless modern dress", "exposed-shoulder modern fashion",
                 "contemporary evening dress", "modern studio fashion styling",
             ])

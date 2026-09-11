@@ -53,7 +53,7 @@ jobs:
           node --check app/v3/static/stage-progress-overlay.js &&
           node --check app/v3/static/stage-state-overlay.js &&
           node --check app/v3/static/story-elements-overlay.js &&
-          node --check app/v3-static/workbench-status-localization.js
+          node --check app/v3/static/workbench-status-localization.js
       - name: Run V3 tests
         run: >-
           python -m unittest -v

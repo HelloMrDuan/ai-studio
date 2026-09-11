@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import secrets
 from typing import Any
 
@@ -8,6 +10,9 @@ from app.services.media_generation_pipeline import MediaGenerationPipeline
 from app.v3.generation_contract import visual_contract_fields
 from app.v3.production_legacy_bridge import ProductionReadyLegacyBridge
 from app.v3.workflow.contracts import ProductionStep, ProductionWorkflowInput
+
+
+logger = logging.getLogger(__name__)
 
 
 class UnifiedProductionBridge(ProductionReadyLegacyBridge):
@@ -41,6 +46,19 @@ class UnifiedProductionBridge(ProductionReadyLegacyBridge):
         logical_key = f"studio-v3:reference:{target_asset_id}:image"
         step_key = f"{workflow_id}:image-generate"
         seed = int(params.get("seed") if params.get("seed") is not None else -1)
+        phase = str(params.get("reference_phase") or "")
+
+        logger.info(
+            "ZIMAGE_FROZEN_INPUT project_id=%s workflow_id=%s target_asset_id=%s phase=%s cfg=1.0 size=%sx%s positive=%s negative=%s",
+            project_id,
+            workflow_id,
+            target_asset_id,
+            phase,
+            width,
+            height,
+            json.dumps(positive, ensure_ascii=False),
+            json.dumps(negative, ensure_ascii=False),
+        )
 
         step_payload = {
             "logical_key": logical_key,
@@ -66,7 +84,7 @@ class UnifiedProductionBridge(ProductionReadyLegacyBridge):
             "metadata": {
                 "source": "unified_temporal_txt2img",
                 "legacy_target_asset_id": target_asset_id,
-                "reference_phase": str(params.get("reference_phase") or ""),
+                "reference_phase": phase,
                 "runtime_image_backend": "z_image_turbo",
                 "provider_ready_prompt_frozen": True,
             },
@@ -93,7 +111,7 @@ class UnifiedProductionBridge(ProductionReadyLegacyBridge):
                 "v3_workflow_id": workflow_id,
                 "v3_logical_key": logical_key,
                 "legacy_target_asset_id": target_asset_id,
-                "reference_phase": str(params.get("reference_phase") or ""),
+                "reference_phase": phase,
                 "provider_id": "local-zimage-image",
                 "model_id": "z-image-turbo",
                 "width": width,

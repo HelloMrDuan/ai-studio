@@ -31,6 +31,7 @@ from app.v3.authoring_progress import create_authoring_progress_tracker
 from app.v3.canonical_entity_reconciler import CanonicalEntityReconciler
 from app.v3.authoring_execution_timing import AuthoringExecutionTimingFix
 from app.v3.front_half_quality_gate import install_front_half_quality_gate
+from app.v3.story_source_coverage import install_story_source_coverage
 from app.v3.character_prompt_integration import install_character_prompt_integration
 from app.v3.reference_role_policy import install_reference_role_policy
 from app.v3.character_package_integrity import install_character_package_integrity
@@ -38,6 +39,7 @@ from app.v3.character_package_integrity import install_character_package_integri
 legacy_authoring_retirement = retire_legacy_authoring_jobs(settings)
 
 install_front_half_quality_gate(legacy_runtime.director)
+story_source_coverage = install_story_source_coverage(legacy_runtime.director)
 character_prompt_contract = install_character_prompt_integration()
 reference_role_contract = install_reference_role_policy()
 character_package_contract = install_character_package_integrity()
@@ -139,6 +141,7 @@ __all__ = [
     "app",
     "legacy_runtime",
     "legacy_authoring_retirement",
+    "story_source_coverage",
     "character_prompt_contract",
     "reference_role_contract",
     "character_package_contract",

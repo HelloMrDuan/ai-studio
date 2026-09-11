@@ -5,6 +5,7 @@ import unittest
 from app.v3.professional_source_grounding import (
     authoritative_message_source,
     ground_source_evidence,
+    install_professional_source_grounding,
 )
 
 
@@ -56,6 +57,30 @@ generated history is not authoritative
         self.assertIn("手中握着一枚玉佩", source)
         self.assertNotIn("来自师父", source)
         self.assertNotIn("来自宗门", source)
+
+    def test_regenerate_recovers_original_user_story_but_not_assistant_history(self) -> None:
+        generated_history = "故事生产圣经：沈川来自某宗门，苏瑶是宗门弟子。"
+        messages = [{
+            "role": "user",
+            "content": f"""=== SOURCE FILES ===
+<skill text>
+
+=== RECENT CURRENT-STAGE HISTORY ===
+user: {_SOURCE}
+
+assistant: {generated_history}
+
+user: 重新生成
+
+=== AUTHORITATIVE CURRENT USER MESSAGE ===
+重新生成
+""",
+        }]
+        source = authoritative_message_source(messages)
+        self.assertIn(_SOURCE, source)
+        self.assertIn("重新生成", source)
+        self.assertNotIn("来自某宗门", source)
+        self.assertNotIn("宗门弟子", source)
 
     def test_paraphrased_prop_evidence_is_bound_to_exact_source_span(self) -> None:
         payload = {
@@ -116,6 +141,40 @@ generated history is not authoritative
 """,
         }]
         self.assertEqual(authoritative_message_source(messages), _SOURCE)
+
+    def test_typed_runtime_does_not_require_markdown_to_echo_machine_entities(self) -> None:
+        from app.v3 import professional_output_runtime as runtime
+
+        install_professional_source_grounding()
+        payload = {
+            "output_kind": "story_bible",
+            "document": "# 故事说明\n雪山风暴中，两名少年角色因异常共鸣相遇。",
+            "characters": [
+                {"name": "沈川", "source_evidence": "沈川携带着一柄古剑"},
+                {"name": "苏瑶", "source_evidence": "苏瑶拿着一块玉佩"},
+            ],
+            "locations": [
+                {"name": "青云山", "source_evidence": "故事发生在青云山"},
+            ],
+            "props": [
+                {"name": "古剑", "source_evidence": "沈川携带着一柄古剑"},
+                {"name": "玉佩", "source_evidence": "苏瑶拿着一块玉佩"},
+            ],
+        }
+        issues = runtime.validate_professional_output(
+            payload,
+            source_text=_SOURCE,
+            required_names={"characters": ["沈川", "苏瑶"]},
+        )
+        self.assertEqual(issues, [])
+        self.assertEqual(runtime._document_issues(payload), [])
+
+        rows = runtime._entity_rows(payload, payload["document"])
+        self.assertEqual(
+            {row["name"] for row in rows},
+            {"沈川", "苏瑶", "青云山", "古剑", "玉佩"},
+        )
+        self.assertTrue(all(row["evidence_quote"] in _SOURCE for row in rows))
 
 
 if __name__ == "__main__":

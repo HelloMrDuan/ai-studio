@@ -46,7 +46,7 @@ class CleanupRegressionTests(unittest.TestCase):
             project_id = "a" * 24
             director = _GraphDirector(root)
             p = director.production
-            first = p.create_entity(
+            p.create_entity(
                 project_id,
                 entity_type="character",
                 name="苏瑶",
@@ -90,6 +90,52 @@ class CleanupRegressionTests(unittest.TestCase):
                 if (row.get("metadata") or {}).get("merged_duplicate")
             ]
             self.assertEqual(len(hidden), 1)
+
+    def test_formal_prop_hides_same_name_legacy_object_alias(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            project_id = "c" * 24
+            director = _GraphDirector(root)
+            p = director.production
+            legacy_object = p.create_entity(
+                project_id,
+                entity_type="object",
+                name="乌木剑鞘",
+                logical_key="continuity:object:scabbard",
+                stage="01",
+                metadata={"continuity": {"owner": "陆沉"}},
+            )
+            prop = p.create_entity(
+                project_id,
+                entity_type="prop",
+                name="乌木剑鞘",
+                logical_key="story:prop:scabbard",
+                stage="01",
+                metadata={"story_fact": True},
+            )
+            asset = p.create_text_asset(
+                project_id,
+                stage="01",
+                skill="test",
+                logical_key="test:scabbard",
+                asset_role="story_bible",
+                name="剑鞘事实",
+                content="乌木剑鞘属于陆沉",
+                entity_ids=[legacy_object["entity_id"]],
+            )
+
+            service = CanonicalEntityReconciler(SimpleNamespace(data_dir=root), director)
+            service.install()
+            visible = p.list_entities(project_id)
+
+            same_name = [row for row in visible if row.get("name") == "乌木剑鞘"]
+            self.assertEqual(len(same_name), 1)
+            self.assertEqual(same_name[0]["entity_type"], "prop")
+            self.assertEqual(same_name[0]["entity_id"], prop["entity_id"])
+            self.assertEqual(p.get_asset(project_id, asset["asset_id"])["entity_ids"], [prop["entity_id"]])
+            hidden = p.get_graph(project_id)["entities"][legacy_object["entity_id"]]
+            self.assertTrue((hidden.get("metadata") or {}).get("merged_duplicate"))
+            self.assertEqual((hidden.get("metadata") or {}).get("canonical_entity_id"), prop["entity_id"])
 
     def test_completed_elapsed_time_excludes_idle_wait_and_freezes(self):
         with tempfile.TemporaryDirectory() as raw:

@@ -31,6 +31,11 @@ _MODERN_UPPER_NEGATIVE = (
     "modern T-shirt, crew-neck T-shirt, white T-shirt, hoodie, sweatshirt, "
     "modern casual shirt, western suit, contemporary sportswear, modern fashion collar"
 )
+_FACE_PERIOD_POSITIVE = (
+    "FACE ANCHOR VISIBLE GARMENT CONTRACT: the visible neckline and shoulders must use the confirmed "
+    "historical period garment construction and period-appropriate fabric; keep the crop head-and-shoulders "
+    "and do not redesign the full costume"
+)
 
 
 def _prepend(value: str, additions: tuple[str, ...]) -> str:
@@ -53,24 +58,54 @@ def _entity_contract_text(entity: dict[str, Any]) -> str:
         return str(metadata or "")
 
 
-def _face_period_cue(entity: dict[str, Any]) -> str:
-    """Carry only the era/culture silhouette into Face Anchor clothing.
+def _typed_character_contract(entity: dict[str, Any]) -> dict[str, Any]:
+    metadata = entity.get("metadata") if isinstance(entity.get("metadata"), dict) else {}
+    stable_profile = metadata.get("stable_profile") if isinstance(metadata.get("stable_profile"), dict) else {}
+    for key in ("专业角色合同", "typed_character_contract", "character_contract"):
+        value = stable_profile.get(key)
+        if isinstance(value, dict):
+            return value
+    authoring = metadata.get("authoring") if isinstance(metadata.get("authoring"), dict) else {}
+    value = authoring.get("typed_character_contract")
+    return value if isinstance(value, dict) else {}
 
-    Face Anchor must not inherit the full costume, but it also must not invent a
-    modern T-shirt when Stage02 already established a historical costume. The
-    cue is derived from the typed stable profile, never from the character name.
+
+def _confirmed_visible_garment(entity: dict[str, Any]) -> str:
+    contract = _typed_character_contract(entity)
+    for key in ("服装", "clothing", "costume", "outfit"):
+        value = str(contract.get(key) or "").strip()
+        if value and value not in {"未指定", "未知", "待设计"}:
+            return value
+    return ""
+
+
+def _face_period_cue(entity: dict[str, Any]) -> str:
+    """Carry only the visible period neckline into Face Anchor rendering.
+
+    This is a render-policy cue, not a reusable identity fact. Z-Image-Turbo is
+    run at CFG=1.0, so provider negatives cannot be the primary mechanism for
+    excluding a modern T-shirt. The positive prompt must explicitly describe the
+    small amount of period clothing that remains visible in a head-and-shoulders
+    identity crop.
     """
     source = _entity_contract_text(entity)
     if not _PERIOD_HINT.search(source):
         return ""
+
+    garment = _confirmed_visible_garment(entity)
+    if garment:
+        return (
+            f"锁脸构图可见服装边界：领口与肩部必须来自已确认服装「{garment}」，"
+            "保持其已确认颜色和古代服饰结构；画面仍只展示头肩，不展开完整服装设计。"
+        )
     if _EAST_ASIAN_HINT.search(source):
         return (
-            "服装时代边界：画面只露出低存在感的古代东亚传统上衣领口，"
-            "与已确认古式服装处于同一时代文化体系；不展示完整服装。"
+            "锁脸构图可见服装边界：领口与肩部采用古代东亚传统袍服结构和历史织物质感；"
+            "画面仍只展示头肩，不展开完整服装设计。"
         )
     return (
-        "服装时代边界：画面只露出低存在感、与已确认历史服装同一时代体系的上衣领口；"
-        "不展示完整服装。"
+        "锁脸构图可见服装边界：领口与肩部采用与已确认历史时代一致的传统服装结构和织物；"
+        "画面仍只展示头肩，不展开完整服装设计。"
     )
 
 
@@ -169,13 +204,15 @@ def install_character_prompt_integration() -> dict[str, Any]:
             positive = constraints.positive
             negative = constraints.negative
 
-            # The Stage02 typed profile can establish period costume before a
-            # Stage03 VisualDirection exists. Face Anchor intentionally removes
-            # full costume facts, but must retain the period boundary so the
-            # image model cannot fill the visible neckline with a modern T-shirt.
+            # Z-Image-Turbo runs with CFG=1.0. A negative prompt is therefore not
+            # a reliable way to keep a modern T-shirt out of Face Anchor output.
+            # Make the visible period neckline an affirmative provider-ready rule;
+            # retain negatives as secondary metadata/compatibility for other image
+            # providers that do use classifier-free negative guidance.
             if phase == "face_anchor":
                 period_probe = "\n".join((asset_description, anchor, contract_context))
                 if _PERIOD_HINT.search(period_probe):
+                    positive = tuple(dict.fromkeys((*positive, _FACE_PERIOD_POSITIVE)))
                     negative = tuple(dict.fromkeys((*negative, _MODERN_UPPER_NEGATIVE)))
 
             return CompiledPrompt(
@@ -190,11 +227,11 @@ def install_character_prompt_integration() -> dict[str, Any]:
         "installed": True,
         "compiler_boundary": "single_idempotent_character_prompt_contract",
         "identity_projection": "phase_scoped",
-        "face_prompt": "affirmative_identity_only_with_period_boundary",
+        "face_prompt": "affirmative_identity_plus_visible_period_garment_boundary",
         "costume_prompt": "body_clothing_wearables_only_no_story_props",
         "provider_prompt": "frozen_positive_negative_contract",
         "adult_bias_removed": True,
-        "modern_face_anchor_clothing_blocked_when_period_is_known": True,
+        "zimage_cfg1_period_clothing_enforced_in_positive": True,
     }
 
 

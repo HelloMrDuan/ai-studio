@@ -10,6 +10,7 @@ from app.v3.production_skill_registry import (
     ProductionSkillRegistry,
     builtin_single_pass_contract,
 )
+from app.v3.story_source_coverage import reconcile_stage01_story_characters
 
 
 def _clean(value: Any) -> str:
@@ -124,6 +125,18 @@ class SinglePassStageFinalizer:
         project["stage_state"][stage] = state
         self.director._save_project(project)
 
+        # The story-elements panel reads ProductionAsset entities immediately
+        # when Stage① reaches 100%, before manual stage confirmation. Reconcile
+        # validated Story Bible roles here so the UI and downstream Stage② read
+        # the same canonical character set rather than an older continuity pass.
+        stage01_source_coverage: dict[str, Any] = {}
+        if stage == "01":
+            stage01_source_coverage = reconcile_stage01_story_characters(
+                self.director,
+                project_id,
+                require_ready=True,
+            )
+
         if self.progress_tracker is not None:
             self.progress_tracker.complete(project_id, stage)
 
@@ -136,6 +149,7 @@ class SinglePassStageFinalizer:
             "stage_ready": True,
             "handoff_ready": True,
             "completion": (state.get("skill_runtime") or {}).get("completion") or {},
+            "stage01_source_coverage": stage01_source_coverage,
         }
 
 

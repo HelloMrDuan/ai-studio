@@ -33,6 +33,7 @@ from app.v3.typed_entity_graph_authority import (
     TypedEntityGraphAuthority,
     create_typed_entity_graph_router,
 )
+from app.v3.continuity_entity_authority import install_continuity_entity_authority
 from app.v3.authoring_execution_timing import AuthoringExecutionTimingFix
 from app.v3.front_half_quality_gate import install_front_half_quality_gate
 from app.v3.story_source_coverage import install_story_source_coverage
@@ -71,6 +72,10 @@ canonical_entity_reconciler = CanonicalEntityReconciler(settings, legacy_runtime
 canonical_entity_reconciler.install()
 typed_entity_graph_authority = TypedEntityGraphAuthority(settings, legacy_runtime.director)
 typed_entity_graph_authority_installation = typed_entity_graph_authority.install()
+# Continuity may create chapter/scene/beat/state facts, but once Stage01 has a
+# typed Story Bible it must only reference reusable character/location/prop
+# identities from that authority. It is not a second reusable-entity writer.
+continuity_entity_authority = install_continuity_entity_authority()
 
 stage_progress_tracker = create_authoring_progress_tracker(settings, legacy_runtime.director)
 authoring_execution_timing = AuthoringExecutionTimingFix(stage_progress_tracker)
@@ -176,6 +181,7 @@ __all__ = [
     "canonical_entity_reconciler",
     "typed_entity_graph_authority",
     "typed_entity_graph_authority_installation",
+    "continuity_entity_authority",
     "stage_progress_tracker",
     "authoring_execution_timing",
     "authoring_asset_service",

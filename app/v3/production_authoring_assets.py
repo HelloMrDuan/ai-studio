@@ -13,6 +13,7 @@ from .stage_asset_materialization import StageOutputAssetMaterializer
 from .stage_asset_materialization_guard import install_stage_asset_materialization_guard
 from .stage_visual_asset_alias_recovery import install_stage_visual_asset_alias_recovery
 from .story_source_coverage import reconcile_stage01_story_characters
+from .typed_character_profile_authority import reconcile_typed_character_profiles
 
 
 install_stage_asset_materialization_guard()
@@ -67,10 +68,16 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
             require_ready=True,
         )
 
-        # First materialize the ready Stage②/③ draft. Then repair historical
-        # character ownership before creating canonical profiles so one person's
-        # appearance can never be attached to another person's entity id.
+        # First materialize the ready Stage②/③ draft. Then project the *full*
+        # typed Stage② CharacterAsset contract into the reusable Entity metadata
+        # before canonical profile assets are written. Previously only
+        # stable_description survived this boundary, silently dropping hair,
+        # clothing, body and other identity fields used by reference generation.
         materialized = self.materializer.materialize(project_id)
+        typed_character_profile = reconcile_typed_character_profiles(
+            self.production,
+            project_id,
+        )
         ownership_before = self.ownership_repair.reconcile(project_id)
         identity_cleanup = self.identity_cleanup.reconcile_project(project_id)
         result = super().sync(project_id)
@@ -107,6 +114,7 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
             **result,
             "stage01_story_entity_reconciliation": stage01_reconciliation,
             "stage_output_materialization": materialized,
+            "typed_character_profile_reconciliation": typed_character_profile,
             "character_ownership_repair": {
                 "before": ownership_before,
                 "after": ownership_after,
@@ -141,6 +149,7 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
                 continue
             stage01 = result.get("stage01_story_entity_reconciliation") or {}
             materialized = result.get("stage_output_materialization") or {}
+            typed_character_profile = result.get("typed_character_profile_reconciliation") or {}
             cleanup = result.get("character_identity_cleanup") or {}
             appearance_materialization = result.get("character_appearance_materialization") or {}
             ownership = result.get("character_ownership_repair") or {}
@@ -148,6 +157,7 @@ class ProductionAuthoringAssetService(RefinedAuthoringAssetService):
             if (
                 bool(stage01.get("reconciled"))
                 or bool(materialized.get("materialized"))
+                or bool(typed_character_profile.get("updated_count"))
                 or bool(cleanup.get("changed"))
                 or bool(appearance_materialization.get("materialized"))
                 or ownership_changed

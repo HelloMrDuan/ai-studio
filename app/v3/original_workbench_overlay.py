@@ -19,9 +19,10 @@ async def original_workbench_page() -> HTMLResponse:
         '<script src="/v3-static/original-workbench-overlay.js"></script>',
         '<script src="/v3-static/project-delete-overlay.js"></script>',
         '<script src="/v3-static/authoring-continuity-overlay.js"></script>',
+        # Reference generation has exactly one DOM/state owner. Loading the old
+        # package/completion overlays as well made three scripts race on the same
+        # buttons and adoption handler, producing visible label/state flicker.
         '<script src="/v3-static/reference-generation-ux-overlay.js"></script>',
-        '<script src="/v3-static/character-reference-package-overlay.js"></script>',
-        '<script src="/v3-static/reference-flow-completion-overlay.js"></script>',
         '<script src="/v3-static/asset-authoring-overlay.js"></script>',
         '<script src="/v3-static/character-appearance-overlay.js"></script>',
         '<script src="/v3-static/shot-authoring-overlay.js"></script>',

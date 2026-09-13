@@ -111,6 +111,45 @@ class CharacterReferenceHardeningTests(unittest.TestCase):
         self.assertIn("story prop", result.negative_prompt)
         self.assertNotIn("male character", result.positive_prompt)
 
+    def test_costume_provider_prompt_locks_face_period_wardrobe_and_rejects_age_down(self) -> None:
+        contract = GenerationContract(
+            asset_id="costume-reference",
+            asset_version="1",
+            prompt="沈川服装定装参考",
+            visual_direction={
+                "world_style": "东方古代奇幻",
+                "culture": "古代中国文化语境",
+                "era": "古代",
+                "art_style": "电影级写实摄影",
+            },
+            visual_context={"reference_phase": "costume"},
+            identity_anchors=(
+                "性别：男性; 年龄：17岁; 发型：黑色长发束起; "
+                "服装：深蓝色古式长袍; 鞋履：黑色布靴"
+            ),
+        )
+        result = PromptCompiler().compile(
+            asset_kind="character",
+            asset_description=(
+                "17岁少年沈川，严格继承锁脸图身份；深蓝色古式长袍，黑色布靴，"
+                "单人全身正面中性站姿。"
+            ),
+            visual_direction=_direction(),
+            contract=contract,
+            reference=False,
+        )
+        self.assertIn("COSTUME FITTING IDENTITY LOCK", result.positive_prompt)
+        self.assertIn("bound FaceID image", result.positive_prompt)
+        self.assertIn("ANCIENT CHINESE WARDROBE ONLY", result.positive_prompt)
+        self.assertIn("深蓝色古式长袍", result.positive_prompt)
+        self.assertIn("tank top", result.negative_prompt)
+        self.assertIn("modern button-down shirt", result.negative_prompt)
+        self.assertIn("graphic print", result.negative_prompt)
+        self.assertIn("photography studio set", result.negative_prompt)
+        self.assertIn("visibly younger than confirmed age", result.negative_prompt)
+        self.assertIn("preteen", result.negative_prompt)
+        self.assertIn("child body proportions", result.negative_prompt)
+
     def test_runtime_contract_rebinds_public_dispatch_and_routes_face_to_zimage(self) -> None:
         async def original_llm(*args, **kwargs):
             return {}, "qwen3-32b"

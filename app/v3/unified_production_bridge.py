@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import secrets
+from pathlib import Path
 from typing import Any
 
 from app.services.media_generation_pipeline import MediaGenerationPipeline
@@ -24,6 +25,24 @@ class UnifiedProductionBridge(ProductionReadyLegacyBridge):
     generation.image.generate_candidate operation instead of falling back to the
     archived V2 workbench executor.
     """
+
+    def _asset_path(self, project_id: str, asset_id: str) -> Path:
+        """Resolve an adopted ProductionAsset, not only a material-library upload.
+
+        Reference stages intentionally consume images generated and adopted by
+        the production asset graph. Those files live under the platform data
+        directory but are not required to be copied into ``data/assets``. The
+        legacy material-library resolver rejects such files with
+        ``只能选择素材库中的文件``; ``resolve_data_url`` keeps the same data-dir
+        traversal protection while allowing legitimate project-owned assets.
+        """
+        url = self.legacy.director.production.asset_url(project_id, asset_id)
+        if not url:
+            raise ValueError("项目资产没有可用文件")
+        path = self.legacy.assets.resolve_data_url(url)
+        if not path.is_file() or path.stat().st_size <= 0:
+            raise FileNotFoundError(f"项目资产文件不存在：{asset_id}")
+        return path
 
     async def _execute_zimage_temporal_target(
         self,

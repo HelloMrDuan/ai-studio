@@ -27,6 +27,7 @@ _REFERENCE_ROLES = {
     "location_reference",
     "prop_reference",
 }
+_CHARACTER_HYBRID_PHASES = {"costume", "turnaround"}
 
 
 def _clean(value: Any) -> str:
@@ -37,10 +38,11 @@ class V3RuntimeModelContract:
     """Fail-closed V3 model routing.
 
     Text authoring/semantic calls are pinned to the required Qwen alias.
-    Pure text-to-image requests are pinned to the repository's real
-    Z-Image-Turbo workflow. Reference-conditioned requests are deliberately
-    kept on the configured SDXL FaceID/IP-Adapter workflow because the current
-    repository has no proven Z-Image identity/reference workflow.
+    Character reference-package rendering is pinned to Z-Image-Turbo for the
+    actual pixels. Adopted face anchors are applied afterwards by the production
+    worker's FaceFusion identity pass, so reference input no longer silently
+    swaps the renderer to an unrelated SDXL checkpoint. Other reference-aware
+    image domains may continue to use the configured SDXL/IP-Adapter provider.
     """
 
     def __init__(self, settings: Any, legacy_runtime: Any, bridge: Any) -> None:
@@ -64,18 +66,41 @@ class V3RuntimeModelContract:
         metadata = target.get("metadata") if isinstance(target.get("metadata"), dict) else {}
         role = _clean(target.get("asset_role")).lower()
         mode = _clean(routed.get("mode") or params.get("mode") or "txt2img").lower()
+        phase = _clean(params.get("reference_phase") or metadata.get("reference_phase")).lower()
         references = params.get("reference_asset_ids") or routed.get("reference_asset_ids") or []
         if not isinstance(references, (list, tuple)):
             references = []
         references = [_clean(value) for value in references if _clean(value)]
         is_reference_asset = bool(metadata.get("reference_asset")) or role in _REFERENCE_ROLES
+        is_character_package_stage = (
+            phase in _CHARACTER_HYBRID_PHASES
+            and role in {"character_costume_reference", "character_turnaround", "character_reference"}
+        )
+
+        if references and is_character_package_stage:
+            # The reference IDs remain attached for lineage/identity post-process,
+            # but the primary renderer is always the real Z-Image-Turbo workflow.
+            # This prevents character-package stages from silently switching to
+            # the legacy SDXL reference checkpoint.
+            params.update({
+                "model_key": ZIMAGE_TURBO_KEY,
+                "requested_model_key": ZIMAGE_TURBO_KEY,
+                "steps": 9,
+                "cfg": 1.0,
+                "sampler": "euler",
+                "scheduler": "simple",
+                "runtime_image_backend": "z_image_turbo_facefusion",
+                "runtime_image_backend_reason": "character_package_zimage_primary",
+                "runtime_identity_postprocess": "facefusion",
+            })
+            routed["params"] = params
+            return routed
 
         if references:
-            # Current identity/reference execution is a real SDXL FaceID/IP-Adapter
-            # graph. Do not label this as Z-Image until a compatible reference
-            # workflow is actually installed and validated.
-            params["runtime_image_backend"] = "sdxl_reference_faceid"
-            params["runtime_image_backend_reason"] = "identity_reference_required"
+            # Non-character-package references keep the explicit reference-aware
+            # provider until a domain-specific Z-Image control workflow exists.
+            params["runtime_image_backend"] = "sdxl_reference_ipadapter"
+            params["runtime_image_backend_reason"] = "non_character_reference_required"
             routed["params"] = params
             return routed
 
@@ -180,13 +205,15 @@ class V3RuntimeModelContract:
                 "sampler": "euler",
                 "scheduler": "simple",
             },
-            "image_reference": {
-                "backend": "sdxl_reference_faceid",
-                "policy": "explicit_reference_backend",
-                "reason": (
-                    "当前仓库的真实身份参考链使用 SDXL FaceID/IP-Adapter；"
-                    "未安装并验证兼容的 Z-Image identity/reference workflow，禁止伪装成 Z-Image。"
-                ),
+            "character_reference_package": {
+                "primary_renderer": ZIMAGE_TURBO_KEY,
+                "identity_postprocess": "facefusion",
+                "policy": "zimage_primary_facefusion_identity",
+                "phases": ["face_anchor", "costume", "turnaround"],
+            },
+            "image_reference_other_domains": {
+                "backend": "sdxl_reference_ipadapter",
+                "policy": "explicit_non_character_reference_backend",
             },
         }
 

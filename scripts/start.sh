@@ -5,6 +5,7 @@ ROOT=/root/autodl-tmp/ai-studio/platform-v2
 PY=/root/autodl-tmp/envs/ai-studio-platform-v2/bin/python
 LOG=/root/autodl-tmp/ai-studio/logs/xiaoduan-studio-v3.log
 PID=/root/autodl-tmp/ai-studio/logs/xiaoduan-studio-v3.pid
+TEMPORAL_PID=/root/autodl-tmp/ai-studio/logs/xiaoduan-temporal-worker.pid
 PORT=6008
 
 mkdir -p "$(dirname "$LOG")"
@@ -21,6 +22,26 @@ stop_pid() {
     sleep 0.2
   done
   kill -9 "$pid" 2>/dev/null || true
+}
+
+restart_temporal_worker() {
+  local old_worker
+  old_worker=$(cat "$TEMPORAL_PID" 2>/dev/null || true)
+  if [[ -n "${old_worker:-}" ]]; then
+    stop_pid "$old_worker"
+  fi
+  rm -f "$TEMPORAL_PID"
+
+  # Also stop an orphaned worker whose PID file was stale. A code pull must not
+  # leave the old Python process serving Temporal Activities from a prior commit.
+  while read -r stale_pid; do
+    [[ -n "${stale_pid:-}" ]] || continue
+    [[ "$stale_pid" == "$$" ]] && continue
+    stop_pid "$stale_pid"
+  done < <(pgrep -f "scripts/v3_temporal_worker\.py" 2>/dev/null || true)
+
+  echo "正在重启 V3 Temporal Worker（build=$BUILD_SHA）..."
+  bash scripts/start_temporal_worker.sh
 }
 
 # Stop the PID-file process first. Historically a stale uvicorn could survive
@@ -58,6 +79,11 @@ then
   exit 1
 fi
 
+# Web 与 Temporal Worker 必须来自同一个 commit。过去只重启 uvicorn，
+# 导致页面已经是新代码、后台 Activity 仍然运行旧代码，最终表现为
+# “Workflow execution failed”且难以复现。部署时强制一起重启。
+restart_temporal_worker
+
 : > "$LOG"
 echo "XIAODUAN_WEB_BOOT build_sha=$BUILD_SHA root=$ROOT port=$PORT" | tee -a "$LOG"
 XIAODUAN_BUILD_SHA="$BUILD_SHA" nohup "$PY" -m uvicorn app.main:app \
@@ -88,6 +114,7 @@ PYREADY
   then
     echo "xiaoduan映画 V3 已启动，PID：$NEW_PID"
     echo "BUILD_SHA：$BUILD_SHA"
+    echo "Temporal Worker：已按同一 BUILD 重启"
     echo "日志：$LOG"
     exit 0
   fi

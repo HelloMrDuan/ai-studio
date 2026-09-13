@@ -43,6 +43,7 @@ jobs:
           node --check app/v3/static/authoring-continuity-overlay.js &&
           node --check app/v3/static/reference-generation-ux-overlay.js &&
           node --check app/v3/static/character-reference-package-overlay.js &&
+          node --check app/v3/static/reference-flow-completion-overlay.js &&
           node --check app/v3/static/asset-authoring-overlay.js &&
           node --check app/v3/static/character-appearance-overlay.js &&
           node --check app/v3/static/shot-authoring-overlay.js &&
@@ -92,6 +93,7 @@ jobs:
           tests.test_v3_character_identity_cleanup
           tests.test_v3_character_appearances
           tests.test_v3_character_ownership_repair
+          tests.test_v3_character_visual_continuity
           tests.test_v3_shot_authoring
           tests.test_v3_shot_continuity_linker
           tests.test_v3_shot_refinement

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.v3.character_reference_package import CharacterReferencePackageBootstrap
+from app.v3.character_visual_continuity import install_character_visual_continuity
 
 
 def _clean(value: Any) -> str:
@@ -15,9 +16,14 @@ def install_character_package_integrity() -> dict[str, Any]:
     The package is a frozen downstream contract, not a progress marker. A planned
     or stale turnaround must never appear as a ready package component.
     """
+    visual_continuity = install_character_visual_continuity()
     current = CharacterReferencePackageBootstrap._reference_package
     if getattr(current, "_xiaoduan_package_integrity", False):
-        return {"installed": True, "policy": "all_components_ready_and_fresh"}
+        return {
+            "installed": True,
+            "policy": "all_components_ready_and_fresh",
+            "visual_continuity": visual_continuity,
+        }
     original = current
 
     def guarded(
@@ -56,7 +62,11 @@ def install_character_package_integrity() -> dict[str, Any]:
 
     setattr(guarded, "_xiaoduan_package_integrity", True)
     CharacterReferencePackageBootstrap._reference_package = guarded
-    return {"installed": True, "policy": "all_components_ready_and_fresh"}
+    return {
+        "installed": True,
+        "policy": "all_components_ready_and_fresh",
+        "visual_continuity": visual_continuity,
+    }
 
 
 __all__ = ["install_character_package_integrity"]

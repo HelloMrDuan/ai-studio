@@ -47,6 +47,31 @@ _PROP_TERMS = (
     ("pendant", "pendant"),
     ("weapon", "weapon"),
 )
+_MODERN_COSTUME_NEGATIVES = (
+    "modern clothing",
+    "contemporary clothing",
+    "modern fashion",
+    "streetwear",
+    "sportswear",
+    "tank top",
+    "sleeveless tank top",
+    "t-shirt",
+    "modern button-down shirt",
+    "dress shirt",
+    "business shirt",
+    "hoodie",
+    "jeans",
+    "modern sneakers",
+    "graphic shirt",
+    "logo print",
+    "graphic print",
+    "anchor logo",
+    "fashion photoshoot",
+    "clothing rack",
+    "wardrobe rack",
+    "camera equipment",
+    "photography studio set",
+)
 
 
 def _text(value: Any) -> str:
@@ -86,9 +111,6 @@ def _strict_face_facts(entity: dict[str, Any], limit: int = 14) -> list[str]:
         for segment in _atomic_segments(value):
             if not segment or _PLACEHOLDER.search(segment):
                 continue
-            # A true hair ornament can remain part of the hairstyle identity.
-            # Everything else that looks like costume/prop/scene state is cut,
-            # even if it shares a broad "stable identity" field with face facts.
             noisy = bool(_FACE_NOISE.search(segment))
             hair_ornament = bool(_HAIR_ORNAMENT.search(segment))
             if noisy and not hair_ornament:
@@ -143,9 +165,6 @@ def _strict_face_prompt(self: CharacterReferencePackageBootstrap, entity: dict[s
         else "性别呈现只服从上游明确事实。"
     )
 
-    # Positive prompt deliberately contains only things the image should show.
-    # Forbidden props/clothes live in the provider negative prompt; mentioning
-    # them here can strengthen exactly the unwanted token in diffusion models.
     return (
         f"角色「{name}」身份锁脸锚点。\n"
         f"{gender_line}\n"
@@ -200,6 +219,39 @@ def _source_prop_negatives(source: str) -> list[str]:
     return result
 
 
+def _confirmed_age_negative(source: str) -> list[str]:
+    """Prevent both age-up and age-down drift around the confirmed age.
+
+    The base compiler already guarded young characters against looking older but
+    did not reject a 16/17-year-old collapsing into a child. Costume generation
+    is especially vulnerable because the requested full-body framing reduces
+    face pixels, so explicitly reject child/preteen drift here.
+    """
+    match = re.search(r"(?<!\d)(\d{1,3})(?:\s*[-~—–至到]\s*(\d{1,3}))?\s*岁", source)
+    if match:
+        low = int(match.group(1))
+        high = int(match.group(2) or match.group(1))
+        if high <= 17 and low >= 13:
+            return [
+                "visibly younger than confirmed age",
+                "child",
+                "preteen",
+                "elementary-school-age appearance",
+                "childlike face",
+                "child body proportions",
+            ]
+    if re.search(r"少年|少女|teenager|teenage|adolescent", source, re.IGNORECASE):
+        return [
+            "visibly younger than confirmed teenage age",
+            "child",
+            "preteen",
+            "elementary-school-age appearance",
+            "childlike face",
+            "child body proportions",
+        ]
+    return []
+
+
 def _prepend(value: str, addition: str) -> str:
     value = _text(value).strip(",")
     addition = _text(addition).strip(",")
@@ -211,19 +263,20 @@ def _prepend(value: str, addition: str) -> str:
 
 
 def install_character_reference_hardening() -> dict[str, Any]:
-    """Harden the face-anchor boundary before any provider dispatch.
+    """Harden face, costume and turnaround references before provider dispatch.
 
-    The policy is intentionally phase-specific. It does not redesign the asset
-    system: ProductionAssetService, GenerationContract and the existing provider
-    path remain authoritative.
+    ProductionAssetService, GenerationContract and the existing provider path
+    remain authoritative. This policy only strengthens the phase contract that
+    reaches the image model so an adopted face anchor cannot silently become a
+    different age/person and an ancient wardrobe cannot drift into modern wear.
     """
     current_face = CharacterReferencePackageBootstrap._face_prompt
-    if not getattr(current_face, "_xiaoduan_face_hardening_v2", False):
-        setattr(_strict_face_prompt, "_xiaoduan_face_hardening_v2", True)
+    if not getattr(current_face, "_xiaoduan_face_hardening_v3", False):
+        setattr(_strict_face_prompt, "_xiaoduan_face_hardening_v3", True)
         CharacterReferencePackageBootstrap._face_prompt = _strict_face_prompt
 
     current_phase = media_pipeline_module._phase_anchor_text
-    if not getattr(current_phase, "_xiaoduan_face_hardening_v2", False):
+    if not getattr(current_phase, "_xiaoduan_face_hardening_v3", False):
         original_phase = current_phase
 
         def guarded_phase(text: str, phase: str) -> str:
@@ -231,11 +284,11 @@ def install_character_reference_hardening() -> dict[str, Any]:
                 return _strict_face_anchor_text(text)
             return original_phase(text, phase)
 
-        setattr(guarded_phase, "_xiaoduan_face_hardening_v2", True)
+        setattr(guarded_phase, "_xiaoduan_face_hardening_v3", True)
         media_pipeline_module._phase_anchor_text = guarded_phase
 
     current_compile = PromptCompiler.compile
-    if not getattr(current_compile, "_xiaoduan_face_hardening_v2", False):
+    if not getattr(current_compile, "_xiaoduan_reference_hardening_v3", False):
         original_compile = current_compile
 
         def guarded_compile(self: PromptCompiler, *args: Any, **kwargs: Any) -> CompiledPrompt:
@@ -245,7 +298,7 @@ def install_character_reference_hardening() -> dict[str, Any]:
             contract = kwargs.get("contract")
             visual_context = getattr(contract, "visual_context", {}) if contract is not None else {}
             phase = _text(visual_context.get("reference_phase") if isinstance(visual_context, dict) else "").lower()
-            if phase != "face_anchor":
+            if phase not in {"face_anchor", "costume", "turnaround"}:
                 return result
 
             anchor = naturalize_visual_anchor(getattr(contract, "identity_anchors", "")) if contract is not None else ""
@@ -257,42 +310,88 @@ def install_character_reference_hardening() -> dict[str, Any]:
                 direction = VisualDirection()
             ancient, chinese = _period_profile(direction)
 
-            positive = (
-                "FACE ANCHOR ISOLATION: one head-and-shoulders identity portrait; face, confirmed age, confirmed gender and confirmed hairstyle are the only identity priorities; "
-                "visible clothing is minimal, visually subordinate and period-compatible"
-            )
-            if ancient and chinese:
-                positive += "; use only a simple conservative ancient Chinese inner upper garment/cross-collar as unobtrusive portrait clothing"
-            elif ancient:
-                positive += "; use only a simple conservative period-compatible upper garment as unobtrusive portrait clothing"
+            if phase == "face_anchor":
+                positive = (
+                    "FACE ANCHOR ISOLATION: one head-and-shoulders identity portrait; face, confirmed age, confirmed gender and confirmed hairstyle are the only identity priorities; "
+                    "visible clothing is minimal, visually subordinate and period-compatible"
+                )
+                if ancient and chinese:
+                    positive += "; use only a simple conservative ancient Chinese inner upper garment/cross-collar as unobtrusive portrait clothing"
+                elif ancient:
+                    positive += "; use only a simple conservative period-compatible upper garment as unobtrusive portrait clothing"
 
-            negative_parts = [
-                "story prop",
-                "handheld prop",
-                "waist-hanging prop",
-                "weapon",
-                "full costume showcase",
-                "full body",
-                "action pose",
-                "cinematic scene background",
-                "modern fashion portrait",
-            ]
-            if ancient:
-                negative_parts.extend([
-                    "spaghetti straps",
-                    "sleeveless modern dress",
-                    "exposed-shoulder modern fashion",
-                    "contemporary evening dress",
-                    "modern studio fashion styling",
-                ])
-            negative_parts.extend(_source_prop_negatives(source))
+                negative_parts = [
+                    "story prop",
+                    "handheld prop",
+                    "waist-hanging prop",
+                    "weapon",
+                    "full costume showcase",
+                    "full body",
+                    "action pose",
+                    "cinematic scene background",
+                    "modern fashion portrait",
+                ]
+                if ancient:
+                    negative_parts.extend([
+                        "spaghetti straps",
+                        "sleeveless modern dress",
+                        "exposed-shoulder modern fashion",
+                        "contemporary evening dress",
+                        "modern studio fashion styling",
+                    ])
+                negative_parts.extend(_source_prop_negatives(source))
+            elif phase == "costume":
+                positive = (
+                    "COSTUME FITTING IDENTITY LOCK: use the bound FaceID image as the authoritative person; exact same face, same confirmed age, same gender, same hairstyle and same facial proportions; "
+                    "single person, full-body front view, neutral standing pose, head-to-feet visible; wardrobe text contract is authoritative for garment type, layers, color palette, footwear and fixed accessories"
+                )
+                if ancient and chinese:
+                    positive += (
+                        "; ANCIENT CHINESE WARDROBE ONLY: historically/period-compatible Chinese robe, hanfu or cross-collar silhouette exactly as confirmed by the character contract; traditional fabric layering and period footwear"
+                    )
+                elif ancient:
+                    positive += "; PERIOD WARDROBE ONLY: use only the confirmed historical clothing silhouette and period-compatible footwear"
+
+                negative_parts = [
+                    "different person",
+                    "identity drift",
+                    "face redesign",
+                    "hairstyle change",
+                    "age drift",
+                    "fashion photoshoot",
+                    "cinematic scene background",
+                    "other characters",
+                ]
+                negative_parts.extend(_confirmed_age_negative(source))
+                if ancient:
+                    negative_parts.extend(_MODERN_COSTUME_NEGATIVES)
+            else:
+                positive = (
+                    "TURNAROUND PACKAGE LOCK: preserve the exact FaceID identity and the exact adopted costume reference; same confirmed age, same gender, same face, same hairstyle, same clothing layers, same color palette, same footwear and fixed accessories in every view"
+                )
+                if ancient and chinese:
+                    positive += "; preserve the confirmed ancient Chinese wardrobe with zero modern-fashion substitution"
+                elif ancient:
+                    positive += "; preserve the confirmed period wardrobe with zero modern-fashion substitution"
+                negative_parts = [
+                    "different person between views",
+                    "identity drift",
+                    "face redesign",
+                    "hairstyle change",
+                    "age drift",
+                    "costume redesign",
+                    "clothing color drift",
+                ]
+                negative_parts.extend(_confirmed_age_negative(source))
+                if ancient:
+                    negative_parts.extend(_MODERN_COSTUME_NEGATIVES)
 
             return CompiledPrompt(
                 positive_prompt=_prepend(result.positive_prompt, positive),
                 negative_prompt=_prepend(result.negative_prompt, ", ".join(dict.fromkeys(negative_parts))),
             )
 
-        setattr(guarded_compile, "_xiaoduan_face_hardening_v2", True)
+        setattr(guarded_compile, "_xiaoduan_reference_hardening_v3", True)
         PromptCompiler.compile = guarded_compile
 
     return {
@@ -300,7 +399,9 @@ def install_character_reference_hardening() -> dict[str, Any]:
         "face_positive_policy": "affirmative_identity_only",
         "face_anchor_projection": "face_age_hair_only",
         "story_prop_policy": "negative_only_excluded_from_positive",
-        "period_clothing_policy": "neutral_period_compatible_portrait_only",
+        "period_clothing_policy": "strict_period_only_for_costume_and_turnaround",
+        "costume_identity_policy": "bound_faceid_is_authoritative",
+        "teen_age_policy": "reject_both_age_up_and_age_down_drift",
     }
 
 

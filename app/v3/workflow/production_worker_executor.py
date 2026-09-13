@@ -4,6 +4,7 @@ import httpx
 
 from app.config import Settings
 from app.v3.character_prompt_integration import install_character_prompt_integration
+from app.v3.character_reference_hardening import install_character_reference_hardening
 from app.v3.generation_executor import ComfyWorkflowBindingError, ReferenceAssetError
 from app.v3.provider_gateway import ProviderResolutionError
 from app.v3.reference_role_policy import install_reference_role_policy
@@ -26,6 +27,7 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
 
     def __init__(self, settings: Settings) -> None:
         install_character_prompt_integration()
+        install_character_reference_hardening()
         install_reference_role_policy()
         super().__init__(settings, visual=UnifiedImageDomainExecutor(settings))
 

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>xiaoduan映画 · Xiaoduan Studio V3</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #0b0d12; color: #eef1f7; }
+    header { padding: 28px 36px; border-bottom: 1px solid #242a36; background: #10141d; }
+    h1 { margin: 0; font-size: 28px; letter-spacing: .02em; }
+    header p { margin: 8px 0 0; color: #9aa6ba; }
+    main { padding: 28px 36px 60px; max-width: 1500px; margin: 0 auto; }
+    .grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+    .card { background: #121722; border: 1px solid #252c3a; border-radius: 14px; padding: 18px; }
+    .card h2 { margin: 0 0 14px; font-size: 17px; }
+    .metric { font-size: 28px; font-weight: 700; }
+    .muted { color: #96a2b5; }
+    .good { color: #78dba9; }
+    section { margin-top: 24px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 11px 10px; border-bottom: 1px solid #242a36; vertical-align: top; }
+    th { color: #9eabc0; font-weight: 600; }
+    code { color: #c6d4ff; }
+    .pill { display: inline-block; margin: 2px 4px 2px 0; padding: 3px 8px; border: 1px solid #364156; border-radius: 999px; color: #b9c7dd; font-size: 12px; }
+    .actions { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    select { min-width: 240px; min-height: 120px; background: #0d1119; color: #eef1f7; border: 1px solid #343c4d; border-radius: 9px; padding: 8px; }
+    button { background: #e8edf7; color: #121722; border: 0; border-radius: 9px; padding: 10px 16px; font-weight: 700; cursor: pointer; }
+    pre { background: #0b0f16; border: 1px solid #242a36; padding: 14px; border-radius: 10px; overflow: auto; min-height: 80px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>xiaoduan映画</h1>
+    <p>Xiaoduan Studio V3 · 专业 Skill、Continuity、Reference-first、Local/API 同级 Provider、Durable Workflow</p>
+  </header>
+  <main>
+    <div class="grid">
+      <div class="card"><h2>V3 状态</h2><div id="version" class="metric">...</div><div class="muted">独立于旧固定 Stage 路由</div></div>
+      <div class="card"><h2>专业 Skills</h2><div id="skillCount" class="metric">...</div><div class="muted">按任务动态编排</div></div>
+      <div class="card"><h2>模型 Providers</h2><div id="providerCount" class="metric">...</div><div class="muted">本地 / API 一等公民</div></div>
+      <div class="card"><h2>Silent Fallback</h2><div class="metric good">关闭</div><div class="muted">能力不满足时明确失败</div></div>
+    </div>
+
+    <section class="card">
+      <h2>Creative Plan</h2>
+      <div class="actions">
+        <select id="skillSelect" multiple></select>
+        <button id="buildPlan">生成动态计划</button>
+      </div>
+      <pre id="planOutput">选择一个或多个专业能力。不会强制执行固定 01→02→03→04。</pre>
+    </section>
+
+    <section class="card">
+      <h2>Skill Registry</h2>
+      <table><thead><tr><th>Skill</th><th>Domain</th><th>Capabilities</th><th>Dependencies</th></tr></thead><tbody id="skills"></tbody></table>
+    </section>
+
+    <section class="card">
+      <h2>Provider Registry</h2>
+      <table><thead><tr><th>Provider / Model</th><th>Transport</th><th>Capabilities</th><th>Endpoint</th></tr></thead><tbody id="providers"></tbody></table>
+    </section>
+  </main>
+<script>
+  const pill = text => `<span class="pill">${text}</span>`;
+  async function json(url, options) {
+    const response = await fetch(url, options);
+    const body = await response.json();
+    if (!response.ok) throw new Error(body.detail || JSON.stringify(body));
+    return body;
+  }
+  async function boot() {
+    const [health, skills, providers] = await Promise.all([
+      json('/api/v3/health'), json('/api/v3/skills'), json('/api/v3/providers')
+    ]);
+    document.querySelector('#version').textContent = health.version;
+    document.querySelector('#skillCount').textContent = skills.length;
+    document.querySelector('#providerCount').textContent = providers.length;
+    const select = document.querySelector('#skillSelect');
+    skills.forEach(s => {
+      select.insertAdjacentHTML('beforeend', `<option value="${s.skill_id}">${s.skill_id} · ${s.domain}</option>`);
+    });
+    document.querySelector('#skills').innerHTML = skills.map(s => `<tr><td><code>${s.skill_id}</code><br><span class="muted">${s.version}</span></td><td>${s.domain}</td><td>${s.required_capabilities.map(pill).join('')}</td><td>${(s.dependencies.length ? s.dependencies : ['—']).map(pill).join('')}</td></tr>`).join('');
+    document.querySelector('#providers').innerHTML = providers.map(p => `<tr><td><code>${p.provider_id}</code><br>${p.model_id}</td><td>${pill(p.transport)}</td><td>${p.capabilities.map(pill).join('')}</td><td>${p.base_url || '<span class="muted">internal</span>'}</td></tr>`).join('');
+  }
+  document.querySelector('#buildPlan').addEventListener('click', async () => {
+    const requested = Array.from(document.querySelector('#skillSelect').selectedOptions).map(o => o.value);
+    try {
+      const result = await json('/api/v3/plans', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({requested_skills:requested})});
+      document.querySelector('#planOutput').textContent = JSON.stringify(result, null, 2);
+    } catch (error) {
+      document.querySelector('#planOutput').textContent = String(error);
+    }
+  });
+  boot().catch(error => document.querySelector('#planOutput').textContent = `V3 启动失败: ${error}`);
+</script>
+</body>
+</html>

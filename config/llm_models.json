@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "default_model": "gemma-4-31b",
+  "default_model": "qwen3-32b-abliterated",
   "models": [
     {
       "id": "qwen3-32b-abliterated",

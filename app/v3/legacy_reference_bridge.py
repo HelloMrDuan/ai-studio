@@ -1,0 +1,268 @@
+from __future__ import annotations
+
+from typing import Any
+
+from app.config import Settings
+from app.v3.contracts import Capability
+from app.v3.legacy_candidate_bridge import LegacyCandidateV3Bridge
+from app.v3.provider_catalog import build_provider_registry
+from app.v3.canonical_reference_assets import CanonicalReferenceAssetBootstrap
+from app.v3.quality_policy import apply_smart_candidate_params, infer_quality_tier
+from app.v3.shot_authoring import ShotAuthoringService
+
+
+class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
+    """Resolve adopted reusable assets, smart quality and local shot revisions."""
+
+    def __init__(self, settings: Settings, legacy: Any) -> None:
+        super().__init__(settings, legacy)
+        self.providers = build_provider_registry(settings)
+        self.reference_bootstrap = CanonicalReferenceAssetBootstrap(
+            legacy,
+            submit_candidate=self.original_execute,
+        )
+        self.shot_authoring = ShotAuthoringService(settings, legacy)
+
+    def _formal_shot(self, project_id: str, target: dict[str, Any]) -> dict[str, Any]:
+        shot_id = self._shot_id(target)
+        loader = getattr(self.legacy, "_studio_formal_shot", None)
+        if shot_id and callable(loader):
+            try:
+                raw = loader(project_id, shot_id)
+                if isinstance(raw, dict):
+                    return dict(raw)
+            except Exception:
+                pass
+        metadata = target.get("metadata") if isinstance(target.get("metadata"), dict) else {}
+        return dict(metadata)
+
+    def _relevant_entity_ids(self, project_id: str, target: dict[str, Any]) -> set[str]:
+        result = {str(item) for item in target.get("entity_ids") or [] if str(item)}
+        formal = self._formal_shot(project_id, target)
+        for field in ("character_entity_ids", "prop_entity_ids"):
+            result.update(str(item) for item in formal.get(field) or [] if str(item))
+
+        scene_id = str(formal.get("scene_id") or (target.get("metadata") or {}).get("scene_id") or "").strip()
+        if scene_id:
+            continuity_path = self.settings.data_dir / "story_continuity" / f"{project_id}.json"
+            try:
+                import json
+                state = json.loads(continuity_path.read_text(encoding="utf-8"))
+                scene = next(
+                    (row for row in state.get("scenes") or [] if str(row.get("scene_id") or "").strip() == scene_id),
+                    {},
+                )
+                location_id = str(scene.get("location_entity_id") or "").strip()
+                if location_id:
+                    result.add(location_id)
+            except Exception:
+                pass
+        canonical = set()
+        for entity in self.legacy.director.production.list_entities(project_id):
+            entity_id = str(entity.get("entity_id") or "").strip()
+            kind = str(entity.get("entity_type") or "").strip().lower()
+            if entity_id in result and kind in {"character", "location", "prop"}:
+                canonical.add(entity_id)
+        return canonical
+
+    def _reference_limit(self) -> int:
+        selected = self.providers.resolve(
+            {Capability.image_generation, Capability.image_reference},
+            provider_id="local-comfyui-image",
+            model_id="configured-image-workflow",
+        )
+        return max(1, int(selected.spec.max_references or 1))
+
+    @staticmethod
+    def _role_rank(role: str) -> int:
+        return {
+            "character_face_anchor": 0,
+            "location_reference": 1,
+            "scene_reference": 1,
+            "prop_reference": 1,
+            "item_reference": 1,
+            "character_reference": 2,
+            "character_turnaround": 2,
+            "character_consistency": 2,
+            "character_costume_reference": 3,
+        }.get(role, 9)
+
+    def _candidate_reference_ids(self, project_id: str, target: dict[str, Any]) -> list[str]:
+        """Resolve references by semantic channel, not one-image-per-entity.
+
+        Character identity and character structure are separate evidence. The
+        first pass guarantees one core reference per relevant entity; the second
+        pass spends remaining provider budget on character structure/costume.
+        This follows the same discipline as the upstream asset/reference model:
+        immutable reference roles are explicit and ordered, rather than inferred
+        later by the provider executor.
+        """
+        relevant = self._relevant_entity_ids(project_id, target)
+        preferred_roles = {
+            "character_face_anchor", "character_reference", "character_turnaround",
+            "character_consistency", "character_costume_reference",
+            "location_reference", "scene_reference", "prop_reference", "item_reference",
+        }
+        entity_types = {
+            str(entity.get("entity_id") or "").strip(): str(entity.get("entity_type") or "").strip().lower()
+            for entity in self.legacy.director.production.list_entities(project_id)
+            if str(entity.get("entity_id") or "").strip()
+        }
+        rows: list[dict[str, Any]] = []
+        selections = {
+            row["character_id"]: row["appearance_version"]
+            for row in (target.get("metadata") or {}).get("character_appearances") or []
+        }
+        for item in self.legacy.director.production.list_assets(project_id, active_only=True):
+            if str(item.get("asset_type") or "").upper() != "IMAGE":
+                continue
+            if self._status_value(item.get("status")) != "ready":
+                continue
+            if self._status_value(item.get("dependency_state")) == "stale":
+                continue
+            role = str(item.get("asset_role") or "").strip()
+            if role not in preferred_roles:
+                continue
+            entities = {str(value) for value in item.get("entity_ids") or [] if str(value)}
+            context = (item.get("metadata") or {}).get("visual_context") or {}
+            if role.startswith("character_"):
+                version = context.get("appearance_version") or "v1"
+                if not any(selections.get(eid, "v1") == version for eid in entities & relevant):
+                    continue
+            if relevant and entities and not (relevant & entities):
+                continue
+            if relevant and not entities:
+                metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+                declared = str(metadata.get("reference_entity_id") or "").strip()
+                if declared and declared not in relevant:
+                    continue
+            rows.append(item)
+
+        rows.sort(
+            key=lambda item: (
+                0 if relevant & {str(v) for v in item.get("entity_ids") or [] if str(v)} else 1,
+                self._role_rank(str(item.get("asset_role") or "").strip()),
+                -int(item.get("version") or 0),
+                str(item.get("asset_id") or ""),
+            )
+        )
+        if not rows:
+            raise ValueError(
+                "当前镜头没有已采用的一致性参考图。可以不上传参考图：系统会批量生成缺失的角色、地点和道具参考图候选，采用后再生成分镜画面。"
+            )
+
+        by_entity: dict[str, list[dict[str, Any]]] = {}
+        unowned: list[dict[str, Any]] = []
+        for item in rows:
+            entities = {str(value) for value in item.get("entity_ids") or [] if str(value)}
+            matched = sorted(entities & relevant)
+            entity_id = matched[0] if matched else (sorted(entities)[0] if entities else "")
+            if entity_id:
+                by_entity.setdefault(entity_id, []).append(item)
+            else:
+                unowned.append(item)
+
+        limit = self._reference_limit()
+        selected_rows: list[dict[str, Any]] = []
+        selected_asset_ids: set[str] = set()
+
+        # Pass 1: one authoritative core reference for each relevant entity.
+        # Character face anchors win; if a legacy project lacks one, its adopted
+        # turnaround/reference is the compatibility fallback.
+        for entity_id in sorted(relevant):
+            candidates = by_entity.get(entity_id, [])
+            if not candidates:
+                continue
+            kind = entity_types.get(entity_id, "")
+            if kind == "character":
+                core = next(
+                    (item for item in candidates if str(item.get("asset_role") or "") == "character_face_anchor"),
+                    None,
+                ) or next(
+                    (
+                        item for item in candidates
+                        if str(item.get("asset_role") or "") in {"character_reference", "character_turnaround", "character_consistency"}
+                    ),
+                    candidates[0],
+                )
+            else:
+                core = candidates[0]
+            asset_id = str(core.get("asset_id") or "")
+            if asset_id and asset_id not in selected_asset_ids:
+                selected_rows.append(core)
+                selected_asset_ids.add(asset_id)
+            if len(selected_rows) >= limit:
+                break
+
+        # Pass 2: use remaining budget for structure/wardrobe references. This
+        # means a character can legitimately contribute both FaceID evidence and
+        # a separate full-body/turnaround image.
+        if len(selected_rows) < limit:
+            for item in rows:
+                asset_id = str(item.get("asset_id") or "")
+                if not asset_id or asset_id in selected_asset_ids:
+                    continue
+                selected_rows.append(item)
+                selected_asset_ids.add(asset_id)
+                if len(selected_rows) >= limit:
+                    break
+
+        refs: list[str] = []
+        for item in selected_rows:
+            asset_id = str(item.get("asset_id") or "")
+            path = self._asset_path(project_id, asset_id)
+            ref_id = f"legacy:{project_id}:{asset_id}"
+            entities = {str(value) for value in item.get("entity_ids") or [] if str(value)}
+            matched = sorted(entities & relevant)
+            entity_id = matched[0] if matched else (sorted(entities)[0] if entities else "")
+            role = str(item.get("asset_role") or "").strip()
+            self.references.import_file(
+                ref_id,
+                path,
+                entity_id=entity_id,
+                role=role,
+                entity_type=entity_types.get(entity_id, ""),
+            )
+            refs.append(ref_id)
+        return refs
+
+    async def execute_candidate(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        capability = str(payload.get("capability") or "").strip().lower()
+        target_asset_id = str(payload.get("target_asset_id") or "").strip()
+        next_payload = dict(payload)
+        if target_asset_id:
+            target = self.legacy.director.production.get_asset(project_id, target_asset_id)
+            if self._shot_id(target):
+                target = self.shot_authoring.bind_active_contract_to_target(project_id, target)
+                formal = self._formal_shot(project_id, target)
+                next_payload["params"] = apply_smart_candidate_params(
+                    payload.get("params") if isinstance(payload.get("params"), dict) else {},
+                    shot=formal,
+                    capability=capability,
+                )
+                next_payload.setdefault("metadata", {})
+                if isinstance(next_payload["metadata"], dict):
+                    next_payload["metadata"]["quality_tier"] = infer_quality_tier(formal)
+                    next_payload["metadata"]["quality_mode"] = "smart"
+
+                if capability == "image":
+                    try:
+                        self._candidate_reference_ids(project_id, target)
+                    except ValueError as missing:
+                        prepared = await self.reference_bootstrap.generate_missing(project_id)
+                        submitted = list(prepared.get("submitted_entity_ids") or [])
+                        waiting = list(prepared.get("waiting_adoption_entity_ids") or [])
+                        if submitted:
+                            raise ValueError(
+                                f"当前作品缺少已采用参考图，系统已批量开始生成 {len(submitted)} 个一致性参考候选。"
+                                "候选完成后统一预览并采用，再生成分镜画面。"
+                            ) from missing
+                        if waiting:
+                            raise ValueError(
+                                f"当前有 {len(waiting)} 个一致性参考候选等待采用。请先统一预览并采用，再生成分镜画面。"
+                            ) from missing
+                        raise
+        return await super().execute_candidate(project_id, next_payload)
+
+
+__all__ = ["ReferenceAwareLegacyCandidateV3Bridge"]

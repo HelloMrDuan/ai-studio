@@ -13,10 +13,10 @@ class Settings(BaseSettings):
     task_workers: int = 1
 
     gemma_base_url: str = "http://127.0.0.1:6006/v1"
-    gemma_model: str = "gemma"
+    gemma_model: str = "qwen3-32b"
     gemma_timeout_seconds: int = 300
     gemma_start_command: str = (
-        "bash /root/autodl-tmp/ai-studio/platform-v2/scripts/start_gemma.sh"
+        "bash /root/autodl-tmp/ai-studio/platform-v2/scripts/start_qwen_v3.sh"
     )
     gemma_stop_command: str = (
         "bash /root/autodl-tmp/ai-studio/platform-v2/scripts/stop_gemma.sh"

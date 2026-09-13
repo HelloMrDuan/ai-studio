@@ -5,9 +5,11 @@ import json
 import mimetypes
 import re
 import secrets
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from .asset_visual_binding import AssetVisualBinding
 
 
 ASSET_TYPES = {
@@ -35,6 +37,11 @@ def _clean(value: Any) -> str:
 
 def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _identity_key(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", _clean(value)).casefold()
+    return "".join(ch for ch in text if not ch.isspace() and ch not in "\u200b\u200c\u200d\ufeff\u2060")
 
 
 def _slug(value: str, default: str = "asset") -> str:
@@ -139,6 +146,113 @@ class ProductionAssetService:
     def get_graph(self, project_id: str) -> dict[str, Any]:
         return self.ensure_project(project_id)
 
+    def set_visual_direction(self, project_id: str, direction: dict[str, Any]) -> dict[str, Any]:
+        """Version project visual rules in the existing production graph."""
+        from .project_visual_context import merge_visual_direction
+        current = self.get_visual_direction(project_id)
+        value = merge_visual_direction(current, direction)
+        return self.create_text_asset(
+            project_id, stage="03", skill="visual-direction",
+            logical_key="studio:visual-direction", asset_role="project_visual_direction",
+            name="项目视觉方向", content=json.dumps(value, ensure_ascii=False, sort_keys=True),
+            asset_type="STRUCTURED_DATA", extension=".json", metadata={"visual_direction": value},
+        )
+
+    def get_visual_direction(self, project_id: str, direction_id: str = "") -> dict[str, Any]:
+        from .project_visual_context import create_visual_direction_context
+        graph = self.ensure_project(project_id)
+        direction_id = direction_id or self._active_asset_id(graph, "studio:visual-direction")
+        if not direction_id:
+            return create_visual_direction_context()
+        asset = graph["assets"].get(direction_id)
+        if not asset or asset.get("asset_role") != "project_visual_direction":
+            raise ValueError(f"项目视觉方向资产不存在：{direction_id}")
+        return _json_copy(asset["metadata"]["visual_direction"], {})
+
+    def _inherit_visual_context(self, graph: dict[str, Any], asset: dict[str, Any]) -> None:
+        metadata = asset.setdefault("metadata", {})
+        context = dict(metadata.get("visual_context") or {})
+        parent_contexts = [
+            (graph["assets"].get(pid, {}).get("metadata") or {}).get("visual_context") or {}
+            for pid in asset.get("parent_asset_ids") or []
+        ]
+        role = _clean(asset.get("asset_role"))
+        if role == "project_visual_direction":
+            metadata["visual_context"] = {"visual_direction_id": asset["asset_id"], "asset_identity_type": "", "appearance_version": ""}
+            return
+        kind = next((kind for kind in ("character", "location", "prop") if role.startswith(kind + "_")), "")
+        if role.startswith("scene_"):
+            kind = "location"
+        for key in ("visual_direction_id", "asset_identity_type", "appearance_version"):
+            values = {row[key] for row in parent_contexts if row.get(key)}
+            if key == "visual_direction_id" and len(values) > 1:
+                raise ValueError("上游资产包含不同版本的项目视觉方向，请先统一视觉上下文")
+            if not context.get(key) and len(values) == 1:
+                context[key] = next(iter(values))
+        context["visual_direction_id"] = context.get("visual_direction_id") or self._active_asset_id(graph, "studio:visual-direction")
+        context["asset_identity_type"] = kind or context.get("asset_identity_type", "")
+        appearance = _clean(metadata.get("appearance_id"))
+        context["appearance_version"] = (
+            ("v1" if appearance == "default" else appearance)
+            or context.get("appearance_version") or ("v1" if kind == "character" else "")
+        )
+        if context["asset_identity_type"] not in {"", "character", "location", "prop"}:
+            raise ValueError("asset_identity_type 必须为 character/location/prop")
+        context = {key: _clean(context.get(key)) for key in ("visual_direction_id", "asset_identity_type", "appearance_version")}
+        AssetVisualBinding().bind(asset, **context)
+        direction_id = context["visual_direction_id"]
+        if direction_id and role != "project_visual_direction":
+            if direction_id not in graph["assets"]:
+                raise ValueError(f"项目视觉方向资产不存在：{direction_id}")
+            if direction_id not in asset["parent_asset_ids"]:
+                asset["parent_asset_ids"].append(direction_id)
+
+    def ensure_visual_context(self, project_id: str, asset_id: str) -> dict[str, Any]:
+        graph = self.ensure_project(project_id)
+        asset = graph["assets"].get(asset_id)
+        if asset is None:
+            raise FileNotFoundError(asset_id)
+        before = _json_copy(asset, {})
+        self._inherit_visual_context(graph, asset)
+        if asset != before:
+            self._save(graph)
+        return asset
+
+    def bind_generation_contract(self, project_id: str, asset_id: str, contract_id: str) -> None:
+        graph = self.ensure_project(project_id)
+        contract = graph["assets"].get(contract_id)
+        if not contract or contract.get("asset_role") != "generation_contract":
+            raise ValueError("缺少正式生成合同")
+        target = graph["assets"][asset_id]
+        target["contract_artifact_id"] = contract_id
+        if contract_id not in target["parent_asset_ids"]:
+            target["parent_asset_ids"].append(contract_id)
+        self._save(graph)
+
+    @staticmethod
+    def _index_appearances(graph: dict[str, Any]) -> None:
+        """Rebuild an ID-only index over existing appearance/reference versions."""
+        for entity in graph["entities"].values():
+            if entity.get("entity_type") != "character":
+                continue
+            entity["character_id"] = entity["entity_id"]
+            versions: dict[str, dict[str, Any]] = {}
+            assets = [a for a in graph["assets"].values()
+                      if a.get("active") and a.get("status") == "ready"
+                      and a.get("dependency_state") != "stale"
+                      and entity["entity_id"] in (a.get("entity_ids") or [])]
+            for asset in sorted(assets, key=lambda a: a.get("asset_role") != "character_appearance"):
+                role = asset.get("asset_role", "")
+                if role not in {"character_appearance", "character_reference", "character_turnaround", "character_consistency"}:
+                    continue
+                version = (asset.get("metadata", {}).get("visual_context") or {}).get("appearance_version") or "v1"
+                row = versions.setdefault(version, {"version": version, "asset_id": "", "reference_assets": []})
+                if role == "character_appearance":
+                    row["asset_id"] = asset["asset_id"]
+                else:
+                    row["reference_assets"].append(asset["asset_id"])
+            entity["appearance_versions"] = list(versions.values())
+
     def _new_asset_id(self) -> str:
         return "ast_" + secrets.token_hex(10)
 
@@ -213,6 +327,75 @@ class ProductionAssetService:
         items.sort(key=lambda x: (_clean(x.get("entity_type")), _clean(x.get("name"))))
         return items
 
+    def _frozen_reusable_registry(
+        self,
+        graph: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Read the READY typed Story Bible as the reusable identity boundary."""
+        assets = [
+            item for item in (graph.get("assets") or {}).values()
+            if isinstance(item, dict)
+            and bool(item.get("active"))
+            and _clean(item.get("asset_role")) == "professional_story_bible"
+            and _clean(item.get("status")).lower() == "ready"
+            and _clean(item.get("dependency_state")).lower() != "stale"
+        ]
+        assets.sort(key=lambda item: (int(item.get("version") or 0), _clean(item.get("updated_at"))))
+        if not assets:
+            return None
+        asset = assets[-1]
+        storage = asset.get("storage") if isinstance(asset.get("storage"), dict) else {}
+        path_value = _clean(storage.get("path"))
+        path = Path(path_value) if path_value else None
+        if path is None or not path.is_file():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not isinstance(payload, dict) or _clean(payload.get("output_kind")) != "story_bible":
+            return None
+
+        bound_ids = {_clean(item) for item in asset.get("entity_ids") or [] if _clean(item)}
+        by_type: dict[str, dict[str, dict[str, Any]]] = {
+            "character": {}, "location": {}, "prop": {},
+        }
+        names: dict[str, set[str]] = {"character": set(), "location": set(), "prop": set()}
+        for kind, field in (
+            ("character", "characters"),
+            ("location", "locations"),
+            ("prop", "props"),
+        ):
+            for row in payload.get(field) or []:
+                if not isinstance(row, dict):
+                    continue
+                name = _clean(row.get("name"))
+                key = _identity_key(name)
+                if not key:
+                    continue
+                names[kind].add(key)
+                matches = [
+                    entity for entity in (graph.get("entities") or {}).values()
+                    if isinstance(entity, dict)
+                    and _clean(entity.get("entity_type")).lower() == kind
+                    and _identity_key(entity.get("name")) == key
+                ]
+                matches.sort(
+                    key=lambda entity: (
+                        1 if _clean(entity.get("entity_id")) in bound_ids else 0,
+                        1 if bool((entity.get("metadata") or {}).get("typed_professional_entity")) else 0,
+                        _clean(entity.get("created_at")),
+                    ),
+                    reverse=True,
+                )
+                if matches:
+                    by_type[kind][key] = matches[0]
+        return {
+            "asset_id": _clean(asset.get("asset_id")),
+            "by_type": by_type,
+            "names": names,
+        }
+
     def create_entity(
         self,
         project_id: str,
@@ -228,6 +411,40 @@ class ProductionAssetService:
         graph = self.ensure_project(project_id)
         etype = _clean(entity_type).lower() or "generic"
         ekey = _clean(logical_key) or f"{etype}:{_slug(name, 'entity')}"
+        frozen = self._frozen_reusable_registry(graph)
+        story_bible_writer = (
+            _clean(stage) == "01"
+            and _clean(skill) == "xiaoduan-story-bible"
+            and bool((metadata or {}).get("typed_professional_entity"))
+        )
+        if frozen is not None and etype in {"character", "location", "prop"} and not story_bible_writer:
+            identity = _identity_key(name)
+            canonical = frozen["by_type"][etype].get(identity)
+            if canonical is not None:
+                if metadata:
+                    canonical.setdefault("metadata", {}).update(_json_copy(metadata, {}))
+                if evidence:
+                    canonical.setdefault("evidence", []).append(_json_copy(evidence, {}))
+                canonical["updated_at"] = _utcnow()
+                self._save(graph)
+                return canonical
+            if identity not in frozen["names"][etype]:
+                requested_type = etype
+                requested_key = ekey
+                etype = "unresolved_reusable"
+                ekey = f"unresolved:{requested_type}:{_sha(identity)[:20]}"
+                authority = {
+                    "policy": "typed_story_bible_frozen_registry_v1",
+                    "resolution": "unresolved",
+                    "requested_entity_type": requested_type,
+                    "requested_name": _clean(name),
+                    "requested_logical_key": requested_key,
+                    "professional_story_bible_asset_id": frozen["asset_id"],
+                    "stage": _clean(stage),
+                    "skill": _clean(skill),
+                }
+                metadata = _json_copy(metadata or {}, {})
+                metadata["reusable_entity_authority"] = authority
         # Entity keys are stable: later extraction updates the same entity.
         for item in (graph.get("entities") or {}).values():
             if _clean(item.get("logical_key")) == ekey:
@@ -256,6 +473,7 @@ class ProductionAssetService:
             "updated_at": now,
         }
         graph["entities"][item["entity_id"]] = item
+        self._index_appearances(graph)
         self._save(graph)
         return item
 
@@ -269,6 +487,20 @@ class ProductionAssetService:
         item = (graph.get("entities") or {}).get(entity_id)
         if not isinstance(item, dict):
             raise FileNotFoundError(f"项目实体不存在：{entity_id}")
+        patch = _json_copy(patch, {})
+        frozen = self._frozen_reusable_registry(graph)
+        current_type = _clean(item.get("entity_type")).lower()
+        if frozen is not None and current_type in {"character", "location", "prop"} and "name" in patch:
+            requested_name = _clean(patch.get("name"))
+            canonical = frozen["by_type"][current_type].get(_identity_key(requested_name))
+            if canonical is None or _clean(canonical.get("entity_id")) != _clean(entity_id):
+                patch.pop("name", None)
+                item.setdefault("metadata", {})["reusable_identity_update_rejected"] = {
+                    "policy": "typed_story_bible_frozen_registry_v1",
+                    "requested_name": requested_name,
+                    "professional_story_bible_asset_id": frozen["asset_id"],
+                    "rejected_at": _utcnow(),
+                }
         for key in ("name", "stage", "skill"):
             if key in patch:
                 item[key] = _clean(patch.get(key))
@@ -284,6 +516,7 @@ class ProductionAssetService:
         return (max(versions) + 1 if versions else 1), _clean(logical.get("active_asset_id"))
 
     def _register_asset(self, graph: dict[str, Any], asset: dict[str, Any]) -> dict[str, Any]:
+        self._inherit_visual_context(graph, asset)
         asset_id = asset["asset_id"]
         logical_key = asset["logical_key"]
         previous_active = self._active_asset_id(graph, logical_key)
@@ -323,6 +556,7 @@ class ProductionAssetService:
             if ent is not None and asset_id not in ent.setdefault("asset_ids", []):
                 ent["asset_ids"].append(asset_id)
                 ent["updated_at"] = _utcnow()
+        self._index_appearances(graph)
         self._save(graph)
         return asset
 
@@ -398,7 +632,13 @@ class ProductionAssetService:
         current_id = self._active_asset_id(graph, logical_key)
         current = graph["assets"].get(current_id) if current_id else None
         if isinstance(current, dict) and _clean((current.get("metadata") or {}).get("content_sha256")) == content_hash:
-            return current
+            expected = {"asset_id": current_id, "asset_role": asset_role,
+                        "metadata": _json_copy(metadata or {}, {}), "parent_asset_ids": list(parent_asset_ids or [])}
+            self._inherit_visual_context(graph, expected)
+            if ((current.get("metadata") or {}).get("visual_context") == expected["metadata"]["visual_context"]
+                and set(current.get("parent_asset_ids") or []) == set(expected["parent_asset_ids"])
+                and _clean(current.get("contract_artifact_id")) == _clean(contract_artifact_id)):
+                return current
         version, _ = self._next_version(graph, logical_key)
         ext = extension if extension.startswith(".") else "." + extension
         if not re.fullmatch(r"\.[A-Za-z0-9]{1,8}", ext):
@@ -494,6 +734,7 @@ class ProductionAssetService:
         if _clean(task.get("error")):
             asset["metadata"]["task_error"] = _clean(task.get("error"))
         asset["updated_at"] = _utcnow()
+        self._index_appearances(graph)
         self._save(graph)
         return asset
 
@@ -691,6 +932,7 @@ class ProductionAssetService:
         asset["updated_at"] = _utcnow()
         logical["active_asset_id"] = asset_id
         graph["logical_assets"][logical_key] = logical
+        self._index_appearances(graph)
         self._save(graph)
         return asset
 
@@ -705,6 +947,7 @@ class ProductionAssetService:
         logical = graph["logical_assets"].get(_clean(asset.get("logical_key"))) or {}
         if _clean(logical.get("active_asset_id")) == asset_id:
             logical["active_asset_id"] = ""
+        self._index_appearances(graph)
         self._save(graph)
         return asset
 
@@ -881,6 +1124,7 @@ class ProductionAssetService:
             if not isinstance(raw, dict):
                 continue
             quote = _clean(raw.get("evidence_quote"))
+            source_evidence = _clean(raw.get("source_evidence")) or quote
             name = _clean(raw.get("name"))
             if not quote or quote not in content or not name:
                 continue
@@ -892,7 +1136,12 @@ class ProductionAssetService:
                 stage=stage,
                 skill=skill,
                 metadata=_json_copy(raw.get("metadata") or {}, {}),
-                evidence={"turn_id": turn_id, "evidence_quote": quote, "source_asset_id": turn_asset_id},
+                evidence={
+                    "turn_id": turn_id,
+                    "evidence_quote": source_evidence,
+                    "source_asset_id": _clean(raw.get("source_asset_id")) or turn_asset_id,
+                    "source_snapshot_sha256": _clean(raw.get("source_snapshot_sha256")),
+                },
             )
             result.append(entity)
         return result

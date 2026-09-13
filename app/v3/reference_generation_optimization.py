@@ -86,51 +86,57 @@ class ReferenceGenerationOptimizer:
         payload: dict[str, Any],
         target: dict[str, Any],
     ) -> dict[str, Any]:
-        """Normalize reference-only render sizes before the legacy provider validates them.
-
-        The mature image endpoint accepts the platform's canonical ratios. The
-        character face-anchor stage originally requested 4:5 (1024x1280), which
-        is rejected before ComfyUI runs. Keep the intended render purpose but map
-        it to a supported canonical canvas: square for the large face anchor and
-        4:3 for the turnaround sheet. The caller payload is not mutated.
-        """
+        """Normalize reference-only render sizes before the legacy provider validates them."""
         normalized = dict(payload)
         params = dict(payload.get("params") or {})
         metadata = target.get("metadata") if isinstance(target.get("metadata"), dict) else {}
         phase = _clean(params.get("reference_phase") or metadata.get("reference_phase")).lower()
 
         if phase == "face_anchor":
-            params.update({
-                "aspect_ratio": "1:1",
-                "width": 1024,
-                "height": 1024,
-            })
+            params.update({"aspect_ratio": "1:1", "width": 1024, "height": 1024})
         elif phase == "turnaround":
-            params.update({
-                "aspect_ratio": "4:3",
-                "width": 1536,
-                "height": 1152,
-            })
+            params.update({"aspect_ratio": "4:3", "width": 1536, "height": 1152})
 
         normalized["params"] = params
         return normalized
 
     def _sync_record_from_candidate(self, record: ReferenceSubmission) -> None:
+        """Sync only the candidate created for this exact submission.
+
+        A target can keep an older successful candidate while a new generation is
+        running or failed. Matching only target_asset_id caused the old candidate
+        to overwrite the new submission status, which produced impossible UI like
+        “候选已生成” together with the new run's error message.
+        """
+        if not record.candidate_id and record.status in _ACTIVE:
+            return
+
         sync = getattr(self.legacy, "_wb_sync_candidates", None)
         load = getattr(self.legacy, "_wb_load_candidates", None)
         try:
             rows = sync(record.project_id) if callable(sync) else load(record.project_id) if callable(load) else []
         except Exception:
             return
+
         candidates = [
             row for row in rows or []
             if _clean(row.get("target_asset_id")) == record.target_asset_id
+            and (
+                not record.candidate_id
+                or _clean(row.get("candidate_id")) == record.candidate_id
+            )
         ]
-        candidates.sort(key=lambda row: _clean(row.get("updated_at") or row.get("created_at")), reverse=True)
+        candidates.sort(
+            key=lambda row: _clean(row.get("updated_at") or row.get("created_at")),
+            reverse=True,
+        )
         if not candidates:
             return
+
         candidate = candidates[0]
-        record.candidate_id = _clean(candidate.get("candidate_id"))
+        candidate_id = _clean(candidate.get("candidate_id"))
+        if candidate_id:
+            record.candidate_id = candidate_id
         state = _clean(candidate.get("status")).lower()
         if state:
             record.status = state
@@ -144,6 +150,8 @@ class ReferenceGenerationOptimizer:
         error = _clean(candidate.get("error"))
         if error:
             record.error = error
+        elif state != "failed":
+            record.error = ""
         if state == "completed":
             record.progress = 100
             record.stage = "candidate_ready"
@@ -182,16 +190,23 @@ class ReferenceGenerationOptimizer:
                 started = time.monotonic()
                 response = await self.bridge.execute_candidate(project_id, payload)
                 elapsed_ms = int((time.monotonic() - started) * 1000)
+                if isinstance(response, dict):
+                    candidate = response.get("candidate")
+                    if isinstance(candidate, dict):
+                        candidate_id = _clean(candidate.get("candidate_id"))
+                        if candidate_id:
+                            record.candidate_id = candidate_id
                 record.stage = "provider_submitted"
                 record.message = "生成任务已提交，正在等待模型输出"
                 record.progress = max(record.progress, 5)
                 record.status = "queued"
                 record.updated_at = time.time()
                 logger.info(
-                    "REFERENCE_PROVIDER_SUBMITTED project_id=%s submission_id=%s target_asset_id=%s elapsed_ms=%s producer=%s",
+                    "REFERENCE_PROVIDER_SUBMITTED project_id=%s submission_id=%s target_asset_id=%s candidate_id=%s elapsed_ms=%s producer=%s",
                     project_id,
                     record.submission_id,
                     record.target_asset_id,
+                    record.candidate_id,
                     elapsed_ms,
                     _clean((response or {}).get("producer")) if isinstance(response, dict) else "",
                 )
@@ -286,7 +301,6 @@ class ReferenceGenerationOptimizer:
     def status(self, project_id: str) -> dict[str, Any]:
         now = time.time()
         rows: list[dict[str, Any]] = []
-        # Keep only recent diagnostics; durable candidate/task state remains in the existing stores.
         for submission_id, record in list(self._submissions.items()):
             if now - record.updated_at > 3600 and record.status not in _ACTIVE:
                 self._submissions.pop(submission_id, None)
@@ -310,8 +324,6 @@ class ReferenceGenerationOptimizer:
 
     def install(self) -> None:
         self.legacy.director_workbench_execute_candidate = self.execute_candidate
-        # The bridge's automatic missing-reference gate was created before this
-        # optimizer. Point it at the same non-blocking dispatcher as the UI route.
         if getattr(self.bridge, "reference_bootstrap", None) is not None:
             self.bridge.reference_bootstrap.submit_candidate = self.execute_candidate
 

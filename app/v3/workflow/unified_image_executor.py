@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import secrets
-from pathlib import Path
 from typing import Any
 
 from app.v3.contracts import Capability
@@ -12,14 +11,56 @@ from .contracts import StepActivityInput, StepActivityResult
 from .production_cached_executor import CachedMaterializedDomainExecutor
 
 
-class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
-    """One durable image operation for both txt2img and reference generation.
+_CHARACTER_PACKAGE_PHASES = {"costume", "turnaround"}
 
-    Reference-free requests resolve the explicit Z-Image provider. Requests with
-    references keep the proven SDXL FaceID/IP-Adapter provider. Both paths share
-    the same Temporal Activity, job store, materialization, candidate Resource
-    creation, retry semantics and content cache boundary.
+
+class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
+    """One durable image operation with an explicit renderer boundary.
+
+    Plain images and the staged character package are rendered by the repository's
+    real Z-Image-Turbo workflow. Character package reference IDs remain attached
+    as lineage/identity inputs, but they no longer cause the primary renderer to
+    silently switch to the legacy SDXL reference checkpoint. The production
+    worker applies the adopted face anchor after rendering through FaceFusion.
+
+    Other reference-aware domains still use the configured reference workflow
+    until they get a domain-specific Z-Image control implementation.
     """
+
+    @staticmethod
+    def _reference_phase(payload: dict[str, Any]) -> str:
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        return str(
+            metadata.get("reference_phase")
+            or payload.get("reference_phase")
+            or ""
+        ).strip().lower()
+
+    @classmethod
+    def _uses_zimage_primary(cls, payload: dict[str, Any], references: list[str]) -> bool:
+        if not references:
+            return True
+        return cls._reference_phase(payload) in _CHARACTER_PACKAGE_PHASES
+
+    def signature(self, project_id: str, operation: str, payload: dict[str, Any]) -> str | None:
+        """Fingerprint hybrid character renders as Z-Image, never as legacy SDXL.
+
+        Without this normalization an older SDXL character-package artifact can
+        be reused after deployment simply because the bridge still carries its
+        historical provider fields for compatibility.
+        """
+        if operation == "generation.image.generate_candidate":
+            references = self._strings(payload, "reference_ids", required=False)
+            if references and self._uses_zimage_primary(payload, references):
+                normalized = dict(payload)
+                normalized["provider_id"] = "local-zimage-image"
+                normalized["model_id"] = "z-image-turbo"
+                metadata = dict(normalized.get("metadata") or {})
+                metadata["runtime_image_backend"] = "z_image_turbo_facefusion"
+                metadata["identity_postprocess"] = "facefusion"
+                normalized["metadata"] = metadata
+                return super().signature(project_id, operation, normalized)
+        return super().signature(project_id, operation, payload)
 
     async def _image_generate_candidate(
         self,
@@ -27,20 +68,23 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
         payload: dict[str, Any],
     ) -> StepActivityResult:
         references = self._strings(payload, "reference_ids", required=False)
-        if references:
+        phase = self._reference_phase(payload)
+        use_zimage = self._uses_zimage_primary(payload, references)
+        if references and not use_zimage:
             return await super()._image_generate_candidate(input, payload)
 
+        hybrid_identity = bool(references) and phase in _CHARACTER_PACKAGE_PHASES
         job = self.jobs.get(input.project_id, input.step.idempotency_key)
         provider_id = str(job.get("provider_id") or "") if job else ""
         model_id = str(job.get("model_id") or "") if job else ""
         selected = self.base.providers.resolve(
             {Capability.image_generation},
-            provider_id=provider_id or self._optional(payload, "provider_id") or "local-zimage-image",
-            model_id=model_id or self._optional(payload, "model_id") or "z-image-turbo",
+            provider_id=provider_id or "local-zimage-image",
+            model_id=model_id or "z-image-turbo",
         )
         if selected.spec.provider_id != "local-zimage-image" or selected.spec.model_id != "z-image-turbo":
             raise ValueError(
-                "reference-free production image must resolve to local-zimage-image:z-image-turbo"
+                "Z-Image production render must resolve to local-zimage-image:z-image-turbo"
             )
         adapter = self.adapter_factory(selected.spec)
 
@@ -57,6 +101,7 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
             print(
                 "ZIMAGE_WORKER_INPUT "
                 f"project_id={input.project_id} workflow={input.workflow_id} step={input.step.step_id} "
+                f"phase={phase or 'plain'} refs={len(references)} hybrid_identity={hybrid_identity} "
                 f"cfg=1.0 size={width}x{height} "
                 f"positive={json.dumps(positive, ensure_ascii=False)} "
                 f"negative={json.dumps(negative, ensure_ascii=False)}",
@@ -79,7 +124,9 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
                     "prompt_id": str(queued["prompt_id"]),
                     "provider_id": selected.spec.provider_id,
                     "model_id": selected.spec.model_id,
-                    "reference_ids": [],
+                    "reference_ids": list(references),
+                    "reference_phase": phase,
+                    "identity_postprocess": "facefusion" if hybrid_identity else "",
                     "generation_params": {
                         "width": width,
                         "height": height,
@@ -131,7 +178,7 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
             payload,
             provider_id=selected.spec.provider_id,
             model_id=selected.spec.model_id,
-            reference_ids=[],
+            reference_ids=list(references),
             artifact_ref=artifact_ref,
             artifact_path=target,
             prompt_id=prompt_id,
@@ -150,7 +197,10 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
                 "bytes_written": str(bytes_written),
                 "resource_id": str(candidate.get("resource_id") or ""),
                 "logical_key": str(candidate.get("logical_key") or ""),
-                "reference_count": "0",
+                "reference_count": str(len(references)),
+                "reference_phase": phase,
+                "runtime_image_backend": "z_image_turbo_facefusion" if hybrid_identity else "z_image_turbo",
+                "identity_postprocess_required": "true" if hybrid_identity else "false",
                 "width": str(params.get("width") or ""),
                 "height": str(params.get("height") or ""),
                 "steps": "9",

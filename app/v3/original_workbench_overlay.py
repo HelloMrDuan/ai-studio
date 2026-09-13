@@ -19,9 +19,9 @@ async def original_workbench_page() -> HTMLResponse:
         '<script src="/v3-static/original-workbench-overlay.js"></script>',
         '<script src="/v3-static/project-delete-overlay.js"></script>',
         '<script src="/v3-static/authoring-continuity-overlay.js"></script>',
-        # Reference generation has exactly one DOM/state owner. Loading the old
-        # package/completion overlays as well made three scripts race on the same
-        # buttons and adoption handler, producing visible label/state flicker.
+        # Reference generation has exactly one action/state owner. The final
+        # stability overlay only reapplies canonical phase labels after the
+        # legacy authoring renderer rebuilds cards during its 4-second refresh.
         '<script src="/v3-static/reference-generation-ux-overlay.js"></script>',
         '<script src="/v3-static/asset-authoring-overlay.js"></script>',
         '<script src="/v3-static/character-appearance-overlay.js"></script>',
@@ -34,6 +34,7 @@ async def original_workbench_page() -> HTMLResponse:
         '<script src="/v3-static/stage-state-overlay.js"></script>',
         '<script src="/v3-static/story-elements-overlay.js"></script>',
         '<script src="/v3-static/workbench-status-localization.js"></script>',
+        '<script src="/v3-static/reference-ui-stability-overlay.js"></script>',
     ]
     missing = [marker for marker in markers if marker not in html]
     if missing:

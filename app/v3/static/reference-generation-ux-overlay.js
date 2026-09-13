@@ -81,9 +81,10 @@
 
   function phaseLabel(item) {
     const phase = String(item?.generation_phase || '').toLowerCase();
-    if (phase === 'face_anchor') return '第 1 阶段：先生成并确认锁脸锚点';
-    if (phase === 'turnaround') return '第 2 阶段：使用已采用锁脸图生成三视图';
-    if (phase === 'ready') return '角色参考资产已完成';
+    if (phase === 'face_anchor') return '第 1/3 阶段：锁定脸、年龄、发型与气质';
+    if (phase === 'costume') return '第 2/3 阶段：锁定服装、配色、鞋履、配饰与体型';
+    if (phase === 'turnaround') return '第 3/3 阶段：使用已采用锁脸图和定装图生成三视图';
+    if (phase === 'ready') return '角色参考资产包已完成';
     return '';
   }
 
@@ -94,6 +95,7 @@
     })[state] || state || '';
     const phase = String(item?.generation_phase || '').toLowerCase();
     if (phase === 'face_anchor' && base) return `锁脸图 · ${base}`;
+    if (phase === 'costume' && base) return `服装定装图 · ${base}`;
     if (phase === 'turnaround' && base) return `三视图 · ${base}`;
     return base;
   }
@@ -118,12 +120,19 @@
     for (const button of buttons) {
       const onclick = button.getAttribute('onclick') || '';
       if (onclick.includes('v3GenerateReference')) {
-        const label = p === 'face_anchor' ? '生成锁脸图' : p === 'turnaround' ? '生成三视图候选' : button.textContent;
+        const label = p === 'face_anchor' ? '生成锁脸图'
+          : p === 'costume' ? '生成服装定装图'
+          : p === 'turnaround' ? '生成三视图候选'
+          : p === 'ready' ? '重新生成参考资产'
+          : '生成候选';
         if (!button.disabled) button.textContent = label;
         button.dataset.v3ReferenceLabel = label;
       }
       if (onclick.includes('v3AdoptReference') && state === 'completed') {
-        button.textContent = p === 'face_anchor' ? '采用锁脸图并生成三视图' : '采用三视图';
+        button.textContent = p === 'face_anchor' ? '采用锁脸图并继续定装'
+          : p === 'costume' ? '采用定装图并继续三视图'
+          : p === 'turnaround' ? '采用三视图并完成资产包'
+          : '采用候选';
       }
     }
   }
@@ -192,8 +201,10 @@
       else if (status === 'failed') counts.failed++;
       else if (!item.ready) counts.missing++;
       if (!ACTIVE.has(status) && status !== 'failed') localPending.delete(String(item.entity_id || ''));
-      setButtonBusy(String(item.entity_id || ''), ACTIVE.has(status));
+      // Canonical phase/label is written first; busy-state rendering may only
+      // temporarily replace it with “任务提交中…”, never capture stale labels.
       patchPhase(card, item);
+      setButtonBusy(String(item.entity_id || ''), ACTIVE.has(status));
       patchLiveBlock(card, item, state);
     });
     patchSummary(refs, counts);
@@ -275,14 +286,6 @@
     schedule(50);
   }
 
-  function promptForEntity(entityId) {
-    const items = Array.isArray(lastRefs?.items) ? lastRefs.items : [];
-    const index = items.findIndex(item => String(item.entity_id || '') === String(entityId || ''));
-    if (index < 0) return '';
-    const card = document.querySelectorAll('.v3-ref-card')[index];
-    return String(card?.querySelector('.v3-ref-prompt')?.value || '').trim();
-  }
-
   function installActions() {
     window.v3GenerateReference = async (entityId, promptId, force) => {
       const projectId = pid();
@@ -290,7 +293,6 @@
       resetForProject(projectId);
       const prompt = String(document.getElementById(promptId)?.value || '').trim();
       localPending.set(String(entityId), Date.now());
-      setButtonBusy(String(entityId), true);
       if (lastRefs) enhance(lastRefs, {submissions:[]});
       startPoll();
       try {
@@ -298,7 +300,11 @@
           method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({force:Boolean(force), prompt, prompt_text:prompt}),
         });
         const phase = String(result?.generation_phase || '').toLowerCase();
-        notify(result?.already_pending ? '该参考图已经在生成中。' : phase === 'face_anchor' ? '锁脸锚点已开始生成，完成后先确认脸部。' : phase === 'turnaround' ? '已使用锁脸锚点开始生成三视图。' : '参考图任务已创建，后台生成中。');
+        notify(result?.already_pending ? '该参考图已经在生成中。'
+          : phase === 'face_anchor' ? '锁脸图已开始生成；完成后采用即可进入服装定装。'
+          : phase === 'costume' ? '服装定装图已开始生成；完成后采用即可进入三视图。'
+          : phase === 'turnaround' ? '三视图候选已开始生成。'
+          : '参考图任务已创建，后台生成中。');
       } catch (error) {
         localPending.delete(String(entityId));
         setButtonBusy(String(entityId), false);
@@ -313,13 +319,13 @@
       resetForProject(projectId);
       const button = [...document.querySelectorAll('#v3ReferencePanel button')].find(btn => btn.textContent.includes('自动生成缺失参考图'));
       if (button) { button.disabled = true; button.textContent = '正在批量提交…'; }
-      notify('正在创建缺失参考图任务；角色会先生成锁脸图。');
+      notify('正在创建缺失参考图任务；角色按锁脸 → 定装 → 三视图依次完成。');
       try {
         const result = await json(`/api/v3/studio/projects/${encodeURIComponent(projectId)}/references/generate-missing`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
         const submitted = result.submitted_entity_ids || [];
         submitted.forEach(id => localPending.set(String(id), Date.now()));
         const waiting = (result.waiting_adoption_entity_ids || []).length;
-        notify(submitted.length ? `已提交 ${submitted.length} 个任务；角色先锁脸，采用后自动进入三视图。` : waiting ? `已有 ${waiting} 个候选等待采用。` : '当前没有需要补生成的参考图。');
+        notify(submitted.length ? `已提交 ${submitted.length} 个任务；每一阶段完成后采用即可自动进入下一阶段。` : waiting ? `已有 ${waiting} 个候选等待采用。` : '当前没有需要补生成的参考图。');
         startPoll();
       } catch (error) {
         notify(error.message || String(error), true);
@@ -332,26 +338,37 @@
     window.v3AdoptReference = async candidateId => {
       const projectId = pid();
       if (!projectId || !candidateId) return;
-      const item = (lastRefs?.items || []).find(row => String(row?.candidate?.candidate_id || '') === String(candidateId));
-      const entityId = String(item?.entity_id || '');
-      const phase = String(item?.generation_phase || '').toLowerCase();
-      const prompt = entityId ? promptForEntity(entityId) : '';
+      // Always read a fresh phase before confirming so adoption cannot execute a
+      // stale transition after a previous card refresh.
       try {
+        const before = await json(`/api/v3/studio/projects/${encodeURIComponent(projectId)}/references`);
+        const item = (before?.items || []).find(row => String(row?.candidate?.candidate_id || '') === String(candidateId));
+        if (!item) throw new Error('找不到当前候选所属阶段，请刷新后重试。');
+        const entityId = String(item.entity_id || '');
+        const phase = String(item.generation_phase || '').toLowerCase();
+
         await json(`/api/director/workbench/projects/${encodeURIComponent(projectId)}/candidates/${encodeURIComponent(candidateId)}/confirm`, {
           method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({output_index:0}),
         });
-        if (phase === 'face_anchor' && entityId) {
-          notify('锁脸图已采用，正在用这张脸继续生成三视图…');
+
+        if ((phase === 'face_anchor' || phase === 'costume') && entityId) {
+          const nextName = phase === 'face_anchor' ? '服装定装图' : '三视图';
+          notify(`${phase === 'face_anchor' ? '锁脸图' : '服装定装图'}已采用，正在进入${nextName}生成…`);
+          // Do not carry the previous stage textarea into the next phase. The
+          // backend owns the phase-specific prompt contract.
           await json(`/api/v3/studio/projects/${encodeURIComponent(projectId)}/references/${encodeURIComponent(entityId)}/generate`, {
-            method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({force:false, prompt, prompt_text:prompt}),
+            method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({force:false}),
           });
           localPending.set(entityId, Date.now());
           startPoll();
+        } else if (phase === 'turnaround') {
+          notify('三视图已采用，角色参考资产包已完成。');
         } else {
           notify('一致性参考图已采用，后续镜头会使用这个正式版本。');
         }
+
         await syncTerminalCards(projectId);
-        enhance(lastRefs || {items:[]}, {submissions:[]});
+        await refreshUx(true);
         if (localPending.size) startPoll();
       } catch (error) {
         notify(error.message || String(error), true);

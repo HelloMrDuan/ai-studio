@@ -12,6 +12,7 @@ from app.services.comfyui import (
     ZIMAGE_TURBO_VAE,
 )
 from app.v3.runtime_model_contract import V3RuntimeModelContract
+from app.v3.workflow.unified_image_executor import UnifiedImageDomainExecutor
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -53,7 +54,7 @@ class V3RuntimeModelContractTests(unittest.TestCase):
         self.assertEqual(routed["params"]["scheduler"], "simple")
         self.assertEqual(routed["params"]["runtime_image_backend"], ZIMAGE_TURBO_KEY)
 
-    def test_reference_conditioned_generation_is_not_falsely_labelled_zimage(self) -> None:
+    def test_costume_reference_uses_zimage_primary_plus_facefusion_identity(self) -> None:
         target = {
             "asset_role": "character_costume_reference",
             "metadata": {"reference_asset": True, "reference_phase": "costume"},
@@ -69,9 +70,70 @@ class V3RuntimeModelContractTests(unittest.TestCase):
             },
         }
         routed = V3RuntimeModelContract.route_image_payload(target, original)
-        self.assertEqual(routed["params"]["model_key"], "smart")
-        self.assertEqual(routed["params"]["runtime_image_backend"], "sdxl_reference_faceid")
-        self.assertEqual(routed["params"]["runtime_image_backend_reason"], "identity_reference_required")
+        params = routed["params"]
+        self.assertEqual(params["model_key"], ZIMAGE_TURBO_KEY)
+        self.assertEqual(params["requested_model_key"], ZIMAGE_TURBO_KEY)
+        self.assertEqual(params["steps"], 9)
+        self.assertEqual(params["cfg"], 1.0)
+        self.assertEqual(params["sampler"], "euler")
+        self.assertEqual(params["scheduler"], "simple")
+        self.assertEqual(params["runtime_image_backend"], "z_image_turbo_facefusion")
+        self.assertEqual(params["runtime_identity_postprocess"], "facefusion")
+        self.assertTrue(
+            UnifiedImageDomainExecutor._uses_zimage_primary(
+                {"metadata": {"reference_phase": "costume"}}, ["face-anchor:p:a"]
+            )
+        )
+
+    def test_turnaround_with_two_lineage_refs_still_uses_zimage_primary(self) -> None:
+        target = {
+            "asset_role": "character_turnaround",
+            "metadata": {"reference_asset": True, "reference_phase": "turnaround"},
+        }
+        original = {
+            "capability": "image",
+            "mode": "reference_img2img",
+            "target_asset_id": "ast_turnaround",
+            "params": {
+                "reference_phase": "turnaround",
+                "reference_asset_ids": ["ast_face", "ast_costume"],
+            },
+        }
+        routed = V3RuntimeModelContract.route_image_payload(target, original)
+        self.assertEqual(routed["params"]["runtime_image_backend"], "z_image_turbo_facefusion")
+        self.assertEqual(routed["params"]["runtime_identity_postprocess"], "facefusion")
+        self.assertTrue(
+            UnifiedImageDomainExecutor._uses_zimage_primary(
+                {"metadata": {"reference_phase": "turnaround"}},
+                ["face-anchor:p:a", "face-anchor:p:b"],
+            )
+        )
+
+    def test_non_character_reference_domain_does_not_claim_zimage_reference_support(self) -> None:
+        target = {
+            "asset_role": "location_reference",
+            "metadata": {"reference_asset": True, "reference_phase": "location"},
+        }
+        original = {
+            "capability": "image",
+            "mode": "reference_img2img",
+            "target_asset_id": "ast_location",
+            "params": {
+                "reference_phase": "location",
+                "reference_asset_ids": ["ast_location_ref"],
+            },
+        }
+        routed = V3RuntimeModelContract.route_image_payload(target, original)
+        self.assertEqual(routed["params"]["runtime_image_backend"], "sdxl_reference_ipadapter")
+        self.assertEqual(
+            routed["params"]["runtime_image_backend_reason"],
+            "non_character_reference_required",
+        )
+        self.assertFalse(
+            UnifiedImageDomainExecutor._uses_zimage_primary(
+                {"metadata": {"reference_phase": "location"}}, ["location:p:a"]
+            )
+        )
 
     def test_zimage_workflow_uses_expected_real_model_components(self) -> None:
         workflow = json.loads((ROOT / "workflows" / "z_image_turbo_api.json").read_text(encoding="utf-8"))

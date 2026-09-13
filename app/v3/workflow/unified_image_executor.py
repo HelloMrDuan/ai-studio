@@ -43,23 +43,19 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
         return cls._reference_phase(payload) in _CHARACTER_PACKAGE_PHASES
 
     def signature(self, project_id: str, operation: str, payload: dict[str, Any]) -> str | None:
-        """Fingerprint hybrid character renders as Z-Image, never as legacy SDXL.
+        """Do not cache a character-package artifact before FaceFusion finishes.
 
-        Without this normalization an older SDXL character-package artifact can
-        be reused after deployment simply because the bridge still carries its
-        historical provider fields for compatibility.
+        CachedMaterializedDomainExecutor writes its cache record immediately after
+        the primary renderer returns. Hybrid character generation has a second
+        mandatory identity stage, so caching at that boundary could persist a
+        half-finished Z-Image artifact and later bypass FaceFusion entirely. Until
+        the cache owns the whole two-stage transaction, hybrid requests deliberately
+        bypass cross-task reuse.
         """
         if operation == "generation.image.generate_candidate":
             references = self._strings(payload, "reference_ids", required=False)
             if references and self._uses_zimage_primary(payload, references):
-                normalized = dict(payload)
-                normalized["provider_id"] = "local-zimage-image"
-                normalized["model_id"] = "z-image-turbo"
-                metadata = dict(normalized.get("metadata") or {})
-                metadata["runtime_image_backend"] = "z_image_turbo_facefusion"
-                metadata["identity_postprocess"] = "facefusion"
-                normalized["metadata"] = metadata
-                return super().signature(project_id, operation, normalized)
+                return None
         return super().signature(project_id, operation, payload)
 
     async def _image_generate_candidate(

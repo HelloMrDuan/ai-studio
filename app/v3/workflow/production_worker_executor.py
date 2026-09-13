@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 
 import httpx
+from PIL import Image
 
 from app.config import Settings
 from app.models import GPUOwner
@@ -107,40 +108,102 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
             / input.project_id
             / input.step.idempotency_key
         )
+        log_tail: list[str] = []
 
         async def log(line: str) -> None:
+            text = str(line or "").strip()
+            if text:
+                log_tail.append(text)
+                if len(log_tail) > 80:
+                    del log_tail[:-80]
             print(
                 "FACEFUSION_IDENTITY "
                 f"project_id={input.project_id} workflow={input.workflow_id} "
-                f"step={input.step.step_id} phase={phase} face_ref={face.reference_id} {line}",
+                f"step={input.step.step_id} phase={phase} face_ref={face.reference_id} {text}",
                 flush=True,
             )
 
-        # FullPipelineExecutor releases the ComfyUI lease before this method runs.
-        # The same orchestrator can therefore safely reclaim VRAM for FaceFusion.
-        async with self.gpu.use(GPUOwner.facefusion):
-            processed = await self.facefusion.run(
+        async def run_swap(
+            target: Path,
+            destination: Path,
+            *,
+            model: str,
+            pixel_boost: str,
+        ) -> Path:
+            return await self.facefusion.run(
                 processor="face_swapper",
                 source_path=face.path,
-                target_path=artifact_path,
-                output_dir=output_dir,
+                target_path=target,
+                output_dir=destination,
                 params={
                     "face_selector_mode": "many" if phase == "turnaround" else "one",
                     "face_mask_types": ["box"],
                     "output_quality": 95,
-                    "face_swapper_model": "hyperswap_1a_256",
-                    "face_swapper_pixel_boost": "512x512",
+                    "face_swapper_model": model,
+                    "face_swapper_pixel_boost": pixel_boost,
                     "face_swapper_weight": 1.0,
                 },
                 log=log,
             )
 
+        # FullPipelineExecutor releases the ComfyUI lease before this method runs.
+        # The same orchestrator can therefore safely reclaim VRAM for FaceFusion.
+        async with self.gpu.use(GPUOwner.facefusion):
+            try:
+                processed = await run_swap(
+                    artifact_path,
+                    output_dir,
+                    model="hyperswap_1a_256",
+                    pixel_boost="512x512",
+                )
+            except RuntimeError as first_error:
+                # A full-body costume render can leave a small face in the native
+                # canvas. FaceFusion may then exit with code 1 even though Z-Image
+                # produced a valid candidate. Retry once on a 2x detection canvas
+                # and a conservative inswapper model, then restore original size.
+                await log(f"首次身份锁定失败，启用小脸兼容重试：{first_error}")
+                retry_dir = output_dir / "small-face-retry"
+                retry_dir.mkdir(parents=True, exist_ok=True)
+                retry_target = retry_dir / "target-upscaled.png"
+                with Image.open(artifact_path) as image:
+                    original_size = image.size
+                    width, height = original_size
+                    upscale = image.convert("RGB").resize(
+                        (width * 2, height * 2),
+                        Image.Resampling.LANCZOS,
+                    )
+                    upscale.save(retry_target)
+                try:
+                    retry_processed = await run_swap(
+                        retry_target,
+                        retry_dir / "facefusion",
+                        model="inswapper_128_fp16",
+                        pixel_boost="1024x1024",
+                    )
+                    normalized = output_dir / "result.png"
+                    with Image.open(retry_processed) as retry_image:
+                        retry_image.convert("RGB").resize(
+                            original_size,
+                            Image.Resampling.LANCZOS,
+                        ).save(normalized)
+                    processed = normalized
+                    await log("小脸兼容重试成功")
+                except RuntimeError as second_error:
+                    detail = " | ".join(log_tail[-24:])
+                    raise RuntimeError(
+                        "FaceFusion 身份锁定两次失败；"
+                        f"首次={first_error}；重试={second_error}；日志尾部={detail}"
+                    ) from second_error
+
         if not processed.is_file() or processed.stat().st_size <= 0:
             raise RuntimeError("FaceFusion 身份锁定没有产生有效图片")
         if processed.suffix.lower() != artifact_path.suffix.lower():
-            raise RuntimeError(
-                f"FaceFusion 输出格式变化：{processed.suffix} -> {artifact_path.suffix}，拒绝覆盖错误扩展名"
-            )
+            # Z-Image normally materializes PNG. If an environment emits JPEG,
+            # normalize the post-processed bytes back to that exact extension.
+            converted = output_dir / f"result-normalized{artifact_path.suffix.lower()}"
+            with Image.open(processed) as image:
+                image.convert("RGB").save(converted)
+            processed = converted
         temp = artifact_path.with_name(f".{artifact_path.name}.facefusion.tmp{artifact_path.suffix}")
         shutil.copy2(processed, temp)
         temp.replace(artifact_path)

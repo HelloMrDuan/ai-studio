@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 
 from app.config import Settings
@@ -11,7 +12,9 @@ from app.services.comfyui import (
     ZIMAGE_TURBO_UNET,
     ZIMAGE_TURBO_VAE,
 )
+from app.v3.generation_executor import ReferenceAsset
 from app.v3.runtime_model_contract import V3RuntimeModelContract
+from app.v3.workflow.production_worker_executor import ProductionWorkerExecutor
 from app.v3.workflow.unified_image_executor import UnifiedImageDomainExecutor
 
 
@@ -108,6 +111,28 @@ class V3RuntimeModelContractTests(unittest.TestCase):
                 ["face-anchor:p:a", "face-anchor:p:b"],
             )
         )
+
+    def test_identity_postprocess_selects_face_anchor_not_costume_reference(self) -> None:
+        costume = ReferenceAsset(
+            "costume:p:a", Path("costume.png"), "costume-sha", "image/png",
+            "char-a", "character_costume_reference", "character",
+        )
+        face = ReferenceAsset(
+            "face-anchor:p:a", Path("face.png"), "face-sha", "image/png",
+            "char-a", "character_face_anchor", "character",
+        )
+        records = {costume.reference_id: costume, face.reference_id: face}
+        worker = ProductionWorkerExecutor.__new__(ProductionWorkerExecutor)
+        worker.visual = SimpleNamespace(
+            base=SimpleNamespace(
+                references=SimpleNamespace(resolve=lambda ref: records[ref])
+            )
+        )
+        selected = worker._face_identity_reference(
+            {"reference_ids": [costume.reference_id, face.reference_id]}
+        )
+        self.assertEqual(selected.reference_id, face.reference_id)
+        self.assertEqual(selected.role, "character_face_anchor")
 
     def test_non_character_reference_domain_does_not_claim_zimage_reference_support(self) -> None:
         target = {

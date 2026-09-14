@@ -1,0 +1,17 @@
+{
+  "1": {"class_type": "LoadImage", "inputs": {"image": ""}},
+  "2": {"class_type": "VAEEncode", "inputs": {"pixels": ["1", 0], "vae": ["4", 0]}},
+  "3": {"class_type": "UNETLoader", "inputs": {"unet_name": "z_image_turbo_bf16.safetensors", "weight_dtype": "default"}},
+  "4": {"class_type": "VAELoader", "inputs": {"vae_name": "zimage_ae.safetensors"}},
+  "5": {"class_type": "CLIPLoader", "inputs": {"clip_name": "zimage_qwen_3_4b.safetensors", "type": "lumina2", "device": "default"}},
+  "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["5", 0]}},
+  "7": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["5", 0]}},
+  "8": {"class_type": "CLIPTextEncode", "inputs": {"text": "", "clip": ["5", 0]}},
+  "9": {"class_type": "KSampler", "inputs": {"seed": 1, "steps": 9, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 0.95, "model": ["3", 0], "positive": ["6", 0], "negative": ["8", 0], "latent_image": ["2", 0]}},
+  "10": {"class_type": "KSampler", "inputs": {"seed": 2, "steps": 9, "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 0.85, "model": ["3", 0], "positive": ["7", 0], "negative": ["8", 0], "latent_image": ["2", 0]}},
+  "11": {"class_type": "VAEDecode", "inputs": {"samples": ["9", 0], "vae": ["4", 0]}},
+  "12": {"class_type": "VAEDecode", "inputs": {"samples": ["10", 0], "vae": ["4", 0]}},
+  "13": {"class_type": "ImageStitch", "inputs": {"image1": ["1", 0], "image2": ["11", 0], "direction": "right", "match_image_size": true, "spacing_width": 0, "spacing_color": "white"}},
+  "14": {"class_type": "ImageStitch", "inputs": {"image1": ["13", 0], "image2": ["12", 0], "direction": "right", "match_image_size": true, "spacing_width": 0, "spacing_color": "white"}},
+  "15": {"class_type": "SaveImage", "inputs": {"filename_prefix": "Xiaoduan/ZImageTurbo/Turnaround", "images": ["14", 0]}}
+}

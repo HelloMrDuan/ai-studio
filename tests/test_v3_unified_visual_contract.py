@@ -107,13 +107,12 @@ def test_character_package_is_not_published_before_turnaround_adoption() -> None
     assert result == {}
 
 
-def test_zimage_provider_is_explicit_and_cannot_accept_references(tmp_path: Path) -> None:
+def test_zimage_provider_explicitly_supports_character_package_references(tmp_path: Path) -> None:
     specs = platform_provider_specs(Settings(data_dir=tmp_path))
     zimage = next(spec for spec in specs if spec.provider_id == "local-zimage-image")
     assert zimage.model_id == "z-image-turbo"
-    assert zimage.capabilities == {Capability.image_generation}
-    assert Capability.image_reference not in zimage.capabilities
-    assert zimage.metadata["reference_mode"] == "none"
+    assert zimage.capabilities == {Capability.image_generation, Capability.image_reference}
+    assert zimage.metadata["reference_mode"] == "character_package"
     assert zimage.metadata["prompt_contract"] == "provider_ready_frozen"
     assert str(zimage.metadata["workflow_path"]).endswith("workflows/z_image_turbo_api.json")
 

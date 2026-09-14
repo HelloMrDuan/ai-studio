@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     )
     facefusion_task_timeout_seconds: int = 1800
     facefusion_stop_command: str = "pkill -f '[f]acefusion.py (headless-run|job-run|batch-run)' || true"
+    identity_runtime_python: Path = Path(
+        "/root/autodl-tmp/envs/ai-studio-comfy/bin/python"
+    )
+    character_identity_pass_threshold: float = 0.90
 
     gpu_device_id: int = 0
     gpu_min_free_mb: int = 8000

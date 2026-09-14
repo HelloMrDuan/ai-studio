@@ -17,6 +17,7 @@ from app.v3.generation_executor import ReferenceAsset
 from app.v3.runtime_model_contract import V3RuntimeModelContract
 from app.v3.workflow.production_worker_executor import ProductionWorkerExecutor
 from app.v3.workflow.unified_image_executor import UnifiedImageDomainExecutor
+from app.v3.zimage_temporal_executor import compile_zimage_turnaround_workflow
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,16 +114,30 @@ class V3RuntimeModelContractTests(unittest.TestCase):
             )
         )
 
-    def test_turnaround_is_blocked_until_real_costume_image_control_exists(self) -> None:
-        executor = UnifiedImageDomainExecutor.__new__(UnifiedImageDomainExecutor)
-        with self.assertRaisesRegex(ValueError, "TURNAROUND_IMAGE_CONTROL_UNAVAILABLE"):
-            asyncio.run(executor._image_generate_candidate(
-                SimpleNamespace(),
-                {
-                    "reference_ids": ["face-anchor:p:a", "costume:p:a"],
-                    "metadata": {"reference_phase": "turnaround"},
-                },
-            ))
+    def test_turnaround_compiles_adopted_front_plus_generated_side_and_back(self) -> None:
+        workflow = json.loads(
+            (ROOT / "workflows" / "z_image_turbo_turnaround_api.json").read_text(encoding="utf-8")
+        )
+        compiled = compile_zimage_turnaround_workflow(
+            workflow,
+            adopted_costume_name="xiaoduan-v3/adopted-costume.png",
+            positive_prompt=(
+                "STRICT VISUAL AGE: 17岁, stable_profile.阶段正式设定: "
+                "17岁的少年，身穿深蓝色古式长袍。; 4-panel character turnaround sheet"
+            ),
+            negative_prompt="costume drift",
+            seed=101,
+            filename_prefix="test/turnaround",
+        )
+        self.assertEqual(compiled["1"]["inputs"]["image"], "xiaoduan-v3/adopted-costume.png")
+        self.assertEqual(compiled["9"]["inputs"]["denoise"], 0.95)
+        self.assertEqual(compiled["10"]["inputs"]["denoise"], 0.85)
+        self.assertIn("90-degree side profile", compiled["6"]["inputs"]["text"])
+        self.assertIn("180-degree rear view", compiled["7"]["inputs"]["text"])
+        self.assertNotIn("4-panel", compiled["6"]["inputs"]["text"])
+        self.assertNotIn("turnaround sheet", compiled["7"]["inputs"]["text"])
+        self.assertEqual(compiled["13"]["inputs"]["image1"], ["1", 0])
+        self.assertEqual(compiled["15"]["inputs"]["images"], ["14", 0])
 
     def test_identity_postprocess_selects_face_anchor_not_costume_reference(self) -> None:
         costume = ReferenceAsset(

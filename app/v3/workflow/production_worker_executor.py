@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import shutil
 from pathlib import Path
 
@@ -11,6 +13,7 @@ from app.models import GPUOwner
 from app.services.facefusion import FaceFusionService
 from app.v3.character_prompt_integration import install_character_prompt_integration
 from app.v3.character_reference_hardening import install_character_reference_hardening
+from app.v3.audit.identity import IdentityAuditPolicy, IdentityAuditDecision, evaluate_identity_similarity
 from app.v3.generation_executor import ComfyWorkflowBindingError, ReferenceAsset, ReferenceAssetError
 from app.v3.provider_gateway import ProviderResolutionError
 from app.v3.reference_role_policy import install_reference_role_policy
@@ -82,6 +85,40 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
             "角色定装/三视图缺少已采用的 character_face_anchor，拒绝把服装图当作身份脸参考"
         )
 
+    async def _identity_tool(
+        self,
+        script_name: str,
+        *arguments: Path,
+        result_json: Path,
+        log,
+    ) -> dict:
+        script = Path(__file__).resolve().parents[3] / "scripts" / script_name
+        python = Path(self.settings.identity_runtime_python)
+        if not python.is_file() or not script.is_file():
+            raise RuntimeError(f"身份质量工具不可用：python={python} script={script}")
+        process = await asyncio.create_subprocess_exec(
+            str(python), str(script), *[str(value) for value in arguments],
+            "--result-json", str(result_json),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(), timeout=float(self.settings.facefusion_task_timeout_seconds)
+            )
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            raise RuntimeError(f"身份质量工具超时：{script_name}")
+        detail = (stdout + stderr).decode("utf-8", errors="replace").strip()
+        if detail:
+            await log(f"{script_name}: {detail[-3000:]}")
+        if process.returncode != 0 or not result_json.is_file():
+            raise RuntimeError(
+                f"身份质量工具失败：{script_name} returncode={process.returncode} detail={detail[-3000:]}"
+            )
+        return json.loads(result_json.read_text(encoding="utf-8"))
+
     async def _apply_character_identity(
         self,
         input: StepActivityInput,
@@ -136,7 +173,7 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
                 target_path=target,
                 output_dir=destination,
                 params={
-                    "face_selector_mode": "many" if phase == "turnaround" else "one",
+                    "face_selector_mode": "one",
                     "face_mask_types": ["box"],
                     "output_quality": 95,
                     "face_swapper_model": model,
@@ -146,54 +183,95 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
                 log=log,
             )
 
-        # FullPipelineExecutor releases the ComfyUI lease before this method runs.
-        # The same orchestrator can therefore safely reclaim VRAM for FaceFusion.
-        async with self.gpu.use(GPUOwner.facefusion):
+        async def swap_with_small_face_retry(target: Path, destination: Path) -> Path:
             try:
-                processed = await run_swap(
-                    artifact_path,
-                    output_dir,
-                    model="hyperswap_1a_256",
-                    pixel_boost="512x512",
+                return await run_swap(
+                    target, destination,
+                    model="hyperswap_1a_256", pixel_boost="512x512",
                 )
             except RuntimeError as first_error:
-                # A full-body costume render can leave a small face in the native
-                # canvas. FaceFusion may then exit with code 1 even though Z-Image
-                # produced a valid candidate. Retry once on a 2x detection canvas
-                # and a conservative inswapper model, then restore original size.
                 await log(f"首次身份锁定失败，启用小脸兼容重试：{first_error}")
-                retry_dir = output_dir / "small-face-retry"
+                retry_dir = destination / "small-face-retry"
                 retry_dir.mkdir(parents=True, exist_ok=True)
                 retry_target = retry_dir / "target-upscaled.png"
-                with Image.open(artifact_path) as image:
+                with Image.open(target) as image:
                     original_size = image.size
-                    width, height = original_size
-                    upscale = image.convert("RGB").resize(
-                        (width * 2, height * 2),
-                        Image.Resampling.LANCZOS,
-                    )
-                    upscale.save(retry_target)
+                    image.convert("RGB").resize(
+                        (image.width * 2, image.height * 2), Image.Resampling.LANCZOS,
+                    ).save(retry_target)
                 try:
                     retry_processed = await run_swap(
-                        retry_target,
-                        retry_dir / "facefusion",
-                        model="inswapper_128_fp16",
-                        pixel_boost="1024x1024",
+                        retry_target, retry_dir / "facefusion",
+                        model="inswapper_128_fp16", pixel_boost="1024x1024",
                     )
-                    normalized = output_dir / "result.png"
-                    with Image.open(retry_processed) as retry_image:
-                        retry_image.convert("RGB").resize(
-                            original_size,
-                            Image.Resampling.LANCZOS,
-                        ).save(normalized)
-                    processed = normalized
-                    await log("小脸兼容重试成功")
                 except RuntimeError as second_error:
                     detail = " | ".join(log_tail[-24:])
                     raise RuntimeError(
                         "FaceFusion 身份锁定两次失败；"
                         f"首次={first_error}；重试={second_error}；日志尾部={detail}"
                     ) from second_error
+                normalized = retry_dir / "result-normalized.png"
+                with Image.open(retry_processed) as retry_image:
+                    retry_image.convert("RGB").resize(
+                        original_size, Image.Resampling.LANCZOS,
+                    ).save(normalized)
+                await log("小脸兼容重试成功")
+                return normalized
+
+        # FullPipelineExecutor releases the ComfyUI lease before this method runs.
+        # The same orchestrator can therefore safely reclaim VRAM for FaceFusion.
+        async with self.gpu.use(GPUOwner.facefusion):
+            if phase == "turnaround":
+                panels_dir = output_dir / "panels"
+                panels_dir.mkdir(parents=True, exist_ok=True)
+                with Image.open(artifact_path) as sheet:
+                    sheet = sheet.convert("RGB")
+                    panel_width = sheet.width // 3
+                    panels = [
+                        sheet.crop((index * panel_width, 0, (index + 1) * panel_width, sheet.height))
+                        for index in range(3)
+                    ]
+                panel_paths: list[Path] = []
+                for index, panel in enumerate(panels):
+                    path = panels_dir / f"panel-{index}.png"
+                    panel.save(path)
+                    panel_paths.append(path)
+                locked_front = await swap_with_small_face_retry(panel_paths[0], panels_dir / "front")
+                locked_side = await swap_with_small_face_retry(panel_paths[1], panels_dir / "side")
+                with Image.open(locked_front) as front, Image.open(locked_side) as side, Image.open(panel_paths[2]) as back:
+                    combined = Image.new("RGB", (panel_width * 3, panels[0].height), "white")
+                    combined.paste(front.convert("RGB"), (0, 0))
+                    combined.paste(side.convert("RGB"), (panel_width, 0))
+                    combined.paste(back.convert("RGB"), (panel_width * 2, 0))
+                    processed = output_dir / "facefusion-turnaround.png"
+                    combined.save(processed)
+            else:
+                processed = await swap_with_small_face_retry(artifact_path, output_dir)
+
+            restored = output_dir / "identity-restored.png"
+            await self._identity_tool(
+                "v3_face_identity_restore.py", face.path, processed, restored,
+                result_json=output_dir / "identity-restore.json", log=log,
+            )
+            audit_payload = await self._identity_tool(
+                "v3_identity_score.py", face.path, restored,
+                result_json=output_dir / "identity-audit.json", log=log,
+            )
+            audit = evaluate_identity_similarity(
+                float(audit_payload["cosine_similarity"]),
+                policy=IdentityAuditPolicy(
+                    policy_id="character-reference-buffalo-l-v1",
+                    recognition_model=str(audit_payload["recognition_model"]),
+                    pass_threshold=float(self.settings.character_identity_pass_threshold),
+                    fail_threshold=0.80,
+                ),
+            )
+            if audit.decision != IdentityAuditDecision.pass_:
+                raise RuntimeError(
+                    "角色身份相似度未达到生产门槛："
+                    f"score={audit.cosine_similarity:.6f} threshold={audit.pass_threshold:.2f}"
+                )
+            processed = restored
 
         if not processed.is_file() or processed.stat().st_size <= 0:
             raise RuntimeError("FaceFusion 身份锁定没有产生有效图片")
@@ -216,6 +294,8 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
                 "identity_postprocess": "facefusion",
                 "identity_postprocess_required": "false",
                 "identity_reference_id": face.reference_id,
+                "identity_similarity": f"{audit.cosine_similarity:.6f}",
+                "identity_audit_policy": audit.policy_id,
                 "reference_phase": phase,
                 "artifact_path": str(artifact_path),
                 "bytes_written": str(artifact_path.stat().st_size),

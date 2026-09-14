@@ -5,6 +5,7 @@ import secrets
 from typing import Any
 
 from app.v3.contracts import Capability
+from app.v3.generation_executor import ReferenceAsset, ReferenceAssetError
 from app.v3.zimage_temporal_executor import ZImageTemporalExecutor
 
 from .contracts import StepActivityInput, StepActivityResult
@@ -42,6 +43,16 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
             return True
         return cls._reference_phase(payload) in _CHARACTER_PACKAGE_PHASES
 
+    def _costume_reference(self, references: list[str]) -> ReferenceAsset:
+        for reference_id in references:
+            asset = self.base.references.resolve(reference_id)
+            role = str(asset.role or "").strip().lower()
+            if role in {"character_costume_reference", "character_costume", "costume_reference"}:
+                return asset
+        raise ReferenceAssetError(
+            "角色三视图缺少已采用的 character_costume_reference 图像条件"
+        )
+
     def signature(self, project_id: str, operation: str, payload: dict[str, Any]) -> str | None:
         """Do not cache a character-package artifact before FaceFusion finishes.
 
@@ -65,8 +76,6 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
     ) -> StepActivityResult:
         references = self._strings(payload, "reference_ids", required=False)
         phase = self._reference_phase(payload)
-        if phase == "turnaround":
-            raise ValueError("TURNAROUND_IMAGE_CONTROL_UNAVAILABLE: 当前 Z-Image workflow 没有定装图图像条件控制，禁止以纯文字生成生产三视图")
         use_zimage = self._uses_zimage_primary(payload, references)
         if references and not use_zimage:
             return await super()._image_generate_candidate(input, payload)
@@ -96,6 +105,12 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
                 seed = secrets.randbelow(2**63 - 1)
             width = int(payload.get("width") or 1024)
             height = int(payload.get("height") or 1024)
+            if phase == "costume":
+                # A square full-body render made the face too small for stable
+                # identity post-processing. This portrait canvas was verified on
+                # the real Z-Image workflow and keeps the full costume plus a
+                # materially larger face region.
+                width, height = max(width, 1536), max(height, 2048)
             print(
                 "ZIMAGE_WORKER_INPUT "
                 f"project_id={input.project_id} workflow={input.workflow_id} step={input.step.step_id} "
@@ -105,14 +120,26 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
                 f"negative={json.dumps(negative, ensure_ascii=False)}",
                 flush=True,
             )
-            queued = await ZImageTemporalExecutor(selected.spec, adapter).queue(
-                positive_prompt=positive,
-                negative_prompt=negative,
-                width=width,
-                height=height,
-                seed=seed,
-                filename_prefix=f"Xiaoduan/ZImageTurbo/{input.step.idempotency_key}",
-            )
+            zimage = ZImageTemporalExecutor(selected.spec, adapter)
+            if phase == "turnaround":
+                costume = self._costume_reference(references)
+                queued = await zimage.queue_turnaround(
+                    adopted_costume_path=costume.path,
+                    positive_prompt=positive,
+                    negative_prompt=negative,
+                    seed=seed,
+                    filename_prefix=f"Xiaoduan/ZImageTurbo/{input.step.idempotency_key}",
+                )
+                width, height = 3072, 1024
+            else:
+                queued = await zimage.queue(
+                    positive_prompt=positive,
+                    negative_prompt=negative,
+                    width=width,
+                    height=height,
+                    seed=seed,
+                    filename_prefix=f"Xiaoduan/ZImageTurbo/{input.step.idempotency_key}",
+                )
             job = self.jobs.put(
                 input.project_id,
                 input.step.idempotency_key,
@@ -135,6 +162,7 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
                         "scheduler": "simple",
                         "positive_prompt": positive,
                         "negative_prompt": negative,
+                        "image_conditioning": "adopted_costume_front_side_back" if phase == "turnaround" else "",
                     },
                 },
             )

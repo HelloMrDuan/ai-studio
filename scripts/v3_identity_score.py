@@ -10,6 +10,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Measure V3 character identity cosine similarity with InsightFace.")
     parser.add_argument("reference", type=Path)
     parser.add_argument("candidate", type=Path)
+    parser.add_argument("--result-json", type=Path)
     parser.add_argument(
         "--insightface-root",
         type=Path,
@@ -32,10 +33,12 @@ def main() -> int:
     )
     app.prepare(ctx_id=0, det_size=(640, 640))
 
-    def largest_face(path: Path):
+    def largest_face(path: Path, *, first_panel: bool = False):
         image = cv2.imread(str(path))
         if image is None:
             raise SystemExit(f"cannot read image: {path}")
+        if first_panel and image.shape[1] / image.shape[0] > 2.2:
+            image = image[:, : image.shape[1] // 3]
         faces = app.get(image)
         if not faces:
             raise SystemExit(f"no face detected: {path}")
@@ -45,7 +48,7 @@ def main() -> int:
         )
 
     reference_face = largest_face(args.reference)
-    candidate_face = largest_face(args.candidate)
+    candidate_face = largest_face(args.candidate, first_panel=True)
     score = float(np.dot(reference_face.normed_embedding, candidate_face.normed_embedding))
 
     payload = {
@@ -56,7 +59,11 @@ def main() -> int:
         "reference_face_bbox": [float(x) for x in reference_face.bbox.tolist()],
         "candidate_face_bbox": [float(x) for x in candidate_face.bbox.tolist()],
     }
-    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    rendered = json.dumps(payload, ensure_ascii=False, indent=2)
+    if args.result_json:
+        args.result_json.write_text(rendered + "\n", encoding="utf-8")
+    else:
+        print(rendered)
     return 0
 
 

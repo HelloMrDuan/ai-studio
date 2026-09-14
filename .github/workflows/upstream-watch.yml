@@ -1,0 +1,25 @@
+name: Upstream Watch
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 2 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check waoowaoo and MoneyPrinterTurbo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/upstream/check_updates.py --output upstream-watch-report.json
+      - name: Upload report
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-watch-report
+          path: upstream-watch-report.json
+          retention-days: 30

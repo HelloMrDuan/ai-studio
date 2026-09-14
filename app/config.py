@@ -13,10 +13,10 @@ class Settings(BaseSettings):
     task_workers: int = 1
 
     gemma_base_url: str = "http://127.0.0.1:6006/v1"
-    gemma_model: str = "gemma"
+    gemma_model: str = "qwen3-32b"
     gemma_timeout_seconds: int = 300
     gemma_start_command: str = (
-        "bash /root/autodl-tmp/ai-studio/platform-v2/scripts/start_gemma.sh"
+        "bash /root/autodl-tmp/ai-studio/platform-v2/scripts/start_qwen_v3.sh"
     )
     gemma_stop_command: str = (
         "bash /root/autodl-tmp/ai-studio/platform-v2/scripts/stop_gemma.sh"
@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     )
     facefusion_task_timeout_seconds: int = 1800
     facefusion_stop_command: str = "pkill -f '[f]acefusion.py (headless-run|job-run|batch-run)' || true"
+    identity_runtime_python: Path = Path(
+        "/root/autodl-tmp/envs/ai-studio-comfy/bin/python"
+    )
+    character_identity_pass_threshold: float = 0.90
 
     gpu_device_id: int = 0
     gpu_min_free_mb: int = 8000

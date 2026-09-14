@@ -1,0 +1,137 @@
+name: V3 Verify
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches:
+      - refactor/xiaoduan-studio-v3
+
+permissions:
+  contents: read
+
+jobs:
+  python-v3:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+      - name: Compile V3 modules
+        run: >-
+          python -m compileall -q
+          app/main.py app/legacy_snapshot.py app/services/production_skills.py app/v3
+          scripts/upstream/check_updates.py
+          scripts/v3_faceid_prepare.py
+          scripts/v3_identity_score.py
+          scripts/v3_multi_reference_acceptance.py
+          scripts/configure_comfy_reference_profile.py
+          scripts/v3_temporal_worker.py
+          scripts/v3_temporal_acceptance.py
+          scripts/v3_temporal_e2e.py
+          scripts/v3_temporal_visual_e2e.py
+          scripts/v3_temporal_h3_resume.py
+      - name: Check original workbench overlay syntax
+        run: >-
+          node --check app/v3/static/original-workbench-overlay.js &&
+          node --check app/v3/static/project-delete-overlay.js &&
+          node --check app/v3/static/authoring-continuity-overlay.js &&
+          node --check app/v3/static/reference-generation-ux-overlay.js &&
+          node --check app/v3/static/character-reference-package-overlay.js &&
+          node --check app/v3/static/reference-flow-completion-overlay.js &&
+          node --check app/v3/static/asset-authoring-overlay.js &&
+          node --check app/v3/static/character-appearance-overlay.js &&
+          node --check app/v3/static/shot-authoring-overlay.js &&
+          node --check app/v3/static/quality-refine-overlay.js &&
+          node --check app/v3/static/bgm-prefetch-overlay.js &&
+          node --check app/v3/static/asset-explorer-overlay.js &&
+          node --check app/v3/static/single-pass-stage-overlay.js &&
+          node --check app/v3/static/stage-progress-overlay.js &&
+          node --check app/v3/static/stage-state-overlay.js &&
+          node --check app/v3/static/story-elements-overlay.js &&
+          node --check app/v3/static/workbench-status-localization.js
+      - name: Run V3 tests
+        run: >-
+          python -m unittest -v
+          tests.test_v3_foundation
+          tests.test_v3_resource_store
+          tests.test_v3_provider_catalog
+          tests.test_v3_workflow_contracts
+          tests.test_v3_domain_executor
+          tests.test_v3_materialized_generation
+          tests.test_v3_web_workflow
+          tests.test_v3_full_pipeline
+          tests.test_v3_original_workbench_bridge
+          tests.test_v3_project_management
+          tests.test_v3_reference_assets
+          tests.test_v3_reference_gating
+          tests.test_v3_stage_revision
+          tests.test_v3_front_half_skill_overlay
+          tests.test_v3_front_half_quality_gate
+          tests.test_v3_story_source_coverage
+          tests.test_v3_story_entity_sanitizer
+          tests.test_v3_professional_output_runtime
+          tests.test_v3_professional_source_grounding
+          tests.test_v3_project_source_snapshot
+          tests.test_v3_typed_front_half_authority
+          tests.test_v3_typed_entity_graph_authority
+          tests.test_v3_continuity_entity_authority
+          tests.test_v3_typed_character_profile_authority
+          tests.test_v3_llama_structured_output
+          tests.test_v3_front_half_asset_contracts
+          tests.test_v3_authoring_assets
+          tests.test_v3_asset_model_refined
+          tests.test_v3_ready_stage_materialization
+          tests.test_v3_stage_asset_materialization_strict
+          tests.test_v3_visual_direction_materialization
+          tests.test_v3_visual_asset_recovery
+          tests.test_v3_character_identity_cleanup
+          tests.test_v3_character_appearances
+          tests.test_v3_character_ownership_repair
+          tests.test_v3_character_visual_continuity
+          tests.test_v3_shot_authoring
+          tests.test_v3_shot_continuity_linker
+          tests.test_v3_shot_refinement
+          tests.test_v3_native_production_skills
+          tests.test_v3_single_pass_finalizer
+          tests.test_v3_legacy_authoring_retirement
+          tests.test_v3_production_runtime_optimization
+          tests.test_v3_stage_progress
+          tests.test_v3_cleanup_regressions
+          tests.test_v3_quality_policy
+          tests.test_v3_production_bridge_quality
+          tests.test_v3_media_content_cache
+          tests.test_v3_bgm_prefetch
+          tests.test_v3_media_foundation
+          tests.test_v3_media_pipeline
+          tests.test_v3_branding
+          tests.test_v3_generation_contract
+          tests.test_v3_multi_reference_comfy
+          tests.test_v3_asset_explorer
+          tests.test_v3_reference_generation
+          tests.test_v3_faceid_profile
+          tests.test_v3_identity_audit
+          tests.test_v3_storyboard_audit
+          tests.test_v3_storyboard_pipeline
+          tests.test_v3_semantic_audit
+          tests.test_v3_stage04_retirement
+          tests.test_v3_character_reference_package
+          tests.test_v3_character_reference_hardening
+          tests.test_v3_character_prompt_integration_period
+          tests.test_v3_runtime_model_contract
+      - name: Verify visual inheritance and compiled render contracts
+        run: >-
+          python -m pip install pytest &&
+          python -m pytest -q
+          tests/test_visual_generation_contract.py
+          tests/test_v3_character_age_prompt.py
+          tests/test_v3_character_generation_policy.py
+          tests/test_v3_reference_role_policy.py
+          tests/test_v3_unified_visual_contract.py
+      - name: Diff check
+        run: git diff --check HEAD^ HEAD

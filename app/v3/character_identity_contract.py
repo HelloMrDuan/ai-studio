@@ -165,6 +165,21 @@ def _structured_face_facts(metadata: dict[str, Any]) -> list[str]:
     return selected
 
 
+def _structured_hair_facts(metadata: dict[str, Any]) -> list[str]:
+    contract = _find_character_contract(metadata)
+    if not contract:
+        return []
+    selected: list[str] = []
+    for key in ("发型", "发色", "hairstyle", "hair_color"):
+        value = _text(contract.get(key))
+        if not value or _PLACEHOLDER.search(value):
+            continue
+        for segment in _segments(value):
+            if segment and segment not in selected:
+                selected.append(segment)
+    return selected
+
+
 def _period_cue(metadata: dict[str, Any]) -> str:
     source = json.dumps(metadata, ensure_ascii=False, sort_keys=True)
     if not _PERIOD_SIGNAL.search(source):
@@ -305,13 +320,15 @@ def build_costume_reference_prompt(entity: dict[str, Any]) -> str:
     metadata = entity.get("metadata") if isinstance(entity.get("metadata"), dict) else {}
     facts = strict_costume_facts(metadata)
     fact_text = "\n- ".join(facts) if facts else "只使用上游已确认的体型、服装、鞋履与可穿戴配饰"
+    hair = "；".join(_structured_hair_facts(metadata)) or "只继承已采用锁脸图中的发型"
     return (
-        f"角色「{name}」服装定装参考。\n"
+        f"为角色「{name}」生成一张无文字的服装身份图。\n"
         "脸部身份和发型只继承已采用的 Face Anchor，本阶段不重新设计脸。\n"
+        f"已确认发型事实：{hair}；发长、发色、束发方式和发饰不得改变。\n"
         "稳定服装事实：\n- " + fact_text + "\n\n"
-        "生成同一角色的单人全身正面中性站姿，从头到脚完整可见。"
+        "整张画面严格只生成一个人物、一个身体，不得复制或并排重复人物；人物为全身正面中性站姿，从头到脚完整可见。"
         "只设计体型轮廓、服装层次、材质、配色、鞋履和真正属于角色穿戴系统的配饰。"
-        "背景保持干净中性，人物身份与服装结构清晰可复用。"
+        "背景保持干净中性，人物身份与服装结构清晰可复用。画面内不得出现标题、文字、字母、标签、标注、Logo 或水印。"
     )
 
 
@@ -338,6 +355,10 @@ def _hair_anchor(source: str) -> str:
         match = _HAIR.search(clause)
         if match:
             value = _text(match.group(0))
+            if re.search(r"继承|不得|不要|保持|policy|anchor|confirmed", value, re.IGNORECASE):
+                continue
+            if value.lower() in {"发型", "发色", "头发", "hair", "hairstyle", "hair color"}:
+                continue
             if value and value not in matches:
                 matches.append(value)
     return "；".join(matches[:3])

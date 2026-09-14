@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from app.services.production_assets import ProductionAssetService
 from app.v3.authoring_execution_timing import AuthoringExecutionTimingFix
 from app.v3.canonical_entity_reconciler import CanonicalEntityReconciler
-from app.v3.reference_generation_optimization import ReferenceGenerationOptimizer
+from app.v3.reference_generation_optimization import ReferenceGenerationOptimizer, ReferenceSubmission
 from app.v3.stage_progress import StageProgressTracker
 
 
@@ -185,6 +185,62 @@ class CleanupRegressionTests(unittest.TestCase):
         self.assertIn("syncTerminalCards", refs)
         self.assertIn("Full card rendering is expensive and moves the page", refs)
         self.assertNotIn("document.body, {childList:true, subtree:true}", refs)
+        package = (static / "character-reference-package-overlay.js").read_text(encoding="utf-8")
+        self.assertNotIn("button.textContent", package)
+        self.assertIn("Live button state is owned by reference-generation-ux-overlay.js", package)
+
+    def test_reference_submission_never_attaches_latest_candidate_from_another_task(self):
+        rows = [
+            {"candidate_id": "candidate-current", "target_asset_id": "ast-costume", "status": "running", "progress": 35},
+            {"candidate_id": "candidate-old", "target_asset_id": "ast-costume", "status": "completed", "progress": 100},
+        ]
+        legacy = SimpleNamespace(_wb_sync_candidates=lambda _project_id: rows)
+        optimizer = ReferenceGenerationOptimizer(SimpleNamespace(legacy=legacy))
+        record = ReferenceSubmission(
+            submission_id="submission-current",
+            project_id="p" * 24,
+            target_asset_id="ast-costume",
+            entity_ids=["character-a"],
+            candidate_id="candidate-current",
+            task_id="task-current",
+            workflow_id="workflow-current",
+            reference_phase="costume",
+        )
+
+        optimizer._sync_record_from_candidate(record)
+
+        self.assertEqual(record.candidate_id, "candidate-current")
+        self.assertEqual(record.status, "running")
+        self.assertEqual(record.progress, 35)
+
+    def test_terminal_reference_submission_releases_target_for_retry(self):
+        project_id = "p" * 24
+        rows = [{
+            "candidate_id": "candidate-current",
+            "target_asset_id": "ast-costume",
+            "status": "failed",
+            "progress": 100,
+            "error": "current task failed",
+        }]
+        legacy = SimpleNamespace(_wb_sync_candidates=lambda _project_id: rows)
+        optimizer = ReferenceGenerationOptimizer(SimpleNamespace(legacy=legacy))
+        record = ReferenceSubmission(
+            submission_id="submission-current",
+            project_id=project_id,
+            target_asset_id="ast-costume",
+            entity_ids=["character-a"],
+            candidate_id="candidate-current",
+            task_id="task-current",
+            workflow_id="workflow-current",
+            reference_phase="costume",
+        )
+        optimizer._submissions[record.submission_id] = record
+        optimizer._target_active[(project_id, record.target_asset_id)] = record.submission_id
+
+        status = optimizer.status(project_id)
+
+        self.assertEqual(status["failed_count"], 1)
+        self.assertNotIn((project_id, record.target_asset_id), optimizer._target_active)
 
     def test_reference_ratio_guard_normalizes_face_anchor_and_turnaround(self):
         face_payload = {

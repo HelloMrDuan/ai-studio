@@ -67,6 +67,7 @@ class CharacterReferencePackageTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         backend = (root / "app" / "v3" / "character_reference_package.py").read_text(encoding="utf-8")
         frontend = (root / "app" / "v3" / "static" / "character-reference-package-overlay.js").read_text(encoding="utf-8")
+        state_owner = (root / "app" / "v3" / "static" / "reference-generation-ux-overlay.js").read_text(encoding="utf-8")
         self.assertIn('"generation_phase": "face_anchor"', backend)
         self.assertIn('"generation_phase": "costume"', backend)
         self.assertIn('"generation_phase": "turnaround"', backend)
@@ -74,8 +75,10 @@ class CharacterReferencePackageTests(unittest.TestCase):
         self.assertIn('_clean(face_ready.get("asset_id"))', backend)
         self.assertIn('_clean(costume_ready.get("asset_id"))', backend)
         self.assertIn("character_reference_package_v1", backend)
-        self.assertIn("采用锁脸图", frontend)
-        self.assertIn("生成服装定装图", frontend)
+        self.assertIn("window.v3AdoptReference", frontend)
+        self.assertIn("采用锁脸图", state_owner)
+        self.assertIn("生成服装定装图", state_owner)
+        self.assertNotIn("button.textContent", frontend)
         self.assertNotIn("锁脸图已采用，正在用这张脸继续生成三视图", frontend)
 
 

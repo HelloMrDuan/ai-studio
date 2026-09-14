@@ -36,6 +36,9 @@ class ReferenceSubmission:
     stage: str = "queued"
     message: str = "参考图生成任务已创建"
     candidate_id: str = ""
+    task_id: str = ""
+    workflow_id: str = ""
+    reference_phase: str = ""
     error: str = ""
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -51,6 +54,9 @@ class ReferenceSubmission:
             "stage": self.stage,
             "message": self.message,
             "candidate_id": self.candidate_id,
+            "task_id": self.task_id,
+            "workflow_id": self.workflow_id,
+            "reference_phase": self.reference_phase,
             "error": self.error,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -86,57 +92,55 @@ class ReferenceGenerationOptimizer:
         payload: dict[str, Any],
         target: dict[str, Any],
     ) -> dict[str, Any]:
-        """Normalize reference-only render sizes before the legacy provider validates them."""
+        """Normalize reference-only render sizes before the legacy provider validates them.
+
+        The mature image endpoint accepts the platform's canonical ratios. The
+        character face-anchor stage originally requested 4:5 (1024x1280), which
+        is rejected before ComfyUI runs. Keep the intended render purpose but map
+        it to a supported canonical canvas: square for the large face anchor and
+        4:3 for the turnaround sheet. The caller payload is not mutated.
+        """
         normalized = dict(payload)
         params = dict(payload.get("params") or {})
         metadata = target.get("metadata") if isinstance(target.get("metadata"), dict) else {}
         phase = _clean(params.get("reference_phase") or metadata.get("reference_phase")).lower()
 
         if phase == "face_anchor":
-            params.update({"aspect_ratio": "1:1", "width": 1024, "height": 1024})
+            params.update({
+                "aspect_ratio": "1:1",
+                "width": 1024,
+                "height": 1024,
+            })
         elif phase == "turnaround":
-            params.update({"aspect_ratio": "4:3", "width": 1536, "height": 1152})
+            params.update({
+                "aspect_ratio": "4:3",
+                "width": 1536,
+                "height": 1152,
+            })
 
         normalized["params"] = params
         return normalized
 
     def _sync_record_from_candidate(self, record: ReferenceSubmission) -> None:
-        """Sync only the candidate created for this exact submission.
-
-        A target can keep an older successful candidate while a new generation is
-        running or failed. Matching only target_asset_id caused the old candidate
-        to overwrite the new submission status, which produced impossible UI like
-        “候选已生成” together with the new run's error message.
-        """
-        if not record.candidate_id and record.status in _ACTIVE:
+        """Sync only the exact candidate created by this submission."""
+        if not record.candidate_id:
             return
-
         sync = getattr(self.legacy, "_wb_sync_candidates", None)
         load = getattr(self.legacy, "_wb_load_candidates", None)
         try:
             rows = sync(record.project_id) if callable(sync) else load(record.project_id) if callable(load) else []
         except Exception:
             return
-
         candidates = [
             row for row in rows or []
-            if _clean(row.get("target_asset_id")) == record.target_asset_id
-            and (
-                not record.candidate_id
-                or _clean(row.get("candidate_id")) == record.candidate_id
-            )
+            if _clean(row.get("candidate_id")) == record.candidate_id
+            and _clean(row.get("target_asset_id")) == record.target_asset_id
         ]
-        candidates.sort(
-            key=lambda row: _clean(row.get("updated_at") or row.get("created_at")),
-            reverse=True,
-        )
+        candidates.sort(key=lambda row: _clean(row.get("updated_at") or row.get("created_at")), reverse=True)
         if not candidates:
             return
-
         candidate = candidates[0]
-        candidate_id = _clean(candidate.get("candidate_id"))
-        if candidate_id:
-            record.candidate_id = candidate_id
+        record.candidate_id = _clean(candidate.get("candidate_id"))
         state = _clean(candidate.get("status")).lower()
         if state:
             record.status = state
@@ -189,13 +193,14 @@ class ReferenceGenerationOptimizer:
                 )
                 started = time.monotonic()
                 response = await self.bridge.execute_candidate(project_id, payload)
+                candidate = (response or {}).get("candidate") or {}
+                task = (response or {}).get("task") or {}
+                record.candidate_id = _clean(candidate.get("candidate_id"))
+                record.task_id = _clean(task.get("task_id") or candidate.get("task_id"))
+                record.workflow_id = _clean((task.get("params") or {}).get("v3_workflow_id") or candidate.get("v3_workflow_id"))
+                if not record.candidate_id or not record.task_id or not record.workflow_id:
+                    raise RuntimeError("参考图提交未返回本轮 candidate_id/task_id/workflow_id，拒绝关联历史候选")
                 elapsed_ms = int((time.monotonic() - started) * 1000)
-                if isinstance(response, dict):
-                    candidate = response.get("candidate")
-                    if isinstance(candidate, dict):
-                        candidate_id = _clean(candidate.get("candidate_id"))
-                        if candidate_id:
-                            record.candidate_id = candidate_id
                 record.stage = "provider_submitted"
                 record.message = "生成任务已提交，正在等待模型输出"
                 record.progress = max(record.progress, 5)
@@ -226,7 +231,7 @@ class ReferenceGenerationOptimizer:
             )
         finally:
             active_id = self._target_active.get(target_key)
-            if active_id == record.submission_id:
+            if active_id == record.submission_id and record.status not in _ACTIVE:
                 self._target_active.pop(target_key, None)
 
     async def execute_candidate(self, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -261,14 +266,16 @@ class ReferenceGenerationOptimizer:
         active_submission_id = self._target_active.get(key)
         if active_submission_id:
             existing = self._submissions.get(active_submission_id)
-            if existing and existing.status in _ACTIVE:
+            if existing:
                 self._sync_record_from_candidate(existing)
-                return {
-                    "submitted": False,
-                    "already_pending": True,
-                    "reference_submission": existing.as_dict(),
-                    "producer": "reference-background-dispatch",
-                }
+                if existing.status in _ACTIVE:
+                    return {
+                        "submitted": False,
+                        "already_pending": True,
+                        "reference_submission": existing.as_dict(),
+                        "producer": "reference-background-dispatch",
+                    }
+            self._target_active.pop(key, None)
 
         submission_id = "refsub_" + secrets.token_hex(10)
         entity_ids = [_clean(value) for value in target.get("entity_ids") or [] if _clean(value)]
@@ -277,6 +284,7 @@ class ReferenceGenerationOptimizer:
             project_id=project_id,
             target_asset_id=target_asset_id,
             entity_ids=entity_ids,
+            reference_phase=_clean(normalized_params.get("reference_phase") or (target.get("metadata") or {}).get("reference_phase")),
         )
         self._submissions[submission_id] = record
         self._target_active[key] = submission_id
@@ -301,6 +309,7 @@ class ReferenceGenerationOptimizer:
     def status(self, project_id: str) -> dict[str, Any]:
         now = time.time()
         rows: list[dict[str, Any]] = []
+        # Keep only recent diagnostics; durable candidate/task state remains in the existing stores.
         for submission_id, record in list(self._submissions.items()):
             if now - record.updated_at > 3600 and record.status not in _ACTIVE:
                 self._submissions.pop(submission_id, None)
@@ -308,6 +317,9 @@ class ReferenceGenerationOptimizer:
             if record.project_id != project_id:
                 continue
             self._sync_record_from_candidate(record)
+            key = (record.project_id, record.target_asset_id)
+            if record.status not in _ACTIVE and self._target_active.get(key) == submission_id:
+                self._target_active.pop(key, None)
             rows.append(record.as_dict())
         rows.sort(key=lambda item: float(item.get("created_at") or 0), reverse=True)
         active = sum(1 for item in rows if _clean(item.get("status")).lower() in _ACTIVE)
@@ -324,6 +336,8 @@ class ReferenceGenerationOptimizer:
 
     def install(self) -> None:
         self.legacy.director_workbench_execute_candidate = self.execute_candidate
+        # The bridge's automatic missing-reference gate was created before this
+        # optimizer. Point it at the same non-blocking dispatcher as the UI route.
         if getattr(self.bridge, "reference_bootstrap", None) is not None:
             self.bridge.reference_bootstrap.submit_candidate = self.execute_candidate
 

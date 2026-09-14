@@ -138,10 +138,13 @@ class CharacterReferenceHardeningTests(unittest.TestCase):
             contract=contract,
             reference=False,
         )
-        self.assertIn("COSTUME FITTING IDENTITY LOCK", result.positive_prompt)
+        self.assertIn("clean full-body costume identity image", result.positive_prompt)
+        self.assertIn("exactly one person and one body", result.positive_prompt)
         self.assertIn("bound FaceID image", result.positive_prompt)
-        self.assertIn("ANCIENT CHINESE WARDROBE ONLY", result.positive_prompt)
+        self.assertIn("confirmed ancient Chinese wardrobe", result.positive_prompt)
+        self.assertIn("no writing", result.positive_prompt)
         self.assertIn("深蓝色古式长袍", result.positive_prompt)
+        self.assertIn("黑色长发束起", result.positive_prompt)
         self.assertIn("tank top", result.negative_prompt)
         self.assertIn("modern button-down shirt", result.negative_prompt)
         self.assertIn("graphic print", result.negative_prompt)
@@ -149,6 +152,9 @@ class CharacterReferenceHardeningTests(unittest.TestCase):
         self.assertIn("visibly younger than confirmed age", result.negative_prompt)
         self.assertIn("preteen", result.negative_prompt)
         self.assertIn("child body proportions", result.negative_prompt)
+        self.assertIn("typography", result.negative_prompt)
+        self.assertIn("watermark", result.negative_prompt)
+        self.assertIn("duplicate person", result.negative_prompt)
 
     def test_runtime_contract_rebinds_public_dispatch_and_routes_face_to_zimage(self) -> None:
         async def original_llm(*args, **kwargs):

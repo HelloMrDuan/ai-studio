@@ -62,12 +62,14 @@
   function itemState(item, submissions) {
     const candidate = item?.candidate || {};
     const cstate = String(candidate.status || '').toLowerCase();
-    const related = submissions.find(row => (row.entity_ids || []).includes(String(item.entity_id || '')))
-      || submissions.find(row => String(row.target_asset_id || '') === String(item.target_asset_id || ''));
+    const related = submissions.find(row =>
+      String(row.target_asset_id || '') === String(item.target_asset_id || '') &&
+      (!row.reference_phase || row.reference_phase === item.generation_phase));
     const rstate = String(related?.status || '').toLowerCase();
     const lstate = localPending.get(String(item.entity_id || ''));
-    if (related && ACTIVE.has(rstate) && !['completed','failed'].includes(cstate)) {
-      return {status:rstate,progress:Number(related.progress || candidate.progress || 0),message:related.message || candidate.message || '参考图任务已进入后台队列',error:related.error || candidate.error || ''};
+    if (lstate && !related) return {status:'submitting',progress:1,message:'正在创建参考图生成任务',error:''};
+    if (related && rstate) {
+      return {status:rstate,progress:Number(related.progress || 0),message:related.message || '',error:related.error || '',candidate_id:related.candidate_id};
     }
     if (cstate) {
       return {status:cstate,progress:Number(candidate.progress || related?.progress || 0),message:candidate.message || related?.message || '',error:candidate.error || related?.error || ''};

@@ -250,6 +250,44 @@ class RefinedAssetModelTests(unittest.TestCase):
             self.assertEqual(state["items"], [])
             self.assertFalse(state["stage01_story_entities_exposed"])
 
+    def test_reference_candidate_adoption_drops_superseded_retry_parents(self):
+        with tempfile.TemporaryDirectory() as raw:
+            p = ProductionAssetService(Path(raw))
+            project_id = "f" * 24
+            profile = p.declare_asset(
+                project_id, stage="02", skill="test", logical_key="profile:hero",
+                asset_type="STRUCTURED_DATA", asset_role="character_profile", name="Hero",
+                status="ready", source={"type": "test"}, parent_asset_ids=[], entity_ids=[], metadata={},
+            )
+            old_prompt = p.create_text_asset(
+                project_id, stage="03", skill="test", logical_key="prompt:hero",
+                asset_role="generation_contract", name="old", content="old",
+                parent_asset_ids=[], entity_ids=[], metadata={},
+            )
+            target = p.declare_asset(
+                project_id, stage="03", skill="test", logical_key="reference:hero",
+                asset_type="IMAGE", asset_role="character_costume_reference", name="Hero costume",
+                status="planned", source={"type": "test"},
+                parent_asset_ids=[profile["asset_id"], old_prompt["asset_id"]], entity_ids=[],
+                metadata={"reference_asset": True, "reference_phase": "costume"},
+            )
+            new_prompt = p.create_text_asset(
+                project_id, stage="03", skill="test", logical_key="prompt:hero",
+                asset_role="generation_contract", name="new", content="new",
+                parent_asset_ids=[], entity_ids=[], metadata={},
+            )
+
+            updated = p.set_asset_dependencies(
+                project_id, target["asset_id"], [new_prompt["asset_id"]], merge=True,
+            )
+
+            self.assertEqual(updated["dependency_state"], "current")
+            self.assertEqual(
+                set(updated["parent_asset_ids"]),
+                {profile["asset_id"], new_prompt["asset_id"]},
+            )
+            self.assertNotIn(old_prompt["asset_id"], updated["parent_asset_ids"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -111,6 +112,17 @@ class V3RuntimeModelContractTests(unittest.TestCase):
                 ["face-anchor:p:a", "face-anchor:p:b"],
             )
         )
+
+    def test_turnaround_is_blocked_until_real_costume_image_control_exists(self) -> None:
+        executor = UnifiedImageDomainExecutor.__new__(UnifiedImageDomainExecutor)
+        with self.assertRaisesRegex(ValueError, "TURNAROUND_IMAGE_CONTROL_UNAVAILABLE"):
+            asyncio.run(executor._image_generate_candidate(
+                SimpleNamespace(),
+                {
+                    "reference_ids": ["face-anchor:p:a", "costume:p:a"],
+                    "metadata": {"reference_phase": "turnaround"},
+                },
+            ))
 
     def test_identity_postprocess_selects_face_anchor_not_costume_reference(self) -> None:
         costume = ReferenceAsset(

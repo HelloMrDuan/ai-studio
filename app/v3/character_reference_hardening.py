@@ -72,6 +72,20 @@ _MODERN_COSTUME_NEGATIVES = (
     "camera equipment",
     "photography studio set",
 )
+_REFERENCE_TEXT_NEGATIVES = (
+    "text",
+    "typography",
+    "letters",
+    "words",
+    "captions",
+    "title",
+    "labels",
+    "annotations",
+    "logo",
+    "watermark",
+    "poster layout",
+    "text panel",
+)
 
 
 def _text(value: Any) -> str:
@@ -342,12 +356,13 @@ def install_character_reference_hardening() -> dict[str, Any]:
                 negative_parts.extend(_source_prop_negatives(source))
             elif phase == "costume":
                 positive = (
-                    "COSTUME FITTING IDENTITY LOCK: use the bound FaceID image as the authoritative person; exact same face, same confirmed age, same gender, same hairstyle and same facial proportions; "
-                    "single person, full-body front view, neutral standing pose, head-to-feet visible; wardrobe text contract is authoritative for garment type, layers, color palette, footwear and fixed accessories"
+                    "Create one clean full-body costume identity image of the person in the bound FaceID image; preserve the exact same face, confirmed age, gender, hairstyle and facial proportions; "
+                    "exactly one person and one body in the entire image, full-body front view, neutral standing pose, head-to-feet visible, no duplicated figure; the wardrobe contract controls garment type, layers, color palette, footwear and fixed accessories; "
+                    "use a plain seamless background with no writing, typography, title, label, annotation, logo, watermark, poster design or text panel anywhere in the image"
                 )
                 if ancient and chinese:
                     positive += (
-                        "; ANCIENT CHINESE WARDROBE ONLY: historically/period-compatible Chinese robe, hanfu or cross-collar silhouette exactly as confirmed by the character contract; traditional fabric layering and period footwear"
+                        "; use only the confirmed ancient Chinese wardrobe: a period-compatible Chinese robe, hanfu or cross-collar silhouette exactly as specified by the character contract, with traditional fabric layering and period footwear"
                     )
                 elif ancient:
                     positive += "; PERIOD WARDROBE ONLY: use only the confirmed historical clothing silhouette and period-compatible footwear"
@@ -361,13 +376,21 @@ def install_character_reference_hardening() -> dict[str, Any]:
                     "fashion photoshoot",
                     "cinematic scene background",
                     "other characters",
+                    "two people",
+                    "duplicate person",
+                    "duplicated figure",
+                    "twins",
+                    "side-by-side figures",
+                    "split composition",
                 ]
                 negative_parts.extend(_confirmed_age_negative(source))
+                negative_parts.extend(_REFERENCE_TEXT_NEGATIVES)
                 if ancient:
                     negative_parts.extend(_MODERN_COSTUME_NEGATIVES)
             else:
                 positive = (
-                    "TURNAROUND PACKAGE LOCK: preserve the exact FaceID identity and the exact adopted costume reference; same confirmed age, same gender, same face, same hairstyle, same clothing layers, same color palette, same footwear and fixed accessories in every view"
+                    "Create a clean character turnaround while preserving the exact FaceID identity and the exact adopted costume reference; keep the same confirmed age, gender, face, hairstyle, clothing layers, color palette, footwear and fixed accessories in every view; "
+                    "use a plain seamless background with no writing, typography, title, label, annotation, logo or watermark anywhere in the image"
                 )
                 if ancient and chinese:
                     positive += "; preserve the confirmed ancient Chinese wardrobe with zero modern-fashion substitution"
@@ -383,6 +406,7 @@ def install_character_reference_hardening() -> dict[str, Any]:
                     "clothing color drift",
                 ]
                 negative_parts.extend(_confirmed_age_negative(source))
+                negative_parts.extend(_REFERENCE_TEXT_NEGATIVES)
                 if ancient:
                     negative_parts.extend(_MODERN_COSTUME_NEGATIVES)
 

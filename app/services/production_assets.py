@@ -822,6 +822,22 @@ class ProductionAssetService:
             if parent_id not in graph["assets"]:
                 raise FileNotFoundError(f"上游项目资产不存在：{parent_id}")
         current = list(asset.get("parent_asset_ids") or []) if merge else []
+        metadata = asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}
+        if merge and bool(metadata.get("reference_asset")):
+            # A reference target is a canonical slot reused across retries. The
+            # archived workbench confirms a candidate with merge=True, so keeping
+            # every superseded prompt/contract parent makes the newly adopted
+            # reference stale immediately and leaves the UI on the previous phase.
+            # Preserve current identity/profile parents, but discard superseded
+            # versions before attaching this candidate's exact dependencies.
+            active_current: list[str] = []
+            for parent_id in current:
+                parent = graph["assets"].get(parent_id) or {}
+                logical_key = _clean(parent.get("logical_key"))
+                active_id = self._active_asset_id(graph, logical_key) if logical_key else ""
+                if not active_id or active_id == parent_id:
+                    active_current.append(parent_id)
+            current = active_current
         parents = list(dict.fromkeys([*current, *incoming]))
         asset["parent_asset_ids"] = parents
         stale = []

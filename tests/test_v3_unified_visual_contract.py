@@ -61,6 +61,26 @@ def test_costume_contract_keeps_wardrobe_but_excludes_story_props() -> None:
     assert "手持" not in prompt
 
 
+def test_costume_contract_carries_typed_hair_identity() -> None:
+    entity = {
+        "name": "角色甲",
+        "metadata": {
+            "stable_profile": {
+                "专业角色合同": {
+                    "发型": "黑色长发束起",
+                    "发色": "黑色",
+                    "服装": "深蓝色古式长袍",
+                }
+            }
+        },
+    }
+
+    prompt = build_costume_reference_prompt(entity)
+
+    assert "已确认发型事实：黑色长发束起；黑色" in prompt
+    assert "发长、发色、束发方式和发饰不得改变" in prompt
+
+
 def test_costume_anchor_projection_cannot_reimport_weapon_or_bell() -> None:
     raw = (
         "性别呈现：女性; 年龄感：16岁; 服装：暗红色交领长裙; 鞋履：黑色布靴; "

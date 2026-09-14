@@ -214,12 +214,21 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
                 "runtime_image_backend": "z_image_turbo_facefusion",
                 "primary_renderer": "z-image-turbo",
                 "identity_postprocess": "facefusion",
+                "identity_postprocess_required": "false",
                 "identity_reference_id": face.reference_id,
                 "reference_phase": phase,
                 "artifact_path": str(artifact_path),
                 "bytes_written": str(artifact_path.stat().st_size),
             }
         )
+        job = self.visual.jobs.get(input.project_id, input.step.idempotency_key) or {}
+        candidate = self.visual._candidate_once(
+            input, payload, provider_id="local-zimage-image", model_id="z-image-turbo",
+            reference_ids=references, artifact_ref=result.output_ref,
+            artifact_path=artifact_path, prompt_id=str(job.get("prompt_id") or ""), kind="image",
+        )
+        metadata["resource_id"] = str(candidate["resource_id"])
+        metadata["logical_key"] = str(candidate["logical_key"])
         final = StepActivityResult(
             kind="completed",
             output_ref=result.output_ref,

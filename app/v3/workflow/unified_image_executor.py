@@ -65,6 +65,8 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
     ) -> StepActivityResult:
         references = self._strings(payload, "reference_ids", required=False)
         phase = self._reference_phase(payload)
+        if phase == "turnaround":
+            raise ValueError("TURNAROUND_IMAGE_CONTROL_UNAVAILABLE: 当前 Z-Image workflow 没有定装图图像条件控制，禁止以纯文字生成生产三视图")
         use_zimage = self._uses_zimage_primary(payload, references)
         if references and not use_zimage:
             return await super()._image_generate_candidate(input, payload)
@@ -169,7 +171,7 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
         )
         self.jobs.put(input.project_id, input.step.idempotency_key, job)
 
-        candidate = self._candidate_once(
+        candidate = {} if hybrid_identity else self._candidate_once(
             input,
             payload,
             provider_id=selected.spec.provider_id,

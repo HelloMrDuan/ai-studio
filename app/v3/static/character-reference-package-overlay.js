@@ -60,25 +60,7 @@
         <span class="${packageReady ? 'done' : ''}">资产包 ${packageReady ? '✓' : '待组装'}</span>
       </div>`;
 
-    const buttons = [...card.querySelectorAll('.v3-ref-actions button')];
-    const candidateState = String(item?.candidate?.status || '').toLowerCase();
-    for (const button of buttons) {
-      const onclick = button.getAttribute('onclick') || '';
-      if (onclick.includes('v3GenerateReference')) {
-        const label = phase === 'face_anchor' ? '生成锁脸图'
-          : phase === 'costume' ? '生成服装定装图'
-          : phase === 'turnaround' ? '生成三视图候选'
-          : button.textContent;
-        if (!button.disabled && label) button.textContent = label;
-        if (label) button.dataset.v3ReferenceLabel = label;
-      }
-      if (onclick.includes('v3AdoptReference') && candidateState === 'completed') {
-        button.textContent = phase === 'face_anchor' ? '采用锁脸图'
-          : phase === 'costume' ? '采用服装定装图'
-          : phase === 'turnaround' ? '采用三视图'
-          : '采用候选';
-      }
-    }
+    // Live button state is owned by reference-generation-ux-overlay.js.
   }
   async function patchAll() {
     const projectId = pid();

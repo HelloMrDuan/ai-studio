@@ -160,13 +160,13 @@ class ProductionReadyLegacyBridge(ReferenceAwareLegacyCandidateV3Bridge):
         task_record = self.legacy.store.create(
             task_id=task_id,
             module="新版工作流",
-            operation="角色三视图生成",
+            operation="角色定装图生成" if params.get("reference_phase") == "costume" else "角色三视图生成",
             title=str(target.get("name") or "角色三视图"),
             params={
                 "v3_workflow_id": workflow_id,
                 "v3_logical_key": logical_key,
                 "legacy_target_asset_id": target_asset_id,
-                "reference_phase": "turnaround",
+                "reference_phase": str(params.get("reference_phase") or "turnaround"),
                 "width": width,
                 "height": height,
             },

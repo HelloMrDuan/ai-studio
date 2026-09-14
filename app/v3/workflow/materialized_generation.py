@@ -127,7 +127,8 @@ class MaterializedDomainExecutor:
             result = self._semantic("RESOURCE_STATE_CONFLICT", exc)
         except ValueError as exc:
             result = self._semantic("INVALID_STEP_PAYLOAD", exc)
-        self.base.results.put(input.project_id, input.step.idempotency_key, result)
+        if result.metadata.get("identity_postprocess_required") != "true":
+            self.base.results.put(input.project_id, input.step.idempotency_key, result)
         return result
 
     @staticmethod

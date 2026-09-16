@@ -31,19 +31,28 @@ REFERENCE_TEMPLATES = {
         asset_type="LOCATION",
         role="location_identity_reference",
         positive=(
-            "location identity reference, architectural structure, spatial layout, "
-            "environment details, lighting condition, world building consistency"
+            "unoccupied location identity reference, empty environment plate, architecture-and-terrain-only composition, "
+            "stable spatial layout, environment materials, fixed structures, pathways, foreground-midground-background "
+            "relationships, lighting condition, world-building consistency, reusable environment baseline"
         ),
-        negative="random background, unrelated architecture",
+        negative=(
+            "person, people, human figure, character, protagonist, crowd, silhouette, portrait, body, face, action, "
+            "held object, carried prop, random background, unrelated architecture, text, labels, watermark"
+        ),
     ),
     "prop": ReferenceTemplate(
         asset_type="PROP",
         role="prop_identity_reference",
         positive=(
-            "prop identity reference, shape, material, structure, craftsmanship details, "
-            "consistent object design"
+            "isolated prop identity reference, single-object product reference, sole visual subject is the prop itself, "
+            "centered, fully visible, unobstructed, clean neutral seamless background, clear silhouette and proportions, "
+            "shape, material, structure, craftsmanship details, color and pattern fidelity, consistent object design"
         ),
-        negative="different object, wrong material, inconsistent structure",
+        negative=(
+            "person, people, human figure, character, hand, hands, body, face, wearing, worn, carried, held, handheld, "
+            "mounted on a person, action scene, cinematic environment, other objects, different object, wrong material, "
+            "inconsistent structure, text, labels, watermark"
+        ),
     ),
 }
 

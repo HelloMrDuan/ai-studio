@@ -48,7 +48,9 @@ class OriginalWorkbenchBridgeContractTests(unittest.TestCase):
         self.assertIn("丢弃", frontend)
         self.assertIn("upload_required\": False", backend)
         self.assertIn("manual_adoption_required\": True", backend)
-        self.assertIn('"aspect_ratio": "4:3"', backend)
+        self.assertIn('"aspect_ratio":', backend)
+        self.assertIn('"4:3"', backend)
+        self.assertIn('"1:1"', backend)
 
     def test_completed_authoring_stages_can_be_reopened_without_deleting_history(self) -> None:
         frontend = (ROOT / "app" / "v3" / "static" / "authoring-continuity-overlay.js").read_text(encoding="utf-8")

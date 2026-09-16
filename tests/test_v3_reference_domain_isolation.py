@@ -47,41 +47,57 @@ class ReferenceDomainIsolationTests(unittest.TestCase):
         prompt = self.service._reference_prompt({
             "entity_type": "location",
             "name": "青云山",
-            "metadata": {"structure": "山体环绕，雪中石阶，悬崖附近"},
+            "metadata": {
+                "stable_profile": {"structure": "山体环绕，雪中石阶，悬崖附近"},
+                "stable_design": "空置山道，古式石栏",
+            },
         })
         self.assertIn("空场景环境基准图", prompt)
-        self.assertIn("环境结构本身为唯一叙事中心", prompt)
+        self.assertIn("环境结构是画面唯一可见内容", prompt)
+        self.assertNotIn("stable_profile", prompt)
+        self.assertNotIn("stable_design", prompt)
         for token in ("角色", "人物", "主角", "手持", "背负", "佩戴"):
             self.assertNotIn(token, prompt)
 
         template = get_reference_template("location")
         self.assertIn("empty environment plate", template.positive)
+        self.assertIn("empty stairs", template.positive)
         self.assertNotIn("character", template.positive.lower())
+        self.assertIn("tiny distant person", template.negative.lower())
         self.assertIn("character", template.negative.lower())
 
-    def test_prop_positive_prompt_is_object_only(self):
+    def test_prop_positive_prompt_is_exactly_one_object(self):
         prompt = self.service._reference_prompt({
             "entity_type": "prop",
             "name": "古剑",
-            "metadata": {"type": "武器", "design": "乌木剑身，暗银纹剑鞘"},
+            "metadata": {
+                "stable_profile": {"type": "武器", "design": "乌木剑身，暗银纹剑鞘"},
+                "stable_design": "完整组装状态",
+            },
         })
-        self.assertIn("单一道具产品设定图", prompt)
-        self.assertIn("唯一主体就是该道具本体", prompt)
+        self.assertIn("1:1单一道具产品设定图", prompt)
+        self.assertIn("画面物理对象总数严格为1", prompt)
+        self.assertIn("只表现一个古剑本体", prompt)
+        self.assertNotIn("stable_profile", prompt)
+        self.assertNotIn("stable_design", prompt)
         for token in ("角色", "人物", "主角", "手部", "手持", "背负", "佩戴"):
             self.assertNotIn(token, prompt)
 
         template = get_reference_template("prop")
-        self.assertIn("sole visual subject is the prop itself", template.positive)
+        self.assertIn("exactly one physical prop total in frame", template.positive)
+        self.assertIn("one complete assembled item", template.positive)
         self.assertNotIn("character", template.positive.lower())
+        self.assertIn("multiple objects", template.negative.lower())
+        self.assertIn("stable_profile", template.negative.lower())
         self.assertIn("hand", template.negative.lower())
         self.assertIn("character", template.negative.lower())
 
-    def test_provider_prop_prompt_drops_character_context_and_legacy_prompt_leakage(self):
+    def test_provider_prop_prompt_drops_character_context_schema_keys_and_global_prop_mixing(self):
         old_prompt = (
-            "项目一致性参考资产：道具「古剑」。\n"
+            "项目一致性参考资产：道具「玉佩」。\n"
             "最高优先级：严格保持下面已经确认的稳定视觉事实，不得用参考图版式重新设计角色。\n"
-            "stable_profile.type：武器\n"
-            "stable_profile.design：乌木剑身，暗银纹剑鞘\n"
+            "stable_profile.type：道具\n"
+            "stable_profile.design：椭圆形，青玉材质\n"
             "不出现人物、手持、背负或佩戴。"
         )
         compiled = self.compiler.compile(
@@ -94,24 +110,31 @@ class ReferenceDomainIsolationTests(unittest.TestCase):
                 art_style="电影写实",
                 character_rules={"bad": "East Asian facial identity, traditional hairstyle"},
                 environment_rules={"bad": "雪山中站着少年主角"},
-                prop_rules={"craft": "乌木、暗银、旧金属传统工艺"},
+                prop_rules={"bad": "古剑与玉佩成套出现"},
             ),
-            contract_context="人物背负古剑走在雪山石阶",
+            contract_context="人物背负古剑并佩戴玉佩走在雪山石阶",
             reference=True,
         )
         positive = compiled.positive_prompt.lower()
-        self.assertIn("sole visual subject is the prop itself", positive)
-        self.assertIn("乌木、暗银、旧金属传统工艺", compiled.positive_prompt)
+        self.assertIn("single isolated product study of exactly one 玉佩", compiled.positive_prompt)
+        self.assertIn("sole visual subject is the target prop itself", positive)
+        self.assertIn("exactly one physical prop total in frame", positive)
+        self.assertIn("椭圆形，青玉材质", compiled.positive_prompt)
         self.assertIn("caption-free", positive)
+        self.assertNotIn("stable_profile", positive)
+        self.assertNotIn("stable.profile", positive)
+        self.assertNotIn("古剑与玉佩成套出现", compiled.positive_prompt)
         for token in (
             "character", "person", "facial", "hairstyle", "costume",
             "角色", "人物", "主角", "少年", "背负", "手持", "佩戴",
         ):
             self.assertNotIn(token, positive)
+        self.assertIn("multiple objects", compiled.negative_prompt.lower())
+        self.assertIn("stable_profile", compiled.negative_prompt.lower())
         self.assertIn("character", compiled.negative_prompt.lower())
         self.assertIn("hand", compiled.negative_prompt.lower())
 
-    def test_provider_location_prompt_drops_character_context_and_character_rules(self):
+    def test_provider_location_prompt_drops_character_context_schema_keys_and_prop_rules(self):
         old_prompt = (
             "项目一致性参考资产：场景「青云山」。\n"
             "最高优先级：严格保持下面已经确认的稳定视觉事实，不得用参考图版式重新设计角色。\n"
@@ -137,12 +160,16 @@ class ReferenceDomainIsolationTests(unittest.TestCase):
         self.assertIn("empty environment plate", positive)
         self.assertIn("山体环绕，雪中石阶，悬崖与古式石栏", compiled.positive_prompt)
         self.assertIn("caption-free", positive)
+        self.assertNotIn("stable_profile", positive)
+        self.assertNotIn("stable.profile", positive)
         for token in (
             "character", "person", "facial", "hairstyle", "costume",
             "角色", "人物", "主角", "少年", "背负", "手持", "佩戴",
         ):
             self.assertNotIn(token, positive)
         self.assertNotIn("古剑与玉佩", compiled.positive_prompt)
+        self.assertIn("tiny distant person", compiled.negative_prompt.lower())
+        self.assertIn("stable_profile", compiled.negative_prompt.lower())
         self.assertIn("character", compiled.negative_prompt.lower())
 
 

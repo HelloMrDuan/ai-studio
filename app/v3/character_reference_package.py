@@ -683,7 +683,7 @@ class CharacterReferencePackageBootstrap(CanonicalReferenceAssetBootstrap):
             "ready_count": sum(1 for item in items if item.get("ready")),
             "manual_adoption_required": True,
             "upload_required": False,
-            "generation_backend": "zimage_front_then_dual_controlnet_three_view",
+            "generation_backend": "zimage_front_layout_then_i2l_identity_master",
             "asset_policy": "one_adopted_character_master; location_prop_direct_reference",
             "canonical_asset_kinds": ["character", "location", "prop"],
             "stable_profile_required": True,

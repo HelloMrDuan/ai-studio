@@ -101,3 +101,12 @@ class ComfyUIAdapter:
         if not isinstance(body, dict):
             raise ValueError("ComfyUI history response must be an object")
         return body
+
+    async def free_memory(self) -> None:
+        """Release cached built-in models before a different model family loads."""
+        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+            response = await client.post(
+                f"{self.base_url}/free",
+                json={"unload_models": True, "free_memory": True},
+            )
+            response.raise_for_status()

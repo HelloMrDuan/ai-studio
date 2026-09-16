@@ -19,6 +19,8 @@ from app.v3.workflow.production_worker_executor import ProductionWorkerExecutor
 from app.v3.workflow.unified_image_executor import UnifiedImageDomainExecutor
 from app.v3.zimage_temporal_executor import (
     compile_zimage_controlled_master_workflow,
+    compile_zimage_controlled_layout_workflow,
+    compile_character_front_prompt,
     compile_zimage_turnaround_workflow,
 )
 
@@ -27,6 +29,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class V3RuntimeModelContractTests(unittest.TestCase):
+    def test_character_front_prompt_cannot_inherit_model_sheet_layout(self) -> None:
+        prompt = compile_character_front_prompt(
+            "专业角色身份母版；18岁少女；黑色高发髻；浅青色古式长裙；4-panel character turnaround sheet"
+        )
+        self.assertIn("exactly one character", prompt)
+        self.assertIn("18岁少女", prompt)
+        self.assertIn("黑色高发髻", prompt)
+        self.assertIn("浅青色古式长裙", prompt)
+        self.assertNotIn("专业角色身份母版", prompt)
+        self.assertNotIn("4-panel character turnaround sheet", prompt)
+        self.assertIn("inset portrait", prompt)
+
+    def test_character_front_prompt_removes_reusable_held_props(self) -> None:
+        prompt = compile_character_front_prompt(
+            "18岁少女，手持一枚玉佩，身穿浅青色古式长裙；黑色高发髻"
+        )
+        self.assertNotIn("玉佩", prompt)
+        self.assertIn("浅青色古式长裙", prompt)
+        self.assertIn("both hands visibly empty", prompt)
+
     def test_default_text_runtime_is_qwen(self) -> None:
         registry = json.loads((ROOT / "config" / "llm_models.json").read_text(encoding="utf-8"))
         self.assertEqual(registry["default_model"], "qwen3-32b-abliterated")
@@ -155,26 +177,44 @@ class V3RuntimeModelContractTests(unittest.TestCase):
         self.assertEqual(compiled["13"]["inputs"]["images"], ["12", 0])
         self.assertNotIn("未明确描述", compiled["9"]["inputs"]["prompt"])
 
-    def test_character_master_binds_front_pixels_and_fixed_side_back_poses(self) -> None:
-        workflow = json.loads(
-            (ROOT / "workflows" / "z_image_turbo_controlled_master_api.json").read_text(encoding="utf-8")
+    def test_character_master_binds_identity_lora_to_controlled_layout(self) -> None:
+        layout_workflow = json.loads(
+            (ROOT / "workflows" / "z_image_turbo_controlled_layout_api.json").read_text(encoding="utf-8")
         )
-        compiled = compile_zimage_controlled_master_workflow(
-            workflow,
+        layout = compile_zimage_controlled_layout_workflow(
+            layout_workflow,
             source_sheet_name="master/repeated-front.png",
             pose_sheet_name="master/front-side-back-poses.png",
             positive_prompt="18岁少女; 浅青色交领古式长裙; 黑发高髻; 正面全身",
             seed=88,
+            filename_prefix="test/layout",
+        )
+        self.assertEqual(layout["1"]["inputs"]["image"], "master/front-side-back-poses.png")
+        self.assertEqual(layout["2"]["inputs"]["image"], "master/repeated-front.png")
+        self.assertIn("exactly three", layout["9"]["inputs"]["text"])
+        self.assertEqual(layout["12"]["inputs"]["seed"], 88)
+
+        master_workflow = json.loads(
+            (ROOT / "workflows" / "z_image_turbo_controlled_master_api.json").read_text(encoding="utf-8")
+        )
+        master = compile_zimage_controlled_master_workflow(
+            master_workflow,
+            front_source_name="master/front.png",
+            face_source_name="master/face.png",
+            pose_sheet_name="master/layout.png",
+            positive_prompt="18岁少女; 浅青色交领古式长裙; 黑发高髻",
+            negative_prompt="hairstyle change, costume redesign",
+            seed=88,
             filename_prefix="test/master",
         )
-        self.assertEqual(compiled["1"]["inputs"]["image"], "master/front-side-back-poses.png")
-        self.assertEqual(compiled["2"]["inputs"]["image"], "master/repeated-front.png")
-        self.assertEqual(compiled["7"]["inputs"]["image"], ["1", 0])
-        self.assertEqual(compiled["7"]["inputs"]["inpaint_image"], ["2", 0])
-        self.assertIn("浅青色交领古式长裙", compiled["9"]["inputs"]["text"])
-        self.assertIn("exactly three", compiled["9"]["inputs"]["text"])
-        self.assertEqual(compiled["12"]["inputs"]["seed"], 88)
-        self.assertEqual(compiled["14"]["inputs"]["images"], ["13", 0])
+        self.assertEqual(master["1"]["inputs"]["image"], "master/front.png")
+        self.assertEqual(master["2"]["inputs"]["image"], "master/face.png")
+        self.assertEqual(master["7"]["inputs"]["image"], "master/layout.png")
+        self.assertEqual(master["8"]["inputs"]["lora"], ["6", 0])
+        self.assertEqual(master["8"]["inputs"]["control_scale"], 0.75)
+        self.assertIn("same hairline", master["8"]["inputs"]["prompt"])
+        self.assertEqual(master["8"]["inputs"]["seed"], 88)
+        self.assertEqual(master["9"]["inputs"]["images"], ["8", 0])
 
     def test_identity_postprocess_selects_face_anchor_not_costume_reference(self) -> None:
         costume = ReferenceAsset(

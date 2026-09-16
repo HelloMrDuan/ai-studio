@@ -19,6 +19,7 @@ from app.v3.contracts import ProviderModelSpec
 
 
 TURNAROUND_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / "workflows" / "z_image_turbo_turnaround_api.json"
+CONTROLLED_LAYOUT_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / "workflows" / "z_image_turbo_controlled_layout_api.json"
 CONTROLLED_MASTER_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / "workflows" / "z_image_turbo_controlled_master_api.json"
 
 
@@ -26,7 +27,7 @@ def _appearance_facts(positive: str) -> list[str]:
     facts: list[str] = []
     appearance_tokens = (
         "岁", "年龄", "少年", "少女", "age", "year-old", "gender", "性别",
-        "face", "facial", "脸", "五官", "妆", "makeup", "hair", "发型", "发色", "发饰", "簪",
+        "face", "facial", "脸", "五官", "妆", "makeup", "hair", "发型", "发色", "发饰", "发髻", "髻", "辫", "马尾", "簪",
         "costume", "clothing", "outfit", "garment", "robe", "hanfu", "collar", "cuff", "sleeve",
         "sash", "belt", "skirt", "shoe", "boot", "cyan", "blue", "green", "white", "black", "red",
         "服装", "衣", "袍", "裙", "领", "袖", "腰带", "鞋", "靴",
@@ -39,7 +40,31 @@ def _appearance_facts(positive: str) -> list[str]:
     )
     for clause in re.split(r"[;,；\n]+", str(positive or "")):
         value = " ".join(clause.split()).strip(" ,。")
+        # Reusable props have their own canonical reference assets.  A held or
+        # carried prop makes the character sheet invent different hand poses and
+        # accessories in each view, so it must not enter character appearance.
+        value = re.sub(
+            r"(?:手持|手握|握着|拿着|背负|携带)[^，,。.;；]*[。.]?",
+            "",
+            value,
+        ).strip(" ,，。")
+        value = re.sub(
+            r"\b(?:holding|carrying|wielding)\b[^,.;]*[,.;]?",
+            "",
+            value,
+            flags=re.IGNORECASE,
+        ).strip(" ,。")
         lowered = value.lower()
+        if (
+            lowered.startswith("keep the confirmed")
+            or "logo or watermark" in lowered
+            or lowered in {
+                "age", "gender", "face", "facial", "makeup", "hairstyle",
+                "hair accessories", "body proportions", "clothing layers",
+                "collar geometry", "color palette", "footwear", "fixed accessories",
+            }
+        ):
+            continue
         if not value or any(marker in value for marker in ("未明确", "待角色设计", "未指定", "待确认")):
             continue
         if any(token in lowered for token in layout_tokens):
@@ -51,11 +76,103 @@ def _appearance_facts(positive: str) -> list[str]:
     return facts
 
 
+def compile_character_front_prompt(positive_prompt: str) -> str:
+    """Reduce a project prompt to one clean identity source photograph.
+
+    Terms such as identity master, turnaround and model sheet can make the
+    reference-free first pass produce a collage even when they occur next to a
+    one-person instruction.  Only typed appearance facts cross this boundary;
+    the layout contract is written here and contains one subject and one view.
+    """
+    facts = _appearance_facts(positive_prompt)
+    prompt = (
+        "A clean full-length studio photograph of exactly one character standing alone, centered, "
+        "facing the camera directly in a neutral symmetrical pose, both eyes visible, shoulders square, "
+        "both arms relaxed and both hands visibly empty, head and both feet fully inside the frame. "
+        "One person, one body, one face, one view, one plain "
+        "light-gray seamless background. Show the face, hair, hair ornaments, collar, sleeves, waist, "
+        "garment layers, hem and footwear clearly"
+    )
+    if facts:
+        prompt += "; confirmed appearance: " + "; ".join(facts)
+    prompt += (
+        "; compose this as a single ordinary photograph with empty background around the one character, "
+        "without any handheld object, weapon, reusable prop, added jewelry, arm band, inset portrait, "
+        "duplicate, secondary figure, rear view, side view, panel, grid, collage, "
+        "contact sheet, model sheet, turnaround sheet, poster, caption, label, typography, logo or watermark"
+    )
+    return prompt
+
+
 def compile_zimage_controlled_master_workflow(
+    workflow: dict[str, Any], *, front_source_name: str, face_source_name: str,
+    pose_sheet_name: str, positive_prompt: str, negative_prompt: str,
+    seed: int, filename_prefix: str,
+) -> dict[str, Any]:
+    """Compile one identity-LoRA sample containing fixed front/side/back poses.
+
+    A pose ControlNet can enforce the three silhouettes, but it cannot preserve
+    identity or garment construction.  The i2L hypernetwork turns the canonical
+    front and its head crop into the LoRA used by the same full-sheet sample, so
+    face, hair and costume conditioning remain active across all three panels.
+    """
+    compiled = deepcopy(workflow)
+    front = _required_node(compiled, "1", "LoadImage")
+    face = _required_node(compiled, "2", "LoadImage")
+    loader = _required_node(compiled, "3", "ZImageI2LV2Loader")
+    _required_node(compiled, "4", "ImageBatch")
+    _required_node(compiled, "5", "ImageBatch")
+    _required_node(compiled, "6", "ZImageI2LV2ExtractLoRA")
+    pose = _required_node(compiled, "7", "LoadImage")
+    sample = _required_node(compiled, "8", "ZImageI2LV2SampleControlNet")
+    save = _required_node(compiled, "9", "SaveImage")
+
+    front["inputs"]["image"] = str(front_source_name)
+    face["inputs"]["image"] = str(face_source_name)
+    pose["inputs"]["image"] = str(pose_sheet_name)
+    loader["inputs"].update({
+        "device": "cuda", "dtype": "bfloat16", "low_vram": True,
+        "modelscope_cache": "", "load_controlnet": True,
+        "base_model": "z-image-turbo",
+    })
+
+    facts = _appearance_facts(positive_prompt)
+    prompt = (
+        "One continuous studio character turnaround sheet with exactly three equal edge-to-edge panels: "
+        "left is one strict front full-body view; center is one strict left-facing 90-degree side full-body view "
+        "with one eye visible; right is one strict 180-degree rear full-body view with the face completely invisible. "
+        "Use the supplied canonical front image and face crop as the exact identity and outfit source. The same person, "
+        "visual age, gender, face, makeup, hairstyle, hair ornament, body, garment construction, collar, sleeves, "
+        "sash, hem, footwear, fabric and colors must be identical in all three panels. No redesign"
+    )
+    if facts:
+        prompt += "; confirmed appearance: " + "; ".join(facts)
+    prompt += "; neutral standing pose, head and both feet visible in every panel, plain light-gray studio, no extra person, no fourth panel, no labels or text"
+    prompt += (
+        "; the front, profile and rear must share the exact same hairline, center part, bun height, bun shape, "
+        "hair ornament position, loose-hair length, collar overlap, sleeve width, waist sash and skirt layers"
+        "; both hands are empty in every view; do not add arm bands, bracelets, jewelry, weapons or handheld props"
+    )
+    sample["inputs"].update({
+        "prompt": prompt,
+        "negative_prompt": str(negative_prompt or "").strip(),
+        "control_scale": 0.75,
+        "seed": int(seed),
+        "cfg_scale": 1.0,
+        "num_inference_steps": 16,
+        "sigma_shift": 0.0,
+        "width": 2304,
+        "height": 1024,
+    })
+    save["inputs"]["filename_prefix"] = str(filename_prefix or "Xiaoduan/ZImageTurbo/ControlledMaster")
+    return compiled
+
+
+def compile_zimage_controlled_layout_workflow(
     workflow: dict[str, Any], *, source_sheet_name: str, pose_sheet_name: str,
     positive_prompt: str, seed: int, filename_prefix: str,
 ) -> dict[str, Any]:
-    """Compile one diffusion sample containing fixed front/side/back poses."""
+    """Compile the structural draft used by the identity-conditioned pass."""
     compiled = deepcopy(workflow)
     pose = _required_node(compiled, "1", "LoadImage")
     source = _required_node(compiled, "2", "LoadImage")
@@ -67,29 +184,28 @@ def compile_zimage_controlled_master_workflow(
     text = _required_node(compiled, "9", "CLIPTextEncode")
     sampler = _required_node(compiled, "12", "KSampler")
     save = _required_node(compiled, "14", "SaveImage")
-
     pose["inputs"]["image"] = str(pose_sheet_name)
     source["inputs"]["image"] = str(source_sheet_name)
     unet["inputs"]["unet_name"] = ZIMAGE_TURBO_UNET
     vae["inputs"]["vae_name"] = ZIMAGE_TURBO_VAE
     clip["inputs"]["clip_name"] = ZIMAGE_TURBO_CLIP
     control["inputs"]["strength"] = 0.95
-
     facts = _appearance_facts(positive_prompt)
     prompt = (
-        "One continuous studio character turnaround sheet with exactly three equal edge-to-edge panels: "
-        "left is one strict front full-body view; center is one strict left-facing 90-degree side full-body view "
-        "with one eye visible; right is one strict 180-degree rear full-body view with the face completely invisible. "
-        "Use the supplied repeated canonical front image as the exact identity and outfit source. The same person, "
-        "visual age, gender, face, makeup, hairstyle, hair ornament, body, garment construction, collar, sleeves, "
-        "sash, hem, footwear, fabric and colors must be identical in all three panels. No redesign"
+        "One continuous studio character turnaround structure sheet with exactly three equal edge-to-edge panels: "
+        "left strict front full-body, center strict left-facing 90-degree side full-body with one eye visible, "
+        "right strict 180-degree rear full-body with the face completely invisible. Use the repeated canonical "
+        "front as the subject source. Keep one person, one garment and one hairstyle across the sheet"
     )
     if facts:
         prompt += "; confirmed appearance: " + "; ".join(facts)
-    prompt += "; neutral standing pose, head and both feet visible in every panel, plain light-gray studio, no extra person, no fourth panel, no labels or text"
+    prompt += (
+        "; neutral standing pose with both hands empty, head and feet visible, plain light-gray studio, "
+        "no handheld object, weapon, reusable prop, arm band or added jewelry, no text, no fourth panel"
+    )
     text["inputs"]["text"] = prompt
     sampler["inputs"]["seed"] = int(seed)
-    save["inputs"]["filename_prefix"] = str(filename_prefix or "Xiaoduan/ZImageTurbo/ControlledMaster")
+    save["inputs"]["filename_prefix"] = str(filename_prefix or "Xiaoduan/ZImageTurbo/ControlledLayout")
     return compiled
 
 
@@ -452,16 +568,15 @@ class ZImageTemporalExecutor:
         )
         return await self.adapter.queue_workflow(compiled)
 
-    async def queue_controlled_master(
+    async def queue_controlled_layout(
         self,
         *,
         front_source_path: Path,
         positive_prompt: str,
-        negative_prompt: str,
         seed: int,
         filename_prefix: str,
     ) -> dict[str, Any]:
-        """Generate all three views together from one canonical front source."""
+        """Generate a three-view structural draft from the canonical front."""
         path = Path(front_source_path)
         if not path.is_file() or path.stat().st_size <= 0:
             raise ZImageWorkflowError("canonical front source is unavailable")
@@ -474,7 +589,7 @@ class ZImageTemporalExecutor:
 
         pose_images = [
             Image.open(BytesIO(_turnaround_pose_png(view))).convert("RGB")
-            for view in ("back", "side", "back")
+            for view in ("front", "side", "back")
         ]
         pose_sheet = Image.new("RGB", (front.width * 3, front.height), "black")
         for index, pose_image in enumerate(pose_images):
@@ -483,14 +598,64 @@ class ZImageTemporalExecutor:
         pose_sheet.save(pose_bytes, format="PNG", compress_level=4)
 
         source_uploaded = await self.adapter.upload_reference(
-            filename=f"controlled-master-source-{path.stem}.png",
+            filename=f"controlled-layout-source-{path.stem}.png",
             content=source_bytes.getvalue(),
             overwrite=True,
         )
         pose_uploaded = await self.adapter.upload_reference(
-            filename=f"controlled-master-poses-{path.stem}.png",
+            filename=f"controlled-layout-poses-{path.stem}.png",
             content=pose_bytes.getvalue(),
             overwrite=True,
+        )
+
+        def uploaded_name(value: dict[str, Any]) -> str:
+            folder = str(value.get("subfolder") or "").strip("/\\")
+            return f"{folder}/{value['name']}" if folder else str(value["name"])
+
+        workflow = json.loads(CONTROLLED_LAYOUT_WORKFLOW_PATH.read_text(encoding="utf-8"))
+        compiled = compile_zimage_controlled_layout_workflow(
+            workflow,
+            source_sheet_name=uploaded_name(source_uploaded),
+            pose_sheet_name=uploaded_name(pose_uploaded),
+            positive_prompt=positive_prompt,
+            seed=seed,
+            filename_prefix=filename_prefix,
+        )
+        return await self.adapter.queue_workflow(compiled)
+
+    async def queue_controlled_master(
+        self,
+        *,
+        front_source_path: Path,
+        face_source_path: Path,
+        control_sheet_path: Path,
+        positive_prompt: str,
+        negative_prompt: str,
+        seed: int,
+        filename_prefix: str,
+    ) -> dict[str, Any]:
+        """Refine a structural draft using identity LoRA from the canonical front."""
+        path = Path(front_source_path)
+        face_path = Path(face_source_path)
+        control_path = Path(control_sheet_path)
+        for required, message in (
+            (path, "canonical front source is unavailable"),
+            (face_path, "canonical face crop is unavailable"),
+            (control_path, "controlled layout sheet is unavailable"),
+        ):
+            if not required.is_file() or required.stat().st_size <= 0:
+                raise ZImageWorkflowError(message)
+        front_uploaded = await self.adapter.upload_reference(
+            filename=f"controlled-master-front-{path.stem}.png",
+            content=_letterbox_reference(path), overwrite=True,
+        )
+        face_uploaded = await self.adapter.upload_reference(
+            filename=f"controlled-master-face-{path.stem}.png",
+            content=_letterbox_reference(face_path), overwrite=True,
+        )
+        control_uploaded = await self.adapter.upload_reference(
+            filename=f"controlled-master-layout-{path.stem}.png",
+            content=control_path.read_bytes(), overwrite=True,
         )
 
         def uploaded_name(value: dict[str, Any]) -> str:
@@ -500,9 +665,11 @@ class ZImageTemporalExecutor:
         workflow = json.loads(CONTROLLED_MASTER_WORKFLOW_PATH.read_text(encoding="utf-8"))
         compiled = compile_zimage_controlled_master_workflow(
             workflow,
-            source_sheet_name=uploaded_name(source_uploaded),
-            pose_sheet_name=uploaded_name(pose_uploaded),
+            front_source_name=uploaded_name(front_uploaded),
+            face_source_name=uploaded_name(face_uploaded),
+            pose_sheet_name=uploaded_name(control_uploaded),
             positive_prompt=positive_prompt,
+            negative_prompt=negative_prompt,
             seed=seed,
             filename_prefix=filename_prefix,
         )
@@ -514,5 +681,6 @@ __all__ = [
     "ZImageWorkflowError",
     "compile_zimage_workflow",
     "compile_zimage_turnaround_workflow",
+    "compile_zimage_controlled_layout_workflow",
     "compile_zimage_controlled_master_workflow",
 ]

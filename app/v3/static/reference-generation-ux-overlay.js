@@ -307,7 +307,7 @@
         });
         const phase = String(result?.generation_phase || '').toLowerCase();
         notify(result?.already_pending ? '该参考图已经在生成中。'
-          : phase === 'character_master' ? '角色身份母版已开始生成；先固定唯一正面定装，再用身份与姿态控制生成侧面和背面。'
+          : phase === 'character_master' ? '角色身份母版已开始生成；先固定正面定装，再生成三视图结构底稿，并用同一身份权重统一脸、发型和服装。'
           : phase === 'face_anchor' ? '锁脸图已开始生成；完成后采用即可进入服装定装。'
           : phase === 'costume' ? '服装定装图已开始生成；完成后采用即可进入三视图。'
           : phase === 'turnaround' ? '三视图候选已开始生成。'

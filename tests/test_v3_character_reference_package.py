@@ -90,7 +90,7 @@ class CharacterReferencePackageTests(unittest.TestCase):
         self.assertNotIn('"mode": "reference_img2img"', backend)
         self.assertIn("character_reference_package_v3", backend)
         self.assertIn("front_face_crop_plus_front_costume_plus_full_turnaround", backend)
-        self.assertIn("zimage_front_then_dual_controlnet_three_view", backend)
+        self.assertIn("zimage_front_layout_then_i2l_identity_master", backend)
         self.assertIn("derived_from_adopted_master", backend)
         self.assertIn("采用母版并完成角色资产包", state_owner)
         self.assertIn("角色母版只需采用一次", state_owner)

@@ -9,7 +9,7 @@ from PIL import Image
 
 from app.v3.contracts import Capability
 from app.v3.generation_executor import ReferenceAsset, ReferenceAssetError
-from app.v3.zimage_temporal_executor import ZImageTemporalExecutor
+from app.v3.zimage_temporal_executor import ZImageTemporalExecutor, compile_character_front_prompt
 
 from .contracts import StepActivityInput, StepActivityResult
 from .production_cached_executor import CachedMaterializedDomainExecutor
@@ -127,6 +127,7 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
                 # costume view.  Side/back are generated below from this exact
                 # image with identity LoRA plus deterministic pose controls.
                 width, height = 768, 1024
+                positive = compile_character_front_prompt(positive)
             if phase == "costume":
                 # A square full-body render made the face too small for stable
                 # identity post-processing. This portrait canvas was verified on
@@ -188,7 +189,7 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
                         "positive_prompt": positive,
                         "negative_prompt": negative,
                         "image_conditioning": (
-                            "generated_front_plus_source_image_and_deterministic_side_back_pose"
+                            "clean_front_then_three_view_layout_then_i2l_identity_refinement"
                             if controlled_master
                             else "adopted_face_plus_costume_i2l_with_pose_control" if phase == "turnaround"
                             else ""
@@ -231,28 +232,70 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
                         (512, 512), Image.Resampling.LANCZOS,
                     ).save(face_path)
 
-            turnaround_prompt_id = str(job.get("turnaround_prompt_id") or "").strip()
+            turnaround_prompt_id = str(job.get("layout_prompt_id") or "").strip()
             if not turnaround_prompt_id:
                 params = job.get("generation_params") if isinstance(job.get("generation_params"), dict) else {}
-                queued = await zimage.queue_controlled_master(
+                queued = await zimage.queue_controlled_layout(
                     front_source_path=front_path,
                     positive_prompt=str(params.get("positive_prompt") or ""),
-                    negative_prompt=str(params.get("negative_prompt") or ""),
                     seed=int(params.get("seed") or 0),
-                    filename_prefix=f"Xiaoduan/ZImageTurbo/{input.step.idempotency_key}-master",
+                    filename_prefix=f"Xiaoduan/ZImageTurbo/{input.step.idempotency_key}-layout",
                 )
                 turnaround_prompt_id = str(queued["prompt_id"])
                 job.update({
                     "front_prompt_id": front_prompt_id,
                     "front_artifact_path": str(front_path),
                     "face_crop_path": str(face_path),
-                    "turnaround_prompt_id": turnaround_prompt_id,
+                    "layout_prompt_id": turnaround_prompt_id,
                     "prompt_id": turnaround_prompt_id,
                     "artifact": None,
-                    "state": "controlled_views_queued",
+                    "state": "controlled_layout_queued",
                 })
                 params.update({"width": 2304, "height": 1024})
                 job["generation_params"] = params
+                job = self.jobs.put(input.project_id, input.step.idempotency_key, job)
+
+            layout_artifact = job.get("layout_artifact") if isinstance(job.get("layout_artifact"), dict) else None
+            if layout_artifact is None:
+                layout_artifact = await self._wait_for_artifact(
+                    adapter,
+                    turnaround_prompt_id,
+                    timeout_seconds=float(self.settings.comfyui_task_timeout_seconds),
+                )
+                job["layout_artifact"] = layout_artifact
+                job["state"] = "controlled_layout_generated"
+                job = self.jobs.put(input.project_id, input.step.idempotency_key, job)
+            layout_suffix = self._suffix(str(layout_artifact.get("filename") or ""), "image")
+            layout_path = self.image_root / f"{artifact_id}-layout{layout_suffix}"
+            if not layout_path.is_file() or layout_path.stat().st_size <= 0:
+                await self._download_artifact(adapter, layout_artifact, layout_path)
+
+            master_prompt_id = str(job.get("master_prompt_id") or "").strip()
+            if not master_prompt_id:
+                params = job.get("generation_params") if isinstance(job.get("generation_params"), dict) else {}
+                # The structural pass uses native Comfy models while the final
+                # pass loads DiffSynth i2L plus ControlNet. Explicitly release
+                # the first model family so consecutive character jobs do not
+                # accumulate host/GPU memory until the Comfy process is killed.
+                await adapter.free_memory()
+                queued = await zimage.queue_controlled_master(
+                    front_source_path=front_path,
+                    face_source_path=face_path,
+                    control_sheet_path=layout_path,
+                    positive_prompt=str(params.get("positive_prompt") or ""),
+                    negative_prompt=str(params.get("negative_prompt") or ""),
+                    seed=int(params.get("seed") or 0),
+                    filename_prefix=f"Xiaoduan/ZImageTurbo/{input.step.idempotency_key}-master",
+                )
+                master_prompt_id = str(queued["prompt_id"])
+                job.update({
+                    "layout_artifact_path": str(layout_path),
+                    "master_prompt_id": master_prompt_id,
+                    "turnaround_prompt_id": master_prompt_id,
+                    "prompt_id": master_prompt_id,
+                    "artifact": None,
+                    "state": "identity_master_queued",
+                })
                 job = self.jobs.put(input.project_id, input.step.idempotency_key, job)
 
         prompt_id = self._required(job, "prompt_id")
@@ -312,13 +355,13 @@ class UnifiedImageDomainExecutor(CachedMaterializedDomainExecutor):
                 "reference_count": str(len(references)),
                 "reference_phase": phase,
                 "runtime_image_backend": (
-                    "z_image_turbo_dual_controlnet"
+                    "z_image_turbo_layout_plus_i2l_identity_control"
                     if controlled_master
                     else "z_image_turbo_facefusion" if hybrid_identity
                     else "z_image_turbo"
                 ),
                 "identity_postprocess_required": "true" if hybrid_identity else "false",
-                "view_structure_control": "front_source_plus_fixed_side_back_pose" if controlled_master else "",
+                "view_structure_control": "generated_three_view_layout_then_identity_lora_refinement" if controlled_master else "",
                 "front_prompt_id": str(job.get("front_prompt_id") or ""),
                 "width": str(params.get("width") or ""),
                 "height": str(params.get("height") or ""),

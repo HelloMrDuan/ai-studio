@@ -38,14 +38,16 @@ _DOMAIN_REFERENCE_KINDS = {"scene", "location", "prop"}
 _DOMAIN_SUBJECT_LEAK_TOKENS = (
     "角色", "人物", "主角", "男主", "女主", "少年", "少女", "人像", "肖像", "脸", "面部",
     "人体", "身体", "手持", "手握", "手中", "握着", "拿着", "背负", "携带", "佩戴", "穿着", "身穿",
-    "剧情动作", "人物动作",
+    "腰间", "挂在", "挂于", "系在", "系于", "剧情动作", "人物动作",
     "character", "person", "people", "human figure", "protagonist", "portrait", "face", "facial",
     "wearing", "worn by", "holding", "held by", "carrying", "carried by", "wielding", "mounted on a person",
+    "attached to a person", "hanging from a person", "strapped to a person",
 )
 _DOMAIN_BOILERPLATE_TOKENS = (
     "项目一致性参考资产", "最高优先级", "项目已确认设定", "参考图布局要求",
     "保持静态环境基准表达", "保持静态产品参考表达", "不得用参考图版式重新设计角色",
 )
+_DOMAIN_GENERIC_VALUES = {"道具", "场景", "地点", "prop", "scene", "location"}
 
 
 @dataclass(frozen=True)
@@ -298,6 +300,38 @@ def _join_unique(parts: tuple[str, ...] | list[str]) -> str:
     return ", ".join(result)
 
 
+def _strip_domain_schema_prefix(value: str) -> str:
+    """Drop persisted metadata keys while keeping their intrinsic visual value."""
+    text = str(value or "").strip()
+    for _ in range(2):
+        match = re.match(
+            r"^(?:(?:stable_profile|stable_design|default_state|metadata|profile|design)"
+            r"(?:\.[^:：]+)*)\s*[:：]\s*(.+)$",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            match = re.match(r"^[A-Za-z_][\w.-]*(?:\.[\w.-]+)+\s*[:：]\s*(.+)$", text)
+        if not match:
+            break
+        text = match.group(1).strip()
+    return text
+
+
+def _domain_reference_subject_name(text: str, kind: str) -> str:
+    if kind != "prop":
+        return ""
+    source = str(text or "")
+    for pattern in (
+        r"道具\s*[「『\"']([^」』\"']+)[」』\"']",
+        r"prop\s*[\"']([^\"']+)[\"']",
+    ):
+        match = re.search(pattern, source, flags=re.IGNORECASE)
+        if match:
+            return " ".join(match.group(1).split()).strip()
+    return ""
+
+
 def _domain_reference_text(text: str, kind: str) -> str:
     """Keep intrinsic location/prop facts while dropping narrative subject leakage.
 
@@ -322,6 +356,16 @@ def _domain_reference_text(text: str, kind: str) -> str:
             continue
         if re.search(r"(?:^|\.)(?:name|名称|名字)\s*[:：]", value, flags=re.IGNORECASE):
             continue
+
+        value = _strip_domain_schema_prefix(value)
+        value = " ".join(value.split()).strip(" -\t,，。")
+        if not value or value.lower() in _DOMAIN_GENERIC_VALUES:
+            continue
+        lowered = value.lower()
+        if any(token.lower() in lowered for token in _DOMAIN_SUBJECT_LEAK_TOKENS):
+            continue
+        if any(token in value for token in _DOMAIN_BOILERPLATE_TOKENS):
+            continue
         if value not in rows:
             rows.append(value)
     return "; ".join(rows)
@@ -332,19 +376,19 @@ def _domain_reference_direction_context(direction: VisualDirection, kind: str) -
     if kind not in _DOMAIN_REFERENCE_KINDS:
         return direction.compile_context()
 
-    def add(parts: list[str], label: str, value: Any) -> None:
+    def add(parts: list[str], value: Any) -> None:
         text = str(value or "").strip()
         if not text:
             return
         safe = _domain_reference_text(text, kind)
         if safe:
-            parts.append(f"{label}: {safe}")
+            parts.append(safe)
 
     parts: list[str] = []
-    add(parts, "世界观", direction.world_style)
-    add(parts, "文化背景", direction.culture)
-    add(parts, "时代", direction.era)
-    add(parts, "美术风格", direction.art_style)
+    add(parts, direction.world_style)
+    add(parts, direction.culture)
+    add(parts, direction.era)
+    add(parts, direction.art_style)
 
     world = str(direction.world_style or "").lower()
     culture = str(direction.culture or "").lower()
@@ -367,10 +411,10 @@ def _domain_reference_direction_context(direction: VisualDirection, kind: str) -
             parts.append("eastern fantasy object craftsmanship and material language")
         if east_asian and ancient:
             parts.append("ancient Chinese material culture and traditional craftsmanship")
-        for value in (direction.prop_rules or {}).values():
-            safe = _domain_reference_text(str(value or ""), kind)
-            if safe:
-                parts.append(safe)
+        # Canonical prop references are entity-specific. Project-wide prop rules
+        # can mention several props together (for example sword + pendant), which
+        # makes a one-object product reference invent companion objects. The
+        # formal stable profile remains the sole design authority here.
 
     return ", ".join(dict.fromkeys(part for part in parts if part))
 
@@ -406,6 +450,7 @@ class PromptCompiler:
             anchor_text = naturalize_visual_anchor(contract.identity_anchors)
 
         domain_reference = reference and kind in _DOMAIN_REFERENCE_KINDS
+        prop_subject = _domain_reference_subject_name(asset_description, kind) if domain_reference else ""
         if domain_reference:
             safe_anchor = _domain_reference_text(anchor_text, kind)
             safe_contract = _domain_reference_text(contract_context, kind)
@@ -435,7 +480,13 @@ class PromptCompiler:
 
         if reference:
             if domain_reference:
+                subject_clause = (
+                    f"single isolated product study of exactly one {prop_subject}, one complete assembled item"
+                    if kind == "prop" and prop_subject
+                    else ""
+                )
                 positive = _join_unique([
+                    subject_clause,
                     visual_context,
                     safe_description,
                     template.positive if template else "",

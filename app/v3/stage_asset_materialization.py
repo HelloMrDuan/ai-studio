@@ -338,12 +338,21 @@ class StageOutputAssetMaterializer:
             for key, value in metadata.items():
                 base = merged.get(key) if isinstance(merged.get(key), dict) else {}
                 base = dict(base)
-                base.update(value)
-                if key == "continuity":
+                if key == "authoring":
+                    manual_design = _clean(base.get("stable_design")) if _clean(base.get("updated_at")) else ""
+                    base.update(value)
+                    if manual_design:
+                        base["stable_design"] = manual_design
+                elif key == "continuity":
                     old_core = base.get("core_profile") if isinstance(base.get("core_profile"), dict) else {}
                     core = dict(old_core)
                     core["阶段正式设定"] = design
                     base["core_profile"] = core
+                    default_state = value.get("default_state") if isinstance(value, dict) else None
+                    if isinstance(default_state, dict) and "default_state" not in base:
+                        base["default_state"] = dict(default_state)
+                else:
+                    base.update(value)
                 merged[key] = base
             return self.production.update_entity(project_id, _clean(existing.get("entity_id")), {"stage": stage, "skill": "xiaoduan-stage-asset-materializer", "metadata": merged})
 

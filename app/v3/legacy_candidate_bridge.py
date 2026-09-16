@@ -442,9 +442,26 @@ class LegacyCandidateV3Bridge:
 
     def publish_confirmed_shot_candidate(self, **kwargs: Any) -> dict[str, Any]:
         row = kwargs.get("row") if isinstance(kwargs.get("row"), dict) else {}
+        project_id = str(kwargs.get("project_id") or row.get("project_id") or "").strip()
+        output_index = int(kwargs.get("output_index") or 0)
+        bootstrap = getattr(self, "reference_bootstrap", None)
+        if project_id and bootstrap is not None and hasattr(bootstrap, "validate_master_adoption"):
+            bootstrap.validate_master_adoption(project_id, row, output_index)
         result = self.original_publish(**kwargs)
-        resource_id = str(row.get("v3_resource_id") or "").strip()
-        project_id = str(kwargs.get("project_id") or "").strip()
+        confirmed_row = (
+            result.get("candidate")
+            if isinstance(result, dict) and isinstance(result.get("candidate"), dict)
+            else row
+        )
+        project_id = str(project_id or confirmed_row.get("project_id") or "").strip()
+        if project_id and bootstrap is not None and hasattr(bootstrap, "materialize_master_derivatives"):
+            derived = bootstrap.materialize_master_derivatives(project_id, confirmed_row, output_index)
+            if derived:
+                result["character_master_derivatives"] = {
+                    role: str(asset.get("asset_id") or "") for role, asset in derived.items()
+                }
+
+        resource_id = str(confirmed_row.get("v3_resource_id") or row.get("v3_resource_id") or "").strip()
         if not resource_id or not project_id:
             return result
         try:
@@ -454,7 +471,7 @@ class LegacyCandidateV3Bridge:
                 passed=True,
                 audit={
                     "source": "original_workbench_manual_adoption",
-                    "candidate_id": str(row.get("candidate_id") or ""),
+                    "candidate_id": str(confirmed_row.get("candidate_id") or row.get("candidate_id") or ""),
                     "manual_confirmation": True,
                 },
             )
@@ -464,7 +481,7 @@ class LegacyCandidateV3Bridge:
         except ResourceStoreError as exc:
             # If the candidate was already mirrored by a repeated confirm call,
             # treat the V3 side as idempotent when it is already adopted.
-            logical_key = str(row.get("v3_logical_key") or "")
+            logical_key = str(confirmed_row.get("v3_logical_key") or row.get("v3_logical_key") or "")
             adopted = self.resources.adopted(project_id, logical_key) if logical_key else None
             if not adopted or str(adopted.get("resource_id") or "") != resource_id:
                 raise RuntimeError(f"原页面已采用，但新版资源同步失败：{exc}") from exc

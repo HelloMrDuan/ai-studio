@@ -63,23 +63,40 @@ class CharacterReferencePackageTests(unittest.TestCase):
         self.assertNotIn("青云山断崖", costume)
         self.assertEqual(turnaround, raw)
 
-    def test_package_pipeline_is_manual_between_all_three_stages(self):
+    def test_character_master_anchor_removes_internal_schema_and_unknown_values(self):
+        raw = (
+            "name: 测试角色; stable_profile.年龄: 17岁; stable_profile.发型: 黑发高髻; "
+            "stable_profile.服装: 浅青色古式长裙; stable_profile.脸部: 未明确描述，待角色设计; "
+            "change_reason: 角色基础造型; effective_story_node_ids: N001"
+        )
+        master = _phase_anchor_text(raw, "character_master")
+        self.assertIn("17岁", master)
+        self.assertIn("黑发高髻", master)
+        self.assertIn("浅青色古式长裙", master)
+        self.assertNotIn("stable_profile", master)
+        self.assertNotIn("name", master)
+        self.assertNotIn("未明确", master)
+        self.assertNotIn("change_reason", master)
+        self.assertNotIn("effective_story", master)
+
+    def test_package_pipeline_uses_one_adopted_master_and_deterministic_crops(self):
         root = Path(__file__).resolve().parents[1]
         backend = (root / "app" / "v3" / "character_reference_package.py").read_text(encoding="utf-8")
-        frontend = (root / "app" / "v3" / "static" / "character-reference-package-overlay.js").read_text(encoding="utf-8")
+        main = (root / "app" / "main.py").read_text(encoding="utf-8")
         state_owner = (root / "app" / "v3" / "static" / "reference-generation-ux-overlay.js").read_text(encoding="utf-8")
-        self.assertIn('"generation_phase": "face_anchor"', backend)
-        self.assertIn('"generation_phase": "costume"', backend)
-        self.assertIn('"generation_phase": "turnaround"', backend)
-        self.assertIn('"reference_asset_ids": [', backend)
-        self.assertIn('_clean(face_ready.get("asset_id"))', backend)
-        self.assertIn('_clean(costume_ready.get("asset_id"))', backend)
-        self.assertIn("character_reference_package_v1", backend)
-        self.assertIn("window.v3AdoptReference", frontend)
-        self.assertIn("采用锁脸图", state_owner)
-        self.assertIn("生成服装定装图", state_owner)
-        self.assertNotIn("button.textContent", frontend)
-        self.assertNotIn("锁脸图已采用，正在用这张脸继续生成三视图", frontend)
+        self.assertIn('"generation_phase": "character_master"', backend)
+        self.assertIn('"mode": "txt2img"', backend)
+        self.assertIn('"width": 768, "height": 1024', backend)
+        self.assertNotIn('"mode": "reference_img2img"', backend)
+        self.assertIn("character_reference_package_v3", backend)
+        self.assertIn("front_face_crop_plus_front_costume_plus_full_turnaround", backend)
+        self.assertIn("zimage_front_then_dual_controlnet_three_view", backend)
+        self.assertIn("derived_from_adopted_master", backend)
+        self.assertIn("采用母版并完成角色资产包", state_owner)
+        self.assertIn("角色母版只需采用一次", state_owner)
+        self.assertIn("install_character_master_confirmation_guard", main)
+        self.assertIn("service.validate_master_adoption(project_id, row, 0)", backend)
+        self.assertIn("service.materialize_master_derivatives(project_id, confirmed, 0)", backend)
 
 
 if __name__ == "__main__":

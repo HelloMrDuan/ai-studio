@@ -7,6 +7,8 @@ LOG="${COMFY_LOG:-/root/autodl-tmp/ai-studio/logs/comfyui.log}"
 PIDFILE="${COMFY_PIDFILE:-/root/autodl-tmp/ai-studio/logs/comfyui.pid}"
 HOST="${COMFY_HOST:-0.0.0.0}"
 PORT="${COMFY_PORT:-8188}"
+MODELSCOPE_CACHE="${MODELSCOPE_CACHE:-/root/autodl-tmp/models/modelscope}"
+DIFFSYNTH_MODEL_BASE_PATH="${DIFFSYNTH_MODEL_BASE_PATH:-/root/autodl-tmp/models/diffsynth}"
 
 mkdir -p "$(dirname "$LOG")"
 
@@ -37,6 +39,9 @@ echo "===== $(date '+%F %T') Xiaoduan V3 safe ComfyUI start =====" >> "$LOG"
 # memory envelope. cache-none also prevents prior image/FaceID model caches from
 # competing with the H3 text encoder / VAE / diffusion model.
 nohup env -u OMP_NUM_THREADS MALLOC_ARENA_MAX=2 \
+  MODELSCOPE_CACHE="$MODELSCOPE_CACHE" \
+  DIFFSYNTH_MODEL_BASE_PATH="$DIFFSYNTH_MODEL_BASE_PATH" \
+  DIFFSYNTH_SKIP_DOWNLOAD=True \
   "$PYTHON" main.py \
   --listen "$HOST" \
   --port "$PORT" \

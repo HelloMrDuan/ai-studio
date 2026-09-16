@@ -207,9 +207,12 @@ class V3RuntimeModelContract:
             },
             "character_reference_package": {
                 "primary_renderer": ZIMAGE_TURBO_KEY,
-                "identity_postprocess": "facefusion",
-                "policy": "zimage_primary_facefusion_identity",
-                "phases": ["face_anchor", "costume", "turnaround"],
+                "identity_postprocess": "zimage_union_source_image_condition",
+                "pose_control": "zimage_controlnet_union_fixed_side_back",
+                "policy": "canonical_front_then_controlled_side_back_then_deterministic_crops",
+                "phases": ["character_master"],
+                "front_source": {"width": 768, "height": 1024},
+                "canvas": {"width": 2304, "height": 1024, "panels": 3},
             },
             "image_reference_other_domains": {
                 "backend": "sdxl_reference_ipadapter",

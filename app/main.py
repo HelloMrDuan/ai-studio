@@ -102,7 +102,10 @@ from app.v3.reference_generation_optimization import (
     ReferenceGenerationOptimizer,
     create_reference_generation_optimization_router,
 )
-from app.v3.character_reference_package import CharacterReferencePackageBootstrap
+from app.v3.character_reference_package import (
+    CharacterReferencePackageBootstrap,
+    install_character_master_confirmation_guard,
+)
 from app.v3.runtime_model_contract import (
     V3RuntimeModelContract,
     create_runtime_model_contract_router,
@@ -115,6 +118,11 @@ runtime_model_contract.install()
 legacy_v3_bridge.reference_bootstrap = CharacterReferencePackageBootstrap(
     legacy_runtime,
     submit_candidate=runtime_model_contract.execute_candidate,
+)
+install_character_master_confirmation_guard(
+    app,
+    legacy_runtime,
+    legacy_v3_bridge.reference_bootstrap,
 )
 reference_generation_optimizer = ReferenceGenerationOptimizer(legacy_v3_bridge, max_concurrency=2)
 reference_generation_optimizer.install()

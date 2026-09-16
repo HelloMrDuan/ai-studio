@@ -17,7 +17,10 @@ from app.v3.generation_executor import ReferenceAsset
 from app.v3.runtime_model_contract import V3RuntimeModelContract
 from app.v3.workflow.production_worker_executor import ProductionWorkerExecutor
 from app.v3.workflow.unified_image_executor import UnifiedImageDomainExecutor
-from app.v3.zimage_temporal_executor import compile_zimage_turnaround_workflow
+from app.v3.zimage_temporal_executor import (
+    compile_zimage_controlled_master_workflow,
+    compile_zimage_turnaround_workflow,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -121,6 +124,9 @@ class V3RuntimeModelContractTests(unittest.TestCase):
         compiled = compile_zimage_turnaround_workflow(
             workflow,
             adopted_costume_name="xiaoduan-v3/adopted-costume.png",
+            adopted_face_name="xiaoduan-v3/adopted-face.png",
+            side_pose_name="xiaoduan-v3/side-pose.png",
+            back_pose_name="xiaoduan-v3/back-pose.png",
             positive_prompt=(
                 "STRICT VISUAL AGE: 17岁, stable_profile.阶段正式设定: "
                 "17岁的少年，身穿深蓝色古式长袍。; 4-panel character turnaround sheet"
@@ -130,14 +136,45 @@ class V3RuntimeModelContractTests(unittest.TestCase):
             filename_prefix="test/turnaround",
         )
         self.assertEqual(compiled["1"]["inputs"]["image"], "xiaoduan-v3/adopted-costume.png")
-        self.assertEqual(compiled["9"]["inputs"]["denoise"], 0.95)
-        self.assertEqual(compiled["10"]["inputs"]["denoise"], 0.85)
-        self.assertIn("90-degree side profile", compiled["6"]["inputs"]["text"])
-        self.assertIn("180-degree rear view", compiled["7"]["inputs"]["text"])
-        self.assertNotIn("4-panel", compiled["6"]["inputs"]["text"])
-        self.assertNotIn("turnaround sheet", compiled["7"]["inputs"]["text"])
-        self.assertEqual(compiled["13"]["inputs"]["image1"], ["1", 0])
-        self.assertEqual(compiled["15"]["inputs"]["images"], ["14", 0])
+        self.assertEqual(compiled["2"]["inputs"]["image"], "xiaoduan-v3/adopted-face.png")
+        self.assertEqual(compiled["3"]["inputs"]["image"], "xiaoduan-v3/side-pose.png")
+        self.assertEqual(compiled["4"]["inputs"]["image"], "xiaoduan-v3/back-pose.png")
+        self.assertEqual(compiled["5"]["inputs"]["base_model"], "z-image-turbo")
+        self.assertTrue(compiled["5"]["inputs"]["load_controlnet"])
+        self.assertEqual(compiled["7"]["inputs"]["image2"], ["2", 0])
+        self.assertEqual(compiled["8"]["inputs"]["images"], ["7", 0])
+        self.assertEqual(compiled["9"]["inputs"]["control_image"], ["3", 0])
+        self.assertEqual(compiled["10"]["inputs"]["control_image"], ["4", 0])
+        self.assertEqual(compiled["9"]["inputs"]["cfg_scale"], 1.0)
+        self.assertEqual(compiled["9"]["inputs"]["num_inference_steps"], 12)
+        self.assertIn("90-degree side profile", compiled["9"]["inputs"]["prompt"])
+        self.assertIn("180-degree rear view", compiled["10"]["inputs"]["prompt"])
+        self.assertNotIn("4-panel", compiled["9"]["inputs"]["prompt"])
+        self.assertNotIn("turnaround sheet", compiled["10"]["inputs"]["prompt"])
+        self.assertEqual(compiled["11"]["inputs"]["image1"], ["1", 0])
+        self.assertEqual(compiled["13"]["inputs"]["images"], ["12", 0])
+        self.assertNotIn("未明确描述", compiled["9"]["inputs"]["prompt"])
+
+    def test_character_master_binds_front_pixels_and_fixed_side_back_poses(self) -> None:
+        workflow = json.loads(
+            (ROOT / "workflows" / "z_image_turbo_controlled_master_api.json").read_text(encoding="utf-8")
+        )
+        compiled = compile_zimage_controlled_master_workflow(
+            workflow,
+            source_sheet_name="master/repeated-front.png",
+            pose_sheet_name="master/front-side-back-poses.png",
+            positive_prompt="18岁少女; 浅青色交领古式长裙; 黑发高髻; 正面全身",
+            seed=88,
+            filename_prefix="test/master",
+        )
+        self.assertEqual(compiled["1"]["inputs"]["image"], "master/front-side-back-poses.png")
+        self.assertEqual(compiled["2"]["inputs"]["image"], "master/repeated-front.png")
+        self.assertEqual(compiled["7"]["inputs"]["image"], ["1", 0])
+        self.assertEqual(compiled["7"]["inputs"]["inpaint_image"], ["2", 0])
+        self.assertIn("浅青色交领古式长裙", compiled["9"]["inputs"]["text"])
+        self.assertIn("exactly three", compiled["9"]["inputs"]["text"])
+        self.assertEqual(compiled["12"]["inputs"]["seed"], 88)
+        self.assertEqual(compiled["14"]["inputs"]["images"], ["13", 0])
 
     def test_identity_postprocess_selects_face_anchor_not_costume_reference(self) -> None:
         costume = ReferenceAsset(

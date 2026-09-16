@@ -117,6 +117,15 @@ class ReferenceGenerationOptimizer:
                 "width": 1536,
                 "height": 1152,
             })
+        elif phase == "character_master":
+            params.update({
+                # This request creates the canonical front source.  The worker
+                # then generates side/back with fixed pose controls and returns
+                # the composed 2304x1024 master as the only candidate.
+                "aspect_ratio": "3:4",
+                "width": 768,
+                "height": 1024,
+            })
 
         normalized["params"] = params
         return normalized

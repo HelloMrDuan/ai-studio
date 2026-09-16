@@ -83,6 +83,7 @@
 
   function phaseLabel(item) {
     const phase = String(item?.generation_phase || '').toLowerCase();
+    if (phase === 'character_master') return '角色身份母版：正面定装源图 + 受控侧面/背面三视图';
     if (phase === 'face_anchor') return '第 1/3 阶段：锁定脸、年龄、发型与气质';
     if (phase === 'costume') return '第 2/3 阶段：锁定服装、配色、鞋履、配饰与体型';
     if (phase === 'turnaround') return '第 3/3 阶段：使用已采用锁脸图和定装图生成三视图';
@@ -96,6 +97,7 @@
       running:'模型生成中', generating:'模型生成中', completed:'候选已生成', failed:'生成失败'
     })[state] || state || '';
     const phase = String(item?.generation_phase || '').toLowerCase();
+    if (phase === 'character_master' && base) return `角色身份母版 · ${base}`;
     if (phase === 'face_anchor' && base) return `锁脸图 · ${base}`;
     if (phase === 'costume' && base) return `服装定装图 · ${base}`;
     if (phase === 'turnaround' && base) return `三视图 · ${base}`;
@@ -122,7 +124,8 @@
     for (const button of buttons) {
       const onclick = button.getAttribute('onclick') || '';
       if (onclick.includes('v3GenerateReference')) {
-        const label = p === 'face_anchor' ? '生成锁脸图'
+        const label = p === 'character_master' ? '生成角色身份母版'
+          : p === 'face_anchor' ? '生成锁脸图'
           : p === 'costume' ? '生成服装定装图'
           : p === 'turnaround' ? '生成三视图候选'
           : p === 'ready' ? '重新生成参考资产'
@@ -131,7 +134,8 @@
         button.dataset.v3ReferenceLabel = label;
       }
       if (onclick.includes('v3AdoptReference') && state === 'completed') {
-        button.textContent = p === 'face_anchor' ? '采用锁脸图并继续定装'
+        button.textContent = p === 'character_master' ? '采用母版并完成角色资产包'
+          : p === 'face_anchor' ? '采用锁脸图并继续定装'
           : p === 'costume' ? '采用定装图并继续三视图'
           : p === 'turnaround' ? '采用三视图并完成资产包'
           : '采用候选';
@@ -303,6 +307,7 @@
         });
         const phase = String(result?.generation_phase || '').toLowerCase();
         notify(result?.already_pending ? '该参考图已经在生成中。'
+          : phase === 'character_master' ? '角色身份母版已开始生成；先固定唯一正面定装，再用身份与姿态控制生成侧面和背面。'
           : phase === 'face_anchor' ? '锁脸图已开始生成；完成后采用即可进入服装定装。'
           : phase === 'costume' ? '服装定装图已开始生成；完成后采用即可进入三视图。'
           : phase === 'turnaround' ? '三视图候选已开始生成。'
@@ -321,13 +326,13 @@
       resetForProject(projectId);
       const button = [...document.querySelectorAll('#v3ReferencePanel button')].find(btn => btn.textContent.includes('自动生成缺失参考图'));
       if (button) { button.disabled = true; button.textContent = '正在批量提交…'; }
-      notify('正在创建缺失参考图任务；角色按锁脸 → 定装 → 三视图依次完成。');
+      notify('正在创建缺失参考图任务；每个角色一次生成身份母版，采用后自动裁出锁脸、定装和三视图资产。');
       try {
         const result = await json(`/api/v3/studio/projects/${encodeURIComponent(projectId)}/references/generate-missing`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'});
         const submitted = result.submitted_entity_ids || [];
         submitted.forEach(id => localPending.set(String(id), Date.now()));
         const waiting = (result.waiting_adoption_entity_ids || []).length;
-        notify(submitted.length ? `已提交 ${submitted.length} 个任务；每一阶段完成后采用即可自动进入下一阶段。` : waiting ? `已有 ${waiting} 个候选等待采用。` : '当前没有需要补生成的参考图。');
+        notify(submitted.length ? `已提交 ${submitted.length} 个任务；角色母版只需采用一次。` : waiting ? `已有 ${waiting} 个候选等待采用。` : '当前没有需要补生成的参考图。');
         startPoll();
       } catch (error) {
         notify(error.message || String(error), true);
@@ -353,7 +358,9 @@
           method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({output_index:0}),
         });
 
-        if ((phase === 'face_anchor' || phase === 'costume') && entityId) {
+        if (phase === 'character_master') {
+          notify('角色身份母版已采用，锁脸、定装和三视图资产已从同一次生成结果完成登记。');
+        } else if ((phase === 'face_anchor' || phase === 'costume') && entityId) {
           const nextName = phase === 'face_anchor' ? '服装定装图' : '三视图';
           notify(`${phase === 'face_anchor' ? '锁脸图' : '服装定装图'}已采用，正在进入${nextName}生成…`);
           // Do not carry the previous stage textarea into the next phase. The

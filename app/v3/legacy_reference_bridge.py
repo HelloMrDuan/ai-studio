@@ -76,12 +76,12 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
     @staticmethod
     def _role_rank(role: str) -> int:
         return {
-            "character_face_anchor": 0,
+            "character_reference": 0,
+            "character_face_anchor": 1,
             "location_reference": 1,
             "scene_reference": 1,
             "prop_reference": 1,
             "item_reference": 1,
-            "character_reference": 2,
             "character_turnaround": 2,
             "character_consistency": 2,
             "character_costume_reference": 3,
@@ -167,8 +167,9 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
         selected_asset_ids: set[str] = set()
 
         # Pass 1: one authoritative core reference for each relevant entity.
-        # Character face anchors win; if a legacy project lacks one, its adopted
-        # turnaround/reference is the compatibility fallback.
+        # The adopted identity master wins because it carries face, costume and
+        # all views from one sample. Legacy face anchors remain a compatibility
+        # fallback for projects created before the master pipeline.
         for entity_id in sorted(relevant):
             candidates = by_entity.get(entity_id, [])
             if not candidates:
@@ -176,6 +177,9 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
             kind = entity_types.get(entity_id, "")
             if kind == "character":
                 core = next(
+                    (item for item in candidates if str(item.get("asset_role") or "") == "character_reference"),
+                    None,
+                ) or next(
                     (item for item in candidates if str(item.get("asset_role") or "") == "character_face_anchor"),
                     None,
                 ) or next(

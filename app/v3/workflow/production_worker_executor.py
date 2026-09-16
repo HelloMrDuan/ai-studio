@@ -166,6 +166,7 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
             *,
             model: str,
             pixel_boost: str,
+            weight: float = 1.0,
         ) -> Path:
             return await self.facefusion.run(
                 processor="face_swapper",
@@ -178,16 +179,18 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
                     "output_quality": 95,
                     "face_swapper_model": model,
                     "face_swapper_pixel_boost": pixel_boost,
-                    "face_swapper_weight": 1.0,
+                    "face_swapper_weight": float(weight),
                 },
                 log=log,
             )
 
-        async def swap_with_small_face_retry(target: Path, destination: Path) -> Path:
+        async def swap_with_small_face_retry(
+            target: Path, destination: Path, *, weight: float = 1.0,
+        ) -> Path:
             try:
                 return await run_swap(
                     target, destination,
-                    model="hyperswap_1a_256", pixel_boost="512x512",
+                    model="hyperswap_1a_256", pixel_boost="512x512", weight=weight,
                 )
             except RuntimeError as first_error:
                 await log(f"首次身份锁定失败，启用小脸兼容重试：{first_error}")
@@ -202,7 +205,7 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
                 try:
                     retry_processed = await run_swap(
                         retry_target, retry_dir / "facefusion",
-                        model="inswapper_128_fp16", pixel_boost="1024x1024",
+                        model="inswapper_128_fp16", pixel_boost="1024x1024", weight=weight,
                     )
                 except RuntimeError as second_error:
                     detail = " | ".join(log_tail[-24:])
@@ -236,8 +239,16 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
                     path = panels_dir / f"panel-{index}.png"
                     panel.save(path)
                     panel_paths.append(path)
-                locked_front = await swap_with_small_face_retry(panel_paths[0], panels_dir / "front")
-                locked_side = await swap_with_small_face_retry(panel_paths[1], panels_dir / "side")
+                # The front panel is already the adopted costume reference. Running
+                # FaceFusion over it adds latency and can alter an image that is the
+                # canonical appearance anchor, so preserve it exactly.
+                locked_front = panel_paths[0]
+                # A frontal source at full swap weight deforms profile eyelids and
+                # lips. The calibrated profile pass still transfers identity but
+                # preserves the Z-Image ControlNet geometry.
+                locked_side = await swap_with_small_face_retry(
+                    panel_paths[1], panels_dir / "side", weight=0.25,
+                )
                 with Image.open(locked_front) as front, Image.open(locked_side) as side, Image.open(panel_paths[2]) as back:
                     combined = Image.new("RGB", (panel_width * 3, panels[0].height), "white")
                     combined.paste(front.convert("RGB"), (0, 0))
@@ -297,6 +308,7 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
                 "identity_similarity": f"{audit.cosine_similarity:.6f}",
                 "identity_audit_policy": audit.policy_id,
                 "reference_phase": phase,
+                "turnaround_side_facefusion_weight": "0.25" if phase == "turnaround" else "",
                 "artifact_path": str(artifact_path),
                 "bytes_written": str(artifact_path.stat().st_size),
             }

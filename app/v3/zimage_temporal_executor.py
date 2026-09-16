@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import re
 from copy import deepcopy
+from io import BytesIO
 from pathlib import Path
 from typing import Any
+
+from PIL import Image, ImageDraw
 
 from app.services.comfyui import (
     ZIMAGE_TURBO_CLIP,
@@ -16,6 +19,78 @@ from app.v3.contracts import ProviderModelSpec
 
 
 TURNAROUND_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / "workflows" / "z_image_turbo_turnaround_api.json"
+CONTROLLED_MASTER_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / "workflows" / "z_image_turbo_controlled_master_api.json"
+
+
+def _appearance_facts(positive: str) -> list[str]:
+    facts: list[str] = []
+    appearance_tokens = (
+        "岁", "年龄", "少年", "少女", "age", "year-old", "gender", "性别",
+        "face", "facial", "脸", "五官", "妆", "makeup", "hair", "发型", "发色", "发饰", "簪",
+        "costume", "clothing", "outfit", "garment", "robe", "hanfu", "collar", "cuff", "sleeve",
+        "sash", "belt", "skirt", "shoe", "boot", "cyan", "blue", "green", "white", "black", "red",
+        "服装", "衣", "袍", "裙", "领", "袖", "腰带", "鞋", "靴",
+        "fabric", "material", "color", "颜色", "材质", "配色", "配饰",
+    )
+    layout_tokens = (
+        "strict front", "front full-body", "front view", "正面全身", "正视镜头", "both eyes", "双眼",
+        "shoulders square", "双肩正对", "side view", "侧面", "back view", "背面", "turnaround", "三视图",
+        "model sheet", "panel", "分栏", "画布", "背景", "background",
+    )
+    for clause in re.split(r"[;,；\n]+", str(positive or "")):
+        value = " ".join(clause.split()).strip(" ,。")
+        lowered = value.lower()
+        if not value or any(marker in value for marker in ("未明确", "待角色设计", "未指定", "待确认")):
+            continue
+        if any(token in lowered for token in layout_tokens):
+            continue
+        if (lowered.startswith("strict character identity") or any(token in lowered for token in appearance_tokens)) and value not in facts:
+            facts.append(value)
+        if len(facts) >= 24:
+            break
+    return facts
+
+
+def compile_zimage_controlled_master_workflow(
+    workflow: dict[str, Any], *, source_sheet_name: str, pose_sheet_name: str,
+    positive_prompt: str, seed: int, filename_prefix: str,
+) -> dict[str, Any]:
+    """Compile one diffusion sample containing fixed front/side/back poses."""
+    compiled = deepcopy(workflow)
+    pose = _required_node(compiled, "1", "LoadImage")
+    source = _required_node(compiled, "2", "LoadImage")
+    unet = _required_node(compiled, "3", "UNETLoader")
+    vae = _required_node(compiled, "4", "VAELoader")
+    clip = _required_node(compiled, "5", "CLIPLoader")
+    _required_node(compiled, "6", "ModelPatchLoader")
+    control = _required_node(compiled, "7", "ZImageFunControlnet")
+    text = _required_node(compiled, "9", "CLIPTextEncode")
+    sampler = _required_node(compiled, "12", "KSampler")
+    save = _required_node(compiled, "14", "SaveImage")
+
+    pose["inputs"]["image"] = str(pose_sheet_name)
+    source["inputs"]["image"] = str(source_sheet_name)
+    unet["inputs"]["unet_name"] = ZIMAGE_TURBO_UNET
+    vae["inputs"]["vae_name"] = ZIMAGE_TURBO_VAE
+    clip["inputs"]["clip_name"] = ZIMAGE_TURBO_CLIP
+    control["inputs"]["strength"] = 0.95
+
+    facts = _appearance_facts(positive_prompt)
+    prompt = (
+        "One continuous studio character turnaround sheet with exactly three equal edge-to-edge panels: "
+        "left is one strict front full-body view; center is one strict left-facing 90-degree side full-body view "
+        "with one eye visible; right is one strict 180-degree rear full-body view with the face completely invisible. "
+        "Use the supplied repeated canonical front image as the exact identity and outfit source. The same person, "
+        "visual age, gender, face, makeup, hairstyle, hair ornament, body, garment construction, collar, sleeves, "
+        "sash, hem, footwear, fabric and colors must be identical in all three panels. No redesign"
+    )
+    if facts:
+        prompt += "; confirmed appearance: " + "; ".join(facts)
+    prompt += "; neutral standing pose, head and both feet visible in every panel, plain light-gray studio, no extra person, no fourth panel, no labels or text"
+    text["inputs"]["text"] = prompt
+    sampler["inputs"]["seed"] = int(seed)
+    save["inputs"]["filename_prefix"] = str(filename_prefix or "Xiaoduan/ZImageTurbo/ControlledMaster")
+    return compiled
 
 
 class ZImageWorkflowError(ValueError):
@@ -95,6 +170,9 @@ def compile_zimage_turnaround_workflow(
     workflow: dict[str, Any],
     *,
     adopted_costume_name: str,
+    adopted_face_name: str,
+    side_pose_name: str,
+    back_pose_name: str,
     positive_prompt: str,
     negative_prompt: str,
     seed: int,
@@ -103,33 +181,45 @@ def compile_zimage_turnaround_workflow(
     """Compile front/side/back views from one adopted costume image.
 
     The front panel is the adopted image byte-for-byte inside the graph. Side
-    and back branches start from that same image latent. Their calibrated
-    denoise values are intentionally different: a true 90-degree profile needs
-    more geometric change than a rear view while the latter keeps more garment
-    construction from the adopted front.
+    and back branches combine a deterministic pose map with an appearance LoRA
+    extracted from that adopted image. This gives pose and appearance separate
+    conditioning channels instead of asking high-denoise img2img to redraw hair
+    and garments from text.
     """
     costume_name = str(adopted_costume_name or "").strip()
+    face_name = str(adopted_face_name or "").strip()
+    side_pose = str(side_pose_name or "").strip()
+    back_pose = str(back_pose_name or "").strip()
     positive = str(positive_prompt or "").strip()
-    if not costume_name or not positive:
-        raise ZImageWorkflowError("turnaround requires an adopted costume image and prompt")
+    if not costume_name or not face_name or not side_pose or not back_pose or not positive:
+        raise ZImageWorkflowError("turnaround requires adopted face/costume, side/back pose controls and prompt")
     compiled = deepcopy(workflow)
     load = _required_node(compiled, "1", "LoadImage")
-    unet = _required_node(compiled, "3", "UNETLoader")
-    vae = _required_node(compiled, "4", "VAELoader")
-    clip = _required_node(compiled, "5", "CLIPLoader")
-    side_prompt = _required_node(compiled, "6", "CLIPTextEncode")
-    back_prompt = _required_node(compiled, "7", "CLIPTextEncode")
-    negative_node = _required_node(compiled, "8", "CLIPTextEncode")
-    side_sampler = _required_node(compiled, "9", "KSampler")
-    back_sampler = _required_node(compiled, "10", "KSampler")
-    _required_node(compiled, "13", "ImageStitch")
-    _required_node(compiled, "14", "ImageStitch")
-    save = _required_node(compiled, "15", "SaveImage")
+    face_load = _required_node(compiled, "2", "LoadImage")
+    side_load = _required_node(compiled, "3", "LoadImage")
+    back_load = _required_node(compiled, "4", "LoadImage")
+    loader = _required_node(compiled, "5", "ZImageI2LV2Loader")
+    _required_node(compiled, "6", "ImageBatch")
+    _required_node(compiled, "7", "ImageBatch")
+    _required_node(compiled, "8", "ZImageI2LV2ExtractLoRA")
+    side_sample = _required_node(compiled, "9", "ZImageI2LV2SampleControlNet")
+    back_sample = _required_node(compiled, "10", "ZImageI2LV2SampleControlNet")
+    _required_node(compiled, "11", "ImageStitch")
+    _required_node(compiled, "12", "ImageStitch")
+    save = _required_node(compiled, "13", "SaveImage")
 
     load["inputs"]["image"] = costume_name
-    unet["inputs"]["unet_name"] = ZIMAGE_TURBO_UNET
-    vae["inputs"]["vae_name"] = ZIMAGE_TURBO_VAE
-    clip["inputs"]["clip_name"] = ZIMAGE_TURBO_CLIP
+    face_load["inputs"]["image"] = face_name
+    side_load["inputs"]["image"] = side_pose
+    back_load["inputs"]["image"] = back_pose
+    loader["inputs"].update({
+        "device": "cuda",
+        "dtype": "bfloat16",
+        "low_vram": True,
+        "modelscope_cache": "",
+        "load_controlnet": True,
+        "base_model": "z-image-turbo",
+    })
     # The project-level reference prompt describes a complete model sheet. Feeding
     # that text into each img2img branch makes Z-Image draw another collage (often
     # with labels) inside the side/back panel. Keep only typed identity facts here;
@@ -144,8 +234,39 @@ def compile_zimage_turnaround_workflow(
     ):
         for match in re.finditer(pattern, positive, flags=re.IGNORECASE):
             value = " ".join(match.group(1).split()).strip(" ,")
+            if any(marker in value for marker in ("未明确", "待角色设计", "未指定", "待确认")):
+                continue
             if value and value not in identity_facts:
                 identity_facts.append(value)
+    # PromptCompiler can flatten the stable profile differently depending on
+    # whether an appearance asset already exists.  Preserve typed appearance
+    # clauses regardless of that serialization, while rejecting view/layout
+    # instructions that would fight the side/back ControlNet pose.
+    appearance_tokens = (
+        "岁", "年龄", "少年", "少女", "age", "year-old", "gender", "性别",
+        "face", "facial", "脸", "五官", "妆", "makeup",
+        "hair", "发型", "发色", "发饰", "簪",
+        "costume", "clothing", "outfit", "garment", "robe",
+        "服装", "衣", "袍", "裙", "领", "袖", "腰带", "鞋", "靴",
+        "fabric", "material", "color", "颜色", "材质", "配色", "配饰",
+    )
+    layout_tokens = (
+        "strict front", "front full-body", "front view", "正面全身", "正视镜头",
+        "both eyes", "双眼", "shoulders square", "双肩正对",
+        "side view", "侧面", "back view", "背面", "turnaround", "三视图",
+        "model sheet", "panel", "分栏", "画布", "背景", "background",
+    )
+    for clause in re.split(r"[;,；\n]+", positive):
+        value = " ".join(clause.split()).strip(" ,。")
+        lowered = value.lower()
+        if not value or any(marker in value for marker in ("未明确", "待角色设计", "未指定", "待确认")):
+            continue
+        if any(token in lowered for token in layout_tokens):
+            continue
+        if any(token in lowered for token in appearance_tokens) and value not in identity_facts:
+            identity_facts.append(value)
+        if len(identity_facts) >= 24:
+            break
     identity = (
         "Use the supplied adopted costume image as the sole visual identity and outfit source; "
         "preserve the exact same person, apparent age, gender, face, hairstyle, body proportions, "
@@ -153,26 +274,87 @@ def compile_zimage_turnaround_workflow(
     )
     if identity_facts:
         identity += "; confirmed identity facts: " + "; ".join(identity_facts)
-    side_prompt["inputs"]["text"] = (
+    side_sample["inputs"]["prompt"] = (
         identity
         + ", render only one strict left-facing 90-degree side profile, head and entire body rotated left, "
           "one eye visible, complete body and both feet visible, plain seamless background"
     )
-    back_prompt["inputs"]["text"] = (
+    back_sample["inputs"]["prompt"] = (
         identity
         + ", render only one strict 180-degree rear view, face completely invisible, back of head, hair and "
           "garment construction visible, complete body and both feet visible, plain seamless background"
     )
-    negative_node["inputs"]["text"] = (
+    negative = (
         "different person, identity drift, age drift, gender drift, face redesign, hairstyle change, "
         "costume redesign, changed outfit, changed colors, modern clothing, extra person, duplicate person, "
         "multiple views in one panel, model sheet, collage, grid, text, typography, labels, annotations, "
         "logo, watermark, cropped head, cropped feet"
     )
-    side_sampler["inputs"].update({"seed": int(seed), "steps": 9, "cfg": 1.0, "denoise": 0.95})
-    back_sampler["inputs"].update({"seed": int(seed) + 1, "steps": 9, "cfg": 1.0, "denoise": 0.85})
+    side_sample["inputs"].update({
+        "control_scale": 0.75, "seed": int(seed), "cfg_scale": 1.0,
+        "num_inference_steps": 12, "sigma_shift": 0.0,
+        "width": 768, "height": 1024, "negative_prompt": negative,
+    })
+    back_sample["inputs"].update({
+        "control_scale": 0.75, "seed": int(seed) + 1, "cfg_scale": 1.0,
+        "num_inference_steps": 12, "sigma_shift": 0.0,
+        "width": 768, "height": 1024, "negative_prompt": negative,
+    })
     save["inputs"]["filename_prefix"] = str(filename_prefix or "Xiaoduan/ZImageTurbo/Turnaround")
     return compiled
+
+
+def _turnaround_pose_png(view: str, *, width: int = 768, height: int = 1024) -> bytes:
+    """Create a deterministic OpenPose-style control map for one model-sheet view."""
+    image = Image.new("RGB", (width, height), "black")
+    draw = ImageDraw.Draw(image)
+    colors = [
+        (255, 0, 0), (255, 85, 0), (255, 170, 0), (255, 255, 0),
+        (170, 255, 0), (85, 255, 0), (0, 255, 0), (0, 255, 85),
+        (0, 255, 170), (0, 255, 255), (0, 170, 255), (0, 85, 255),
+        (0, 0, 255), (85, 0, 255), (170, 0, 255), (255, 0, 255),
+        (255, 0, 170), (255, 0, 85),
+    ]
+    cx = width * 0.5
+    narrow = view == "side"
+    shoulder = width * (0.016 if narrow else 0.105)
+    hip = width * (0.009 if narrow else 0.046)
+    lean = -width * 0.014 if narrow else 0.0
+    pts = {
+        0: (cx + lean * 1.3, height * 0.103), 1: (cx, height * 0.186),
+        2: (cx - shoulder, height * 0.239), 3: (cx - shoulder * 1.55, height * 0.381),
+        4: (cx - shoulder * 1.80, height * 0.542), 5: (cx + shoulder, height * 0.239),
+        6: (cx + shoulder * 1.55, height * 0.386), 7: (cx + shoulder * 1.80, height * 0.542),
+        8: (cx - hip, height * 0.488), 9: (cx - hip * 1.5, height * 0.688),
+        10: (cx - hip * 2.1, height * 0.908), 11: (cx + hip, height * 0.488),
+        12: (cx + hip * 1.5, height * 0.688), 13: (cx + hip * 2.1, height * 0.908),
+        14: (cx + lean * 2.2 - width * 0.014, height * 0.092),
+        15: (cx + lean * 0.8 + width * 0.014, height * 0.094),
+        16: (cx + lean * 2.8 - width * 0.030, height * 0.100),
+        17: (cx + lean * 0.3 + width * 0.030, height * 0.101),
+    }
+    pts = {index: (int(x), int(y)) for index, (x, y) in pts.items()}
+    limbs = [(1,2),(2,3),(3,4),(1,5),(5,6),(6,7),(1,8),(8,9),(9,10),(1,11),(11,12),(12,13),(1,0),(0,14),(14,16),(0,15),(15,17),(8,11)]
+    for index, (a, b) in enumerate(limbs):
+        draw.line([pts[a], pts[b]], fill=colors[index], width=9)
+    for index, point in pts.items():
+        draw.ellipse([point[0]-9, point[1]-9, point[0]+9, point[1]+9], fill=colors[index])
+    output = BytesIO()
+    image.save(output, format="PNG", compress_level=4)
+    return output.getvalue()
+
+
+def _letterbox_reference(path: Path, *, width: int = 768, height: int = 1024) -> bytes:
+    """Fit a reference without stretching so i2L can batch face and costume images."""
+    with Image.open(path) as source:
+        rgb = source.convert("RGB")
+        scale = min(width / rgb.width, height / rgb.height)
+        resized = rgb.resize((max(1, round(rgb.width * scale)), max(1, round(rgb.height * scale))), Image.Resampling.LANCZOS)
+    canvas = Image.new("RGB", (width, height), (236, 239, 241))
+    canvas.paste(resized, ((width - resized.width) // 2, (height - resized.height) // 2))
+    output = BytesIO()
+    canvas.save(output, format="PNG", compress_level=4)
+    return output.getvalue()
 
 
 class ZImageTemporalExecutor:
@@ -220,14 +402,18 @@ class ZImageTemporalExecutor:
         self,
         *,
         adopted_costume_path: Path,
+        adopted_face_path: Path,
         positive_prompt: str,
         negative_prompt: str,
         seed: int,
         filename_prefix: str,
     ) -> dict[str, Any]:
         path = Path(adopted_costume_path)
+        face_path = Path(adopted_face_path)
         if not path.is_file() or path.stat().st_size <= 0:
             raise ZImageWorkflowError("adopted costume image is unavailable")
+        if not face_path.is_file() or face_path.stat().st_size <= 0:
+            raise ZImageWorkflowError("adopted face image is unavailable")
         uploaded = await self.adapter.upload_reference(
             filename=f"turnaround-{path.name}",
             content=path.read_bytes(),
@@ -236,12 +422,87 @@ class ZImageTemporalExecutor:
         name = str(uploaded["name"])
         subfolder = str(uploaded.get("subfolder") or "").strip("/\\")
         uploaded_name = f"{subfolder}/{name}" if subfolder else name
+        face_uploaded = await self.adapter.upload_reference(
+            filename=f"turnaround-face-{face_path.stem}.png",
+            content=_letterbox_reference(face_path), overwrite=True,
+        )
+        side_uploaded = await self.adapter.upload_reference(
+            filename=f"turnaround-side-{path.stem}.png",
+            content=_turnaround_pose_png("side"), overwrite=True,
+        )
+        back_uploaded = await self.adapter.upload_reference(
+            filename=f"turnaround-back-{path.stem}.png",
+            content=_turnaround_pose_png("back"), overwrite=True,
+        )
+
+        def uploaded_name_of(value: dict[str, Any]) -> str:
+            folder = str(value.get("subfolder") or "").strip("/\\")
+            return f"{folder}/{value['name']}" if folder else str(value["name"])
         workflow = json.loads(TURNAROUND_WORKFLOW_PATH.read_text(encoding="utf-8"))
         compiled = compile_zimage_turnaround_workflow(
             workflow,
             adopted_costume_name=uploaded_name,
+            adopted_face_name=uploaded_name_of(face_uploaded),
+            side_pose_name=uploaded_name_of(side_uploaded),
+            back_pose_name=uploaded_name_of(back_uploaded),
             positive_prompt=positive_prompt,
             negative_prompt=negative_prompt,
+            seed=seed,
+            filename_prefix=filename_prefix,
+        )
+        return await self.adapter.queue_workflow(compiled)
+
+    async def queue_controlled_master(
+        self,
+        *,
+        front_source_path: Path,
+        positive_prompt: str,
+        negative_prompt: str,
+        seed: int,
+        filename_prefix: str,
+    ) -> dict[str, Any]:
+        """Generate all three views together from one canonical front source."""
+        path = Path(front_source_path)
+        if not path.is_file() or path.stat().st_size <= 0:
+            raise ZImageWorkflowError("canonical front source is unavailable")
+        front = Image.open(BytesIO(_letterbox_reference(path))).convert("RGB")
+        source_sheet = Image.new("RGB", (front.width * 3, front.height))
+        for index in range(3):
+            source_sheet.paste(front, (index * front.width, 0))
+        source_bytes = BytesIO()
+        source_sheet.save(source_bytes, format="PNG", compress_level=4)
+
+        pose_images = [
+            Image.open(BytesIO(_turnaround_pose_png(view))).convert("RGB")
+            for view in ("back", "side", "back")
+        ]
+        pose_sheet = Image.new("RGB", (front.width * 3, front.height), "black")
+        for index, pose_image in enumerate(pose_images):
+            pose_sheet.paste(pose_image, (index * front.width, 0))
+        pose_bytes = BytesIO()
+        pose_sheet.save(pose_bytes, format="PNG", compress_level=4)
+
+        source_uploaded = await self.adapter.upload_reference(
+            filename=f"controlled-master-source-{path.stem}.png",
+            content=source_bytes.getvalue(),
+            overwrite=True,
+        )
+        pose_uploaded = await self.adapter.upload_reference(
+            filename=f"controlled-master-poses-{path.stem}.png",
+            content=pose_bytes.getvalue(),
+            overwrite=True,
+        )
+
+        def uploaded_name(value: dict[str, Any]) -> str:
+            folder = str(value.get("subfolder") or "").strip("/\\")
+            return f"{folder}/{value['name']}" if folder else str(value["name"])
+
+        workflow = json.loads(CONTROLLED_MASTER_WORKFLOW_PATH.read_text(encoding="utf-8"))
+        compiled = compile_zimage_controlled_master_workflow(
+            workflow,
+            source_sheet_name=uploaded_name(source_uploaded),
+            pose_sheet_name=uploaded_name(pose_uploaded),
+            positive_prompt=positive_prompt,
             seed=seed,
             filename_prefix=filename_prefix,
         )
@@ -253,4 +514,5 @@ __all__ = [
     "ZImageWorkflowError",
     "compile_zimage_workflow",
     "compile_zimage_turnaround_workflow",
+    "compile_zimage_controlled_master_workflow",
 ]

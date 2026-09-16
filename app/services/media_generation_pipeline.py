@@ -31,7 +31,30 @@ def _phase_anchor_text(text: str, phase: str) -> str:
     """
     raw = str(text or "").strip()
     phase = str(phase or "").strip().lower()
-    if not raw or phase not in {"face_anchor", "costume"}:
+    if not raw:
+        return raw
+    if phase == "character_master":
+        tokens = (*_FACE_ANCHOR_TOKENS, *_COSTUME_ANCHOR_TOKENS)
+        rejected = (
+            "未明确", "待角色设计", "未指定", "待确认", "change_reason",
+            "effective_story", "inherits_identity", "character_name", "reference",
+            "参考图要求", "source", "authority", "entity_id", "logical_key",
+        )
+        parts = [part.strip(" -\t") for part in re.split(r"[;\n]+", raw) if part.strip(" -\t")]
+        selected: list[str] = []
+        for part in parts:
+            lowered = part.lower()
+            if any(marker.lower() in lowered for marker in rejected):
+                continue
+            if not any(token in lowered for token in tokens):
+                continue
+            if ":" in part:
+                _key, value = part.split(":", 1)
+                part = value.strip()
+            if part and part not in selected:
+                selected.append(part)
+        return "; ".join(selected[-18:])
+    if phase not in {"face_anchor", "costume"}:
         return raw
     tokens = _FACE_ANCHOR_TOKENS if phase == "face_anchor" else _COSTUME_ANCHOR_TOKENS
     parts = [part.strip(" -\t") for part in re.split(r"[;\n]+", raw) if part.strip(" -\t")]

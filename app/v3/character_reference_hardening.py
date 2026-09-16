@@ -312,7 +312,7 @@ def install_character_reference_hardening() -> dict[str, Any]:
             contract = kwargs.get("contract")
             visual_context = getattr(contract, "visual_context", {}) if contract is not None else {}
             phase = _text(visual_context.get("reference_phase") if isinstance(visual_context, dict) else "").lower()
-            if phase not in {"face_anchor", "costume", "turnaround"}:
+            if phase not in {"face_anchor", "costume", "turnaround", "character_master"}:
                 return result
 
             anchor = naturalize_visual_anchor(getattr(contract, "identity_anchors", "")) if contract is not None else ""
@@ -387,9 +387,9 @@ def install_character_reference_hardening() -> dict[str, Any]:
                 negative_parts.extend(_REFERENCE_TEXT_NEGATIVES)
                 if ancient:
                     negative_parts.extend(_MODERN_COSTUME_NEGATIVES)
-            else:
+            elif phase == "character_master":
                 positive = (
-                    "Create a clean character turnaround while preserving the exact FaceID identity and the exact adopted costume reference; keep the same confirmed age, gender, face, hairstyle, clothing layers, color palette, footwear and fixed accessories in every view; "
+                    "Create the one canonical front source for a controlled character identity master: exactly one person, one strict front full-body neutral standing view, both eyes visible, shoulders square to camera, head and both feet visible; keep the confirmed age, gender, face, makeup, hairstyle, hair accessories, body proportions, clothing layers, collar geometry, color palette, footwear and fixed accessories; "
                     "use a plain seamless background with no writing, typography, title, label, annotation, logo or watermark anywhere in the image"
                 )
                 if ancient and chinese:
@@ -397,21 +397,43 @@ def install_character_reference_hardening() -> dict[str, Any]:
                 elif ancient:
                     positive += "; preserve the confirmed period wardrobe with zero modern-fashion substitution"
                 negative_parts = [
-                    "different person between views",
                     "identity drift",
                     "face redesign",
                     "hairstyle change",
                     "age drift",
                     "costume redesign",
                     "clothing color drift",
+                    "multiple panels",
+                    "turnaround sheet",
+                    "model sheet",
+                    "side view",
+                    "back view",
+                    "extra person",
+                    "ghost person",
+                    "translucent person",
+                    "stacked portraits",
+                    "duplicate portrait",
+                    "duplicate face crop",
                 ]
                 negative_parts.extend(_confirmed_age_negative(source))
                 negative_parts.extend(_REFERENCE_TEXT_NEGATIVES)
                 if ancient:
                     negative_parts.extend(_MODERN_COSTUME_NEGATIVES)
+            else:
+                positive = (
+                    "Create one strict front/side/back character turnaround sheet from the adopted identity and costume references; "
+                    "keep the confirmed age, gender, face, makeup, hairstyle, hair accessories, body proportions, clothing layers, collar geometry, color palette, footwear and fixed accessories unchanged"
+                )
+                negative_parts = [
+                    "identity drift", "face redesign", "hairstyle change", "age drift",
+                    "costume redesign", "clothing color drift", "extra person", "duplicate view",
+                ]
+                negative_parts.extend(_confirmed_age_negative(source))
+                negative_parts.extend(_REFERENCE_TEXT_NEGATIVES)
 
+            positive_base = source if phase == "character_master" else result.positive_prompt
             return CompiledPrompt(
-                positive_prompt=_prepend(result.positive_prompt, positive),
+                positive_prompt=_prepend(positive_base, positive),
                 negative_prompt=_prepend(result.negative_prompt, ", ".join(dict.fromkeys(negative_parts))),
             )
 

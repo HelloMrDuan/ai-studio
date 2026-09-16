@@ -195,6 +195,42 @@ class StrictStageAssetMaterializationTests(unittest.TestCase):
             self.assertFalse(p.get_asset(project_id, profile["asset_id"])["active"])
             self.assertFalse(p.get_asset(project_id, appearance["asset_id"])["active"])
 
+    def test_manual_stable_design_survives_stage_rematerialization(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            project_id = "d" * 24
+            director = _Director(root, project_id)
+            entity = director.production.create_entity(
+                project_id,
+                entity_type="character",
+                name="苏瑶",
+                logical_key="story:character:su-yao",
+                stage="01",
+            )
+            service = StageOutputAssetMaterializer(_Legacy(director))
+            service.materialize(project_id)
+            current = next(
+                row for row in director.production.list_entities(project_id)
+                if row["entity_id"] == entity["entity_id"]
+            )
+            metadata = current["metadata"]
+            metadata["authoring"].update({
+                "stable_design": "18岁少女，浅青色古式长裙",
+                "change_reason": "用户确认视觉年龄",
+                "updated_at": "2026-09-16T00:00:00+00:00",
+            })
+            metadata["continuity"]["core_profile"]["已确认稳定设定"] = "18岁少女，浅青色古式长裙"
+            director.production.update_entity(project_id, entity["entity_id"], {"metadata": metadata})
+
+            service.materialize(project_id)
+            updated = next(
+                row for row in director.production.list_entities(project_id)
+                if row["entity_id"] == entity["entity_id"]
+            )["metadata"]
+            self.assertEqual(updated["authoring"]["stable_design"], "18岁少女，浅青色古式长裙")
+            self.assertEqual(updated["continuity"]["core_profile"]["已确认稳定设定"], "18岁少女，浅青色古式长裙")
+            self.assertTrue(updated["continuity"]["core_profile"]["阶段正式设定"])
+
 
 if __name__ == "__main__":
     unittest.main()

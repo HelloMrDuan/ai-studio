@@ -34,6 +34,19 @@ _ANCHOR_TRANSIENT_KEYS = {
     "scene_state", "momentary_state",
 }
 
+_DOMAIN_REFERENCE_KINDS = {"scene", "location", "prop"}
+_DOMAIN_SUBJECT_LEAK_TOKENS = (
+    "角色", "人物", "主角", "男主", "女主", "少年", "少女", "人像", "肖像", "脸", "面部",
+    "人体", "身体", "手持", "手握", "手中", "握着", "拿着", "背负", "携带", "佩戴", "穿着", "身穿",
+    "剧情动作", "人物动作",
+    "character", "person", "people", "human figure", "protagonist", "portrait", "face", "facial",
+    "wearing", "worn by", "holding", "held by", "carrying", "carried by", "wielding", "mounted on a person",
+)
+_DOMAIN_BOILERPLATE_TOKENS = (
+    "项目一致性参考资产", "最高优先级", "项目已确认设定", "参考图布局要求",
+    "保持静态环境基准表达", "保持静态产品参考表达", "不得用参考图版式重新设计角色",
+)
+
 
 @dataclass(frozen=True)
 class CompiledPrompt:
@@ -285,6 +298,83 @@ def _join_unique(parts: tuple[str, ...] | list[str]) -> str:
     return ", ".join(result)
 
 
+def _domain_reference_text(text: str, kind: str) -> str:
+    """Keep intrinsic location/prop facts while dropping narrative subject leakage.
+
+    Z-Image-Turbo runs at CFG=1, so putting phrases such as "no character" in the
+    positive prompt is still harmful: the text encoder sees the character concept.
+    Domain reference positives therefore contain only intrinsic environment/object
+    facts. Human/holder/action concepts are kept exclusively in the negative path.
+    """
+    if kind not in _DOMAIN_REFERENCE_KINDS:
+        return str(text or "").strip()
+    rows: list[str] = []
+    for raw in re.split(r"[;；\n]+", str(text or "")):
+        value = " ".join(raw.split()).strip(" -\t,，。")
+        if not value:
+            continue
+        lowered = value.lower()
+        if any(token.lower() in lowered for token in _DOMAIN_SUBJECT_LEAK_TOKENS):
+            continue
+        if any(token in value for token in _DOMAIN_BOILERPLATE_TOKENS):
+            continue
+        if re.match(r"^(?:name|名称|名字)\s*[:：]", value, flags=re.IGNORECASE):
+            continue
+        if re.search(r"(?:^|\.)(?:name|名称|名字)\s*[:：]", value, flags=re.IGNORECASE):
+            continue
+        if value not in rows:
+            rows.append(value)
+    return "; ".join(rows)
+
+
+def _domain_reference_direction_context(direction: VisualDirection, kind: str) -> str:
+    """Compile world/style context without character semantics for non-character refs."""
+    if kind not in _DOMAIN_REFERENCE_KINDS:
+        return direction.compile_context()
+
+    def add(parts: list[str], label: str, value: Any) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        safe = _domain_reference_text(text, kind)
+        if safe:
+            parts.append(f"{label}: {safe}")
+
+    parts: list[str] = []
+    add(parts, "世界观", direction.world_style)
+    add(parts, "文化背景", direction.culture)
+    add(parts, "时代", direction.era)
+    add(parts, "美术风格", direction.art_style)
+
+    world = str(direction.world_style or "").lower()
+    culture = str(direction.culture or "").lower()
+    era = str(direction.era or "").lower()
+    xianxia = any(token in world for token in ("xianxia", "仙侠"))
+    east_asian = any(token in culture for token in ("chinese", "china", "中国", "中华", "东亚", "east asian"))
+    ancient = any(token in era for token in ("ancient", "古代", "古风"))
+
+    if kind in {"scene", "location"}:
+        if xianxia:
+            parts.append("eastern fantasy landscape and architecture visual language")
+        if east_asian and ancient:
+            parts.append("ancient Chinese architecture, landscape materials and environmental design language")
+        for value in (direction.environment_rules or {}).values():
+            safe = _domain_reference_text(str(value or ""), kind)
+            if safe:
+                parts.append(safe)
+    else:
+        if xianxia:
+            parts.append("eastern fantasy object craftsmanship and material language")
+        if east_asian and ancient:
+            parts.append("ancient Chinese material culture and traditional craftsmanship")
+        for value in (direction.prop_rules or {}).values():
+            safe = _domain_reference_text(str(value or ""), kind)
+            if safe:
+                parts.append(safe)
+
+    return ", ".join(dict.fromkeys(part for part in parts if part))
+
+
 class PromptCompiler:
     """Unified media prompt compilation entry.
 
@@ -315,11 +405,23 @@ class PromptCompiler:
             contract.validate()
             anchor_text = naturalize_visual_anchor(contract.identity_anchors)
 
-        visual_context = _join_unique([
-            visual_direction.compile_context(),
-            anchor_text,
-            contract_context,
-        ])
+        domain_reference = reference and kind in _DOMAIN_REFERENCE_KINDS
+        if domain_reference:
+            safe_anchor = _domain_reference_text(anchor_text, kind)
+            safe_contract = _domain_reference_text(contract_context, kind)
+            safe_description = _domain_reference_text(asset_description, kind)
+            visual_context = _join_unique([
+                _domain_reference_direction_context(visual_direction, kind),
+                safe_anchor,
+                safe_contract,
+            ])
+        else:
+            safe_description = asset_description
+            visual_context = _join_unique([
+                visual_direction.compile_context(),
+                anchor_text,
+                contract_context,
+            ])
 
         age_positive = ""
         age_negative = ""
@@ -332,20 +434,32 @@ class PromptCompiler:
             face_positive, face_negative = _character_face_quality_constraints(visual_direction)
 
         if reference:
-            positive = _join_unique([
-                visual_context,
-                age_positive,
-                face_positive,
-                asset_description,
-                template.positive if template else "",
-            ])
-            negative = _join_unique([
-                visual_direction.compile_negative_prompt(),
-                age_negative,
-                face_negative,
-                provider_negative,
-                template.negative if template else "",
-            ])
+            if domain_reference:
+                positive = _join_unique([
+                    visual_context,
+                    safe_description,
+                    template.positive if template else "",
+                ])
+                negative = _join_unique([
+                    ", ".join(str(item) for item in visual_direction.negative_constraints if item),
+                    provider_negative,
+                    template.negative if template else "",
+                ])
+            else:
+                positive = _join_unique([
+                    visual_context,
+                    age_positive,
+                    face_positive,
+                    asset_description,
+                    template.positive if template else "",
+                ])
+                negative = _join_unique([
+                    visual_direction.compile_negative_prompt(),
+                    age_negative,
+                    face_negative,
+                    provider_negative,
+                    template.negative if template else "",
+                ])
         else:
             compiled = self.visual_compiler.compile(
                 asset_description=asset_description,

@@ -23,6 +23,13 @@ _REFERENCE_LABEL = {
 _REFERENCE_TYPES = set(_REFERENCE_ROLE)
 _PENDING = {"queued", "switching_gpu", "running", "generating", "completed"}
 _ACTIVE = {"queued", "switching_gpu", "running", "generating"}
+_REFERENCE_VALUE_LEAK_TOKENS = (
+    "角色", "人物", "主角", "男主", "女主", "少年", "少女", "手持", "手握", "握着", "拿着",
+    "背负", "携带", "佩戴", "穿着", "身穿", "腰间", "挂在", "挂于", "系在", "系于", "剧情动作",
+    "character", "person", "people", "protagonist", "holding", "carrying", "wielding", "wearing",
+    "worn by", "mounted on", "attached to a person", "hanging from a person",
+)
+_GENERIC_REFERENCE_VALUES = {"道具", "场景", "地点", "prop", "scene", "location"}
 
 
 def _clean(value: Any) -> str:
@@ -45,6 +52,51 @@ def _flatten_metadata(value: Any, prefix: str = "", depth: int = 0) -> list[str]
     elif value is not None and _clean(value) and prefix:
         rows.append(f"{prefix}：{_clean(value)}")
     return rows
+
+
+def _flatten_reference_values(value: Any, depth: int = 0) -> list[str]:
+    """Flatten non-character reference facts without leaking metadata field names.
+
+    Provider-visible strings such as ``stable_profile.type`` were being painted
+    into the generated image.  Canonical location/prop references only need the
+    approved intrinsic values, never the storage schema keys or narrative usage.
+    """
+    if depth > 3:
+        return []
+    rows: list[str] = []
+    if isinstance(value, dict):
+        for item in value.values():
+            rows.extend(_flatten_reference_values(item, depth + 1))
+        return rows
+    if isinstance(value, list):
+        for item in value[:24]:
+            rows.extend(_flatten_reference_values(item, depth + 1))
+        return rows
+    text = _clean(value)
+    if not text or text.lower() in _GENERIC_REFERENCE_VALUES:
+        return []
+    lowered = text.lower()
+    if any(token.lower() in lowered for token in _REFERENCE_VALUE_LEAK_TOKENS):
+        return []
+    rows.append(text)
+    return rows
+
+
+def _looks_like_legacy_generated_reference_prompt(text: str, kind: str) -> bool:
+    """Recognize old auto prompts accidentally persisted as manual overrides."""
+    if kind not in {"scene", "location", "prop"}:
+        return False
+    value = _clean(text)
+    if not value:
+        return False
+    return (
+        "项目一致性参考资产" in value
+        and (
+            "不得用参考图版式重新设计角色" in value
+            or "stable_profile." in value
+            or "stable_design" in value
+        )
+    )
 
 
 class ReferenceAssetBootstrap:
@@ -151,7 +203,11 @@ class ReferenceAssetBootstrap:
         kind = _clean(entity.get("entity_type")).lower()
         label = _REFERENCE_LABEL[kind]
         name = _clean(entity.get("name")) or f"未命名{label}"
-        fact_rows = _flatten_metadata(entity.get("metadata") or {})
+
+        if kind == "character":
+            fact_rows = _flatten_metadata(entity.get("metadata") or {})
+        else:
+            fact_rows = _flatten_reference_values(entity.get("metadata") or {})
         seen: set[str] = set()
         facts: list[str] = []
         for row in fact_rows:
@@ -159,7 +215,7 @@ class ReferenceAssetBootstrap:
             if row and row not in seen:
                 seen.add(row)
                 facts.append(row)
-        fact_text = "\n".join(f"- {row}" for row in facts[-24:]) or "- 项目当前只确认了名称；未确认部分保持中性。"
+        fact_text = "\n".join(f"- {row}" for row in facts[-24:]) or "- 当前只确认了基础外观，未确认部分保持中性。"
 
         if kind == "character":
             priority_rule = "最高优先级：严格保持下面已经确认的稳定视觉事实，不得用参考图版式重新设计角色。"
@@ -179,26 +235,25 @@ class ReferenceAssetBootstrap:
             format_rule = (
                 "生成一张4:3横向空场景环境基准图（unoccupied environment plate / location identity reference）："
                 "完整展示空间边界、主要建筑或自然结构、地形、路径、材质、固定陈设以及前中后景关系，"
-                "至少保留三个稳定可辨识空间锚点。画面以环境结构本身为唯一叙事中心，"
+                "至少保留三个稳定可辨识空间锚点。环境结构是画面唯一可见内容，路径、台阶和建筑保持空置，"
                 "构图稳定、信息完整，可直接作为后续镜头的场景母版。"
             )
-            closing_rule = "保持静态环境基准表达，只记录长期稳定的空间与环境事实。"
+            closing_rule = "保持静态环境基准表达，只记录长期稳定的空间与环境事实；画面不附加任何标题或说明文字。"
         else:
             priority_rule = (
                 "最高优先级：严格保持下面已经确认的道具轮廓、比例、结构、材质、颜色、纹样和磨损事实；"
                 "只建立该物体本身的产品级身份基准。"
             )
+            fact_text = f"- 只表现一个{name}本体。\n{fact_text}"
             format_rule = (
-                "生成一张4:3横向单一道具产品设定图（isolated object / product reference）："
-                "画面的唯一主体就是该道具本体，完整居中、无遮挡、比例清楚，"
+                "生成一张1:1单一道具产品设定图（isolated object / product reference）："
+                "画面物理对象总数严格为1，唯一主体就是一个完整组装状态的目标道具本体，完整居中、无遮挡。"
+                "禁止重复件、第二件物体、拆分零件展示、配套物、伴随物或其他道具。"
                 "清晰展示轮廓、结构连接、材质、颜色、纹样和稳定磨损细节，"
-                "使用纯净浅色无缝背景与中性产品展示光线。"
+                "使用纯净浅灰无缝背景与中性产品展示光线。"
             )
-            closing_rule = "保持静态产品参考表达，只记录长期稳定的物体设计事实。"
+            closing_rule = "保持静态产品参考表达，只记录长期稳定的物体设计事实；画面不附加任何标题或说明文字。"
 
-        # Character wording is intentionally unchanged. Location/prop prompts
-        # are domain-isolated so positive conditioning no longer introduces
-        # character/person concepts into reusable environment or object assets.
         return (
             f"项目一致性参考资产：{label}「{name}」。\n"
             f"{priority_rule}\n"
@@ -256,12 +311,16 @@ class ReferenceAssetBootstrap:
         requested = _clean(prompt_override)
         current_prompt_asset = self._prompt_asset(project_id, entity_id)
         current_prompt_text = self._read_prompt_asset(project_id, current_prompt_asset)
+        legacy_generated = _looks_like_legacy_generated_reference_prompt(current_prompt_text, kind)
         if (
             requested
             and current_prompt_asset is not None
-            and not self._prompt_asset_is_user_edited(current_prompt_asset)
             and current_prompt_text
             and requested == current_prompt_text
+            and (
+                not self._prompt_asset_is_user_edited(current_prompt_asset)
+                or legacy_generated
+            )
         ):
             requested = ""
 
@@ -315,7 +374,7 @@ class ReferenceAssetBootstrap:
             prompt_text = self._reference_prompt(entity)
             if prompt_asset is not None and self._prompt_asset_is_user_edited(prompt_asset):
                 stored = self._read_prompt_asset(project_id, prompt_asset)
-                if stored:
+                if stored and not _looks_like_legacy_generated_reference_prompt(stored, kind):
                     prompt_text = stored
             items.append({
                 "entity_id": entity_id,
@@ -370,6 +429,21 @@ class ReferenceAssetBootstrap:
             if not _clean(row.get("confirmed_asset_id")) and state in _PENDING and not force:
                 return {"already_pending": True, "candidate": row, "status": self.status(project_id)}
 
+        kind = _clean(entity.get("entity_type")).lower()
+        params: dict[str, Any] = {
+            "aspect_ratio": "1:1" if kind == "prop" else "4:3",
+            "model_key": "smart",
+            "steps": 32,
+            "cfg": 6.5,
+            "seed": -1,
+            "sampler": "dpmpp_2m",
+            "scheduler": "karras",
+            "count": 1,
+            "semantic_compile": "auto",
+        }
+        if kind == "prop":
+            params.update({"width": 1024, "height": 1024})
+
         generation_payload = MediaGenerationPipeline().prepare_candidate(
             self.director.production,
             project_id,
@@ -378,17 +452,7 @@ class ReferenceAssetBootstrap:
                 "capability": "image",
                 "mode": "txt2img",
                 "prompt_asset_id": _clean(prompt.get("asset_id")),
-                "params": {
-                    "aspect_ratio": "4:3",
-                    "model_key": "smart",
-                    "steps": 32,
-                    "cfg": 6.5,
-                    "seed": -1,
-                    "sampler": "dpmpp_2m",
-                    "scheduler": "karras",
-                    "count": 1,
-                    "semantic_compile": "auto",
-                },
+                "params": params,
             },
         )
         response = await self.submit_candidate(project_id, generation_payload)

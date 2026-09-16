@@ -159,9 +159,10 @@ class ReferenceAssetBootstrap:
             if row and row not in seen:
                 seen.add(row)
                 facts.append(row)
-        fact_text = "\n".join(f"- {row}" for row in facts[-24:]) or "- 项目当前只确认了名称；外观未确认部分保持中性，不添加剧情动作。"
+        fact_text = "\n".join(f"- {row}" for row in facts[-24:]) or "- 项目当前只确认了名称；未确认部分保持中性。"
 
         if kind == "character":
+            priority_rule = "最高优先级：严格保持下面已经确认的稳定视觉事实，不得用参考图版式重新设计角色。"
             format_rule = (
                 "生成一张4:3横向角色三视图设定图（character turnaround sheet / model sheet），同一画布四区块："
                 "一个明显较大的正面脸部近景，以及并排的正面全身、严格90度侧面全身、背面全身。"
@@ -169,29 +170,42 @@ class ReferenceAssetBootstrap:
                 "不得改变已确认的年龄、脸型、发型发色、体型、肤色、服装、鞋履、配饰或配色。"
                 "使用中性浅灰或米白设定稿背景；不要时尚棚拍感、动作姿势、其他人物、字幕、标签或水印。"
             )
+            closing_rule = "忽略表情、一次性动作、镜头机位和瞬时剧情状态。"
         elif kind in {"scene", "location"}:
-            format_rule = (
-                "生成一张4:3横向可复用场景参考图：正面完整展示空间边界、主要结构、材质、"
-                "固定陈设与前中后景关系，并保留至少三个稳定可辨识空间锚点。"
-                "这是场景基础身份，不表现某个镜头瞬间，不加入主角或剧情动作，不出现字幕、标注或水印。"
+            priority_rule = (
+                "最高优先级：严格保持下面已经确认的空间结构、地形、材质、固定陈设和环境视觉事实；"
+                "只建立可复用的环境身份基准。"
             )
+            format_rule = (
+                "生成一张4:3横向空场景环境基准图（unoccupied environment plate / location identity reference）："
+                "完整展示空间边界、主要建筑或自然结构、地形、路径、材质、固定陈设以及前中后景关系，"
+                "至少保留三个稳定可辨识空间锚点。画面以环境结构本身为唯一叙事中心，"
+                "构图稳定、信息完整，可直接作为后续镜头的场景母版。"
+            )
+            closing_rule = "保持静态环境基准表达，只记录长期稳定的空间与环境事实。"
         else:
-            format_rule = (
-                "生成一张4:3横向可复用道具参考图：只出现一个完整道具，主体居中、无遮挡，"
-                "轮廓、结构、材质、颜色、纹样和稳定磨损细节清楚，使用纯净浅色背景。"
-                "不出现人物、手部、其他道具、剧情场景、字幕、标注或水印。"
+            priority_rule = (
+                "最高优先级：严格保持下面已经确认的道具轮廓、比例、结构、材质、颜色、纹样和磨损事实；"
+                "只建立该物体本身的产品级身份基准。"
             )
+            format_rule = (
+                "生成一张4:3横向单一道具产品设定图（isolated object / product reference）："
+                "画面的唯一主体就是该道具本体，完整居中、无遮挡、比例清楚，"
+                "清晰展示轮廓、结构连接、材质、颜色、纹样和稳定磨损细节，"
+                "使用纯净浅色无缝背景与中性产品展示光线。"
+            )
+            closing_rule = "保持静态产品参考表达，只记录长期稳定的物体设计事实。"
 
-        # Confirmed identity facts intentionally precede layout. The final
-        # PromptCompiler preserves the same priority so verbose sheet rules can
-        # never crowd character identity/style out of the provider context.
+        # Character wording is intentionally unchanged. Location/prop prompts
+        # are domain-isolated so positive conditioning no longer introduces
+        # character/person concepts into reusable environment or object assets.
         return (
             f"项目一致性参考资产：{label}「{name}」。\n"
-            "最高优先级：严格保持下面已经确认的稳定视觉事实，不得用参考图版式重新设计角色。\n"
+            f"{priority_rule}\n"
             f"项目已确认设定：\n{fact_text}\n\n"
             "参考图布局要求（只控制排版，不覆盖上述身份约束）：\n"
             f"{format_rule}\n"
-            "忽略表情、一次性动作、镜头机位和瞬时剧情状态。"
+            f"{closing_rule}"
         )
 
     def _ensure_target_and_prompt(

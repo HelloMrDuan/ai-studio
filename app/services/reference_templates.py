@@ -33,11 +33,13 @@ REFERENCE_TEMPLATES = {
         positive=(
             "unoccupied location identity reference, empty environment plate, architecture-and-terrain-only composition, "
             "stable spatial layout, environment materials, fixed structures, pathways, foreground-midground-background "
-            "relationships, lighting condition, world-building consistency, reusable environment baseline"
+            "relationships, lighting condition, world-building consistency, reusable environment baseline, "
+            "purely visual unlettered plate, caption-free, typography-free, graphic-overlay-free"
         ),
         negative=(
             "person, people, human figure, character, protagonist, crowd, silhouette, portrait, body, face, action, "
-            "held object, carried prop, random background, unrelated architecture, text, labels, watermark"
+            "held object, carried prop, random background, unrelated architecture, text, lettering, title, caption, "
+            "signage added for presentation, labels, watermark"
         ),
     ),
     "prop": ReferenceTemplate(
@@ -46,12 +48,13 @@ REFERENCE_TEMPLATES = {
         positive=(
             "isolated prop identity reference, single-object product reference, sole visual subject is the prop itself, "
             "centered, fully visible, unobstructed, clean neutral seamless background, clear silhouette and proportions, "
-            "shape, material, structure, craftsmanship details, color and pattern fidelity, consistent object design"
+            "shape, material, structure, craftsmanship details, color and pattern fidelity, consistent object design, "
+            "purely visual unlettered product study, caption-free, typography-free, graphic-overlay-free"
         ),
         negative=(
             "person, people, human figure, character, hand, hands, body, face, wearing, worn, carried, held, handheld, "
             "mounted on a person, action scene, cinematic environment, other objects, different object, wrong material, "
-            "inconsistent structure, text, labels, watermark"
+            "inconsistent structure, text, lettering, title, caption, labels, watermark"
         ),
     ),
 }

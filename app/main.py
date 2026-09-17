@@ -48,8 +48,10 @@ from app.v3.typed_reference_profile_authority import install_typed_reference_pro
 from app.v3.character_prompt_integration import install_character_prompt_integration
 from app.v3.reference_role_policy import install_reference_role_policy
 from app.v3.character_package_integrity import install_character_package_integrity
+from app.v3.stage04_evidence_prompt_guard import install_stage04_evidence_prompt_guard
 
 legacy_authoring_retirement = retire_legacy_authoring_jobs(settings)
+stage04_evidence_prompt_guard = install_stage04_evidence_prompt_guard()
 
 install_front_half_quality_gate(legacy_runtime.director)
 story_source_coverage = install_story_source_coverage(legacy_runtime.director)
@@ -178,6 +180,7 @@ __all__ = [
     "app",
     "legacy_runtime",
     "legacy_authoring_retirement",
+    "stage04_evidence_prompt_guard",
     "story_source_coverage",
     "story_entity_sanitizer",
     "professional_source_grounding",

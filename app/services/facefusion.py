@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import secrets
 import shutil
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -198,19 +199,28 @@ class FaceFusionService:
         spec = PROCESSOR_SPECS[processor]
         if spec.get("source_required") and not source_path:
             raise ValueError(f"{spec['label']}需要上传来源素材")
+        if source_path and not source_path.is_file():
+            raise FileNotFoundError(f"FaceFusion 来源素材不存在：{source_path}")
         if not target_path.is_file():
             raise FileNotFoundError("目标素材不存在")
 
         output_dir.mkdir(parents=True, exist_ok=True)
+        # FaceFusion suggests headless IDs with one-second precision. Isolate
+        # its job database and scratch files for every invocation, including retries.
+        run_dir = output_dir / ("run-" + secrets.token_hex(10))
+        run_dir.mkdir()
+        log_path = run_dir / "process.log"
         normalized_target = await self._normalize_target(
-            processor, target_path, output_dir
+            processor, target_path, run_dir
         )
-        output_path = output_dir / f"result{normalized_target.suffix.lower()}"
+        output_path = run_dir / f"result{normalized_target.suffix.lower()}"
 
         command = [
             str(self.settings.facefusion_python),
             "facefusion.py",
             "headless-run",
+            "--jobs-path", str(run_dir / "jobs"),
+            "--temp-path", str(run_dir / "temp"),
         ]
         if source_path:
             command += ["--source-paths", str(source_path)]
@@ -223,7 +233,7 @@ class FaceFusionService:
             "--execution-thread-count", "4",
             "--video-memory-strategy", "strict",
             "--face-selector-mode", str(params.get("face_selector_mode", "one")),
-            "--log-level", "info",
+            "--log-level", "debug",
         ]
 
         mask_types = params.get("face_mask_types", ["box"])
@@ -252,6 +262,11 @@ class FaceFusionService:
             command += ["--output-video-quality", str(quality)]
 
         await log("执行命令：" + " ".join(command))
+        (run_dir / "request.json").write_text(json.dumps({
+            "command": command, "source_path": str(source_path),
+            "target_path": str(target_path), "output_path": str(output_path),
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        await log(f"FaceFusion 完整输出日志：{log_path}")
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
 
@@ -264,12 +279,19 @@ class FaceFusionService:
         )
         try:
             assert process.stdout is not None
+            tail: list[str] = []
             async with asyncio.timeout(self.settings.facefusion_task_timeout_seconds):
-                while True:
-                    line = await process.stdout.readline()
-                    if not line:
-                        break
-                    await log(line.decode("utf-8", errors="replace").rstrip())
+                with log_path.open("w", encoding="utf-8") as output_log:
+                    while True:
+                        line = await process.stdout.readline()
+                        if not line:
+                            break
+                        decoded = line.decode("utf-8", errors="replace")
+                        output_log.write(decoded)
+                        output_log.flush()
+                        tail.append(decoded.rstrip())
+                        tail = tail[-20:]
+                        await log(decoded.rstrip())
                 return_code = await process.wait()
         except TimeoutError:
             process.kill()
@@ -277,7 +299,8 @@ class FaceFusionService:
             raise TimeoutError("FaceFusion 处理超时，已终止进程")
 
         if return_code != 0:
-            raise RuntimeError(f"FaceFusion 返回码：{return_code}")
+            detail = "\n".join(tail) or "进程未输出诊断；请检查本次 request.json 和隔离的 jobs 目录"
+            raise RuntimeError(f"FaceFusion exit={return_code}; log={log_path}; {detail}")
         if not output_path.is_file() or output_path.stat().st_size == 0:
             raise RuntimeError("FaceFusion 未生成输出文件")
         return output_path

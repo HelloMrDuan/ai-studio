@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>xiaoduan映画 · 真实流程验收</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:#0b0d12; color:#eef1f7; }
+    main { max-width:1200px; margin:0 auto; padding:28px; }
+    .card { background:#121722; border:1px solid #252c3a; border-radius:14px; padding:18px; margin-bottom:18px; }
+    h1,h2 { margin-top:0; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:14px; }
+    label { display:block; color:#9eabc0; font-size:13px; margin-bottom:6px; }
+    input,textarea { width:100%; background:#0d1119; color:#eef1f7; border:1px solid #343c4d; border-radius:9px; padding:10px; }
+    textarea { min-height:110px; resize:vertical; }
+    button { background:#e8edf7; color:#121722; border:0; border-radius:9px; padding:10px 16px; font-weight:700; cursor:pointer; margin-right:8px; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    pre { white-space:pre-wrap; background:#0b0f16; border:1px solid #242a36; padding:14px; border-radius:10px; min-height:90px; }
+    .status { font-size:22px; font-weight:700; }
+    .good { color:#78dba9; }
+    .warn { color:#f0ca74; }
+    .bad { color:#ff8d8d; }
+    img,video { width:100%; max-height:520px; object-fit:contain; background:#080a0e; border-radius:10px; border:1px solid #252c3a; }
+    .muted { color:#96a2b5; }
+    a { color:#a9c3ff; }
+  </style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <h1>xiaoduan映画 · V3 真实流程验收</h1>
+    <div class="muted">页面直接创建 xiaoduanProductionWorkflow：参考图 → 图片生成 → Audit → Adopt → H3 首帧视频 → Audit → Adopt。</div>
+  </div>
+
+  <div class="card">
+    <h2>1. 参考图</h2>
+    <div class="grid">
+      <div>
+        <label>Reference ID</label>
+        <input id="referenceId" value="hero-v1" />
+      </div>
+      <div>
+        <label>上传新参考图（可选；不上传则使用现有 Reference ID）</label>
+        <input id="referenceFile" type="file" accept="image/png,image/jpeg,image/webp" />
+      </div>
+    </div>
+    <p><button id="uploadReference">上传参考图</button><span id="uploadStatus" class="muted"></span></p>
+  </div>
+
+  <div class="card">
+    <h2>2. 真实生产参数</h2>
+    <div class="grid">
+      <div>
+        <label>Project ID</label>
+        <input id="projectId" value="web-validation" />
+      </div>
+      <div>
+        <label>H3 分辨率</label>
+        <div class="grid"><input id="h3Width" type="number" value="512" /><input id="h3Height" type="number" value="320" /></div>
+      </div>
+    </div>
+    <p><label>图片镜头描述</label><textarea id="sourceText">canonical adult East Asian female character on an ancient Chinese snowy mountain path, cinematic medium shot, natural realistic skin, coherent anatomy, detailed winter clothing</textarea></p>
+    <p><label>H3 视频描述</label><textarea id="videoPrompt">The same woman from the adopted first frame walks slowly forward through falling snow on the ancient mountain path. Preserve identity, clothing and scene continuity. Natural cinematic movement, stable camera, no sudden appearance changes.</textarea></p>
+    <button id="startWorkflow">启动真实 Temporal 流程</button>
+  </div>
+
+  <div class="card">
+    <h2>3. Workflow 状态</h2>
+    <div id="headline" class="status">未启动</div>
+    <pre id="statusOutput">等待启动。</pre>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>采纳图片</h2>
+      <img id="imageResult" alt="image result" style="display:none" />
+      <pre id="imageMeta">尚未生成。</pre>
+    </div>
+    <div class="card">
+      <h2>采纳 H3 视频</h2>
+      <video id="videoResult" controls style="display:none"></video>
+      <pre id="videoMeta">尚未生成。</pre>
+    </div>
+  </div>
+  <p><a href="/">返回 V3 首页</a></p>
+</main>
+<script>
+async function api(url, options) {
+  const response = await fetch(url, options);
+  const contentType = response.headers.get('content-type') || '';
+  const body = contentType.includes('application/json') ? await response.json() : await response.text();
+  if (!response.ok) throw new Error(typeof body === 'string' ? body : (body.detail || JSON.stringify(body)));
+  return body;
+}
+
+const headline = document.querySelector('#headline');
+const statusOutput = document.querySelector('#statusOutput');
+const startButton = document.querySelector('#startWorkflow');
+let timer = null;
+
+function render(data) {
+  const status = data.status || data.temporal_status || 'unknown';
+  headline.textContent = `${status.toUpperCase()} · ${data.stage || '-'}`;
+  headline.className = `status ${status === 'completed' ? 'good' : (status === 'running' ? 'warn' : 'bad')}`;
+  statusOutput.textContent = JSON.stringify({
+    workflow_id: data.workflow_id,
+    temporal_status: data.temporal_status,
+    stage: data.stage,
+    completed_step_ids: data.completed_step_ids || [],
+    output_refs: data.output_refs || [],
+    error_code: data.error_code || '',
+    message: data.message || ''
+  }, null, 2);
+
+  if (data.image && data.image.media_url) {
+    const img = document.querySelector('#imageResult');
+    img.src = `${data.image.media_url}?t=${Date.now()}`;
+    img.style.display = 'block';
+    document.querySelector('#imageMeta').textContent = JSON.stringify(data.image, null, 2);
+  }
+  if (data.video && data.video.media_url) {
+    const video = document.querySelector('#videoResult');
+    video.src = `${data.video.media_url}?t=${Date.now()}`;
+    video.style.display = 'block';
+    document.querySelector('#videoMeta').textContent = JSON.stringify(data.video, null, 2);
+  }
+}
+
+async function poll(workflowId) {
+  try {
+    const data = await api(`/api/v3/workflows/${encodeURIComponent(workflowId)}`);
+    render(data);
+    if (data.status === 'completed' || ['failed','cancelled','terminated','timed_out','semantic_failure'].includes(data.status)) {
+      clearInterval(timer);
+      timer = null;
+      startButton.disabled = false;
+    }
+  } catch (error) {
+    headline.textContent = 'STATUS ERROR';
+    headline.className = 'status bad';
+    statusOutput.textContent = String(error);
+  }
+}
+
+document.querySelector('#uploadReference').addEventListener('click', async () => {
+  const file = document.querySelector('#referenceFile').files[0];
+  const referenceId = document.querySelector('#referenceId').value.trim();
+  const target = document.querySelector('#uploadStatus');
+  if (!file) { target.textContent = '请选择图片。'; return; }
+  try {
+    target.textContent = '上传中...';
+    const form = new FormData();
+    form.append('file', file);
+    form.append('entity_id', 'char_hero');
+    const result = await api(`/api/v3/references/${encodeURIComponent(referenceId)}`, {method:'POST', body:form});
+    target.textContent = `已上传：${result.reference_id} / ${result.sha256.slice(0,12)}...`;
+  } catch (error) {
+    target.textContent = `上传失败：${error}`;
+  }
+});
+
+document.querySelector('#startWorkflow').addEventListener('click', async () => {
+  startButton.disabled = true;
+  headline.textContent = 'STARTING';
+  headline.className = 'status warn';
+  statusOutput.textContent = '正在创建真实 Temporal Workflow...';
+  try {
+    const payload = {
+      project_id: document.querySelector('#projectId').value.trim(),
+      reference_id: document.querySelector('#referenceId').value.trim(),
+      source_text: document.querySelector('#sourceText').value.trim(),
+      video_prompt: document.querySelector('#videoPrompt').value.trim(),
+      h3_width: Number(document.querySelector('#h3Width').value),
+      h3_height: Number(document.querySelector('#h3Height').value),
+      h3_length: 56,
+      h3_steps: 12
+    };
+    const started = await api('/api/v3/workflows/visual', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)
+    });
+    render(started);
+    await poll(started.workflow_id);
+    timer = setInterval(() => poll(started.workflow_id), 3000);
+  } catch (error) {
+    headline.textContent = 'START FAILED';
+    headline.className = 'status bad';
+    statusOutput.textContent = String(error);
+    startButton.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

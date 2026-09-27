@@ -4,6 +4,10 @@ import unittest
 from pathlib import Path
 
 from app.services.media_generation_pipeline import _phase_anchor_text
+import app.services.media_generation_pipeline as media_pipeline_module
+from app.services.prompt_compiler import PromptCompiler
+from app.v3.character_prompt_integration import install_character_prompt_integration
+from app.v3.character_reference_package import CharacterReferencePackageBootstrap
 from app.v3.character_reference_package import _FACE_TOKENS, _COSTUME_TOKENS, _select_facts
 
 
@@ -48,13 +52,24 @@ class CharacterReferencePackageTests(unittest.TestCase):
         self.assertNotIn("眉目清秀", text)
 
     def test_media_pipeline_filters_identity_anchors_by_phase(self):
+        original = (
+            CharacterReferencePackageBootstrap._face_prompt,
+            CharacterReferencePackageBootstrap._costume_prompt,
+            media_pipeline_module._phase_anchor_text,
+            PromptCompiler.compile,
+        )
+        install_character_prompt_integration()
+        self.addCleanup(setattr, CharacterReferencePackageBootstrap, "_face_prompt", original[0])
+        self.addCleanup(setattr, CharacterReferencePackageBootstrap, "_costume_prompt", original[1])
+        self.addCleanup(setattr, media_pipeline_module, "_phase_anchor_text", original[2])
+        self.addCleanup(setattr, PromptCompiler, "compile", original[3])
         raw = (
             "年龄感: 17岁; 脸部结构: 眉目清秀; 发型: 黑发束起; "
             "上衣: 深蓝色古式长袍; 固定配饰: 乌木剑鞘; 背景: 青云山断崖"
         )
-        face = _phase_anchor_text(raw, "face_anchor")
-        costume = _phase_anchor_text(raw, "costume")
-        turnaround = _phase_anchor_text(raw, "turnaround")
+        face = media_pipeline_module._phase_anchor_text(raw, "face_anchor")
+        costume = media_pipeline_module._phase_anchor_text(raw, "costume")
+        turnaround = media_pipeline_module._phase_anchor_text(raw, "turnaround")
         self.assertIn("17岁", face)
         self.assertIn("眉目清秀", face)
         self.assertNotIn("深蓝色古式长袍", face)

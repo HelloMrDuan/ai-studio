@@ -10,6 +10,8 @@ from app.v3.generation_executor import (
     ReferenceAssetStore,
     compile_role_aware_reference_chain,
 )
+import app.v3.generation_executor as generation_executor_module
+from app.v3.reference_role_policy import install_reference_role_policy
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +29,9 @@ class MultiReferenceComfyTests(unittest.TestCase):
         self.assertIn("xiaoduan_multi_reference_faceid_api.json", profile["reference_workflow_path"])
 
     def test_role_aware_compiler_consumes_two_characters_location_and_two_props(self) -> None:
+        original_role_policy = generation_executor_module._is_character_reference
+        install_reference_role_policy()
+        self.addCleanup(setattr, generation_executor_module, "_is_character_reference", original_role_policy)
         workflow = json.loads(
             (ROOT / "workflows" / "xiaoduan_multi_reference_faceid_api.json").read_text(encoding="utf-8")
         )

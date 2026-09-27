@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from app.services.generation_contract import GenerationContract
+import app.services.media_generation_pipeline as media_pipeline_module
 from app.services.prompt_compiler import PromptCompiler
 from app.services.visual_direction import VisualDirection
 from app.v3.character_identity_contract import build_face_anchor_prompt
@@ -84,6 +85,23 @@ class _NoLiveStage02Production:
 
 
 class CharacterPromptIntegrationPeriodTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # Other V3 suites install later character policies at import time. Test
+        # this integration boundary in isolation, then restore their policy.
+        self._original = (
+            CharacterReferencePackageBootstrap._face_prompt,
+            CharacterReferencePackageBootstrap._costume_prompt,
+            media_pipeline_module._phase_anchor_text,
+            PromptCompiler.compile,
+        )
+        install_character_prompt_integration()
+
+    def tearDown(self) -> None:
+        (CharacterReferencePackageBootstrap._face_prompt,
+         CharacterReferencePackageBootstrap._costume_prompt,
+         media_pipeline_module._phase_anchor_text,
+         PromptCompiler.compile) = self._original
+
     def test_face_anchor_uses_exact_confirmed_garment_only_as_visible_crop_policy(self) -> None:
         service = CharacterReferencePackageBootstrap.__new__(CharacterReferencePackageBootstrap)
         prompt = service._face_prompt(_entity())

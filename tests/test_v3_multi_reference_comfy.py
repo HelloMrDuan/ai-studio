@@ -50,8 +50,10 @@ class MultiReferenceComfyTests(unittest.TestCase):
             self.assertIn(name, serialized)
         face_nodes = [node for node in compiled.values() if node.get("class_type") == "IPAdapterFaceID"]
         generic_nodes = [node for node in compiled.values() if node.get("class_type") == "IPAdapterAdvanced"]
-        self.assertEqual(len(face_nodes), 2)
-        self.assertEqual(len(generic_nodes), 3)
+        # Turnaround/costume references carry structure. Only an explicit face
+        # anchor may enter FaceID, so all five use the structure channel here.
+        self.assertEqual(len(face_nodes), 0)
+        self.assertEqual(len(generic_nodes), 5)
         self.assertNotEqual(compiled["3"]["inputs"]["model"], ["4", 0])
 
     def test_reference_store_persists_role_and_entity_type(self) -> None:

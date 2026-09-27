@@ -24,7 +24,7 @@ from .production_cached_executor import ProductionCachedFullPipelineExecutor, _M
 from .unified_image_executor import UnifiedImageDomainExecutor
 
 
-_CHARACTER_PACKAGE_PHASES = {"costume", "turnaround"}
+_CHARACTER_PACKAGE_PHASES = {"costume", "turnaround", "character_master"}
 _FACE_IDENTITY_ROLES = {
     "character_face_anchor",
     "character_identity",
@@ -36,10 +36,9 @@ _FACE_IDENTITY_ROLES = {
 class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
     """Production worker with an explicit Z-Image -> FaceFusion character chain.
 
-    Z-Image remains the pixel renderer for character face/costume/turnaround
-    assets. For costume and turnaround stages, the adopted face anchor is then
-    applied as a separate identity post-process. This keeps model responsibility
-    clear: Z-Image owns design/rendering, FaceFusion owns identity preservation.
+    Z-Image renders the canonical front and Qwen edits its camera angle for
+    turnaround views. FaceFusion locks identity where a frontal target supports
+    face swapping; strict side profiles retain the Qwen reference-bound pixels.
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -129,7 +128,7 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
             return result
         phase = self._reference_phase(payload)
         references = [str(value).strip() for value in payload.get("reference_ids") or [] if str(value).strip()]
-        if phase not in _CHARACTER_PACKAGE_PHASES or not references:
+        if phase not in _CHARACTER_PACKAGE_PHASES:
             return result
         if result.metadata.get("media_cache_hit") == "true":
             return result
@@ -137,7 +136,17 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
         artifact_path = Path(str(result.metadata.get("artifact_path") or ""))
         if not artifact_path.is_file() or artifact_path.stat().st_size <= 0:
             raise FileNotFoundError("Z-Image 角色候选生成完成但产物文件不存在")
-        face = self._face_identity_reference(payload)
+        if phase == "character_master":
+            face_path = Path(str(result.metadata.get("identity_source_path") or ""))
+            if not face_path.is_file() or face_path.stat().st_size <= 0:
+                raise FileNotFoundError("角色身份母版缺少本轮正面脸源，拒绝跳过身份锁定")
+            face_reference_id = f"generated-front:{input.step.idempotency_key}"
+        else:
+            if not references:
+                raise ReferenceAssetError("角色定装/三视图缺少已采用的身份参考")
+            face = self._face_identity_reference(payload)
+            face_path = face.path
+            face_reference_id = face.reference_id
         output_dir = (
             Path(self.settings.data_dir)
             / "v3"
@@ -156,7 +165,7 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
             print(
                 "FACEFUSION_IDENTITY "
                 f"project_id={input.project_id} workflow={input.workflow_id} "
-                f"step={input.step.step_id} phase={phase} face_ref={face.reference_id} {text}",
+                f"step={input.step.step_id} phase={phase} face_ref={face_reference_id} {text}",
                 flush=True,
             )
 
@@ -170,7 +179,7 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
         ) -> Path:
             return await self.facefusion.run(
                 processor="face_swapper",
-                source_path=face.path,
+                source_path=face_path,
                 target_path=target,
                 output_dir=destination,
                 params={
@@ -224,7 +233,7 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
         # FullPipelineExecutor releases the ComfyUI lease before this method runs.
         # The same orchestrator can therefore safely reclaim VRAM for FaceFusion.
         async with self.gpu.use(GPUOwner.facefusion):
-            if phase == "turnaround":
+            if phase in {"turnaround", "character_master"}:
                 panels_dir = output_dir / "panels"
                 panels_dir.mkdir(parents=True, exist_ok=True)
                 with Image.open(artifact_path) as sheet:
@@ -243,29 +252,37 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
                 # FaceFusion over it adds latency and can alter an image that is the
                 # canonical appearance anchor, so preserve it exactly.
                 locked_front = panel_paths[0]
-                # A frontal source at full swap weight deforms profile eyelids and
-                # lips. The calibrated profile pass still transfers identity but
-                # preserves the Z-Image ControlNet geometry.
-                locked_side = await swap_with_small_face_retry(
-                    panel_paths[1], panels_dir / "side", weight=0.25,
-                )
+                # Qwen edits the side profile from the exact canonical front.
+                # FaceFusion's frontal face swap cannot preserve a strict 90°
+                # profile: real male and female runs closed the eye and warped
+                # the nose/mouth. Keep the reference-bound generated pixels.
+                locked_side = panel_paths[1]
+                await log("严格侧脸保留 Qwen 参考图编辑结果；跳过会扭曲侧脸的 FaceFusion 交换")
                 with Image.open(locked_front) as front, Image.open(locked_side) as side, Image.open(panel_paths[2]) as back:
                     combined = Image.new("RGB", (panel_width * 3, panels[0].height), "white")
                     combined.paste(front.convert("RGB"), (0, 0))
                     combined.paste(side.convert("RGB"), (panel_width, 0))
                     combined.paste(back.convert("RGB"), (panel_width * 2, 0))
-                    processed = output_dir / "facefusion-turnaround.png"
+                    processed = output_dir / "reference-bound-turnaround.png"
                     combined.save(processed)
             else:
                 processed = await swap_with_small_face_retry(artifact_path, output_dir)
 
             restored = output_dir / "identity-restored.png"
             await self._identity_tool(
-                "v3_face_identity_restore.py", face.path, processed, restored,
+                "v3_face_identity_restore.py", face_path, processed, restored,
                 result_json=output_dir / "identity-restore.json", log=log,
             )
+            if phase in {"turnaround", "character_master"}:
+                # Identity restoration only needs to repair generated views.
+                # Keep the canonical front pixels unchanged through the final
+                # asset, including after this whole-sheet restoration pass.
+                with Image.open(restored) as restored_sheet, Image.open(panel_paths[0]) as canonical_front:
+                    exact_front_sheet = restored_sheet.convert("RGB")
+                    exact_front_sheet.paste(canonical_front.convert("RGB"), (0, 0))
+                    exact_front_sheet.save(restored, format="PNG")
             audit_payload = await self._identity_tool(
-                "v3_identity_score.py", face.path, restored,
+                "v3_identity_score.py", face_path, restored,
                 result_json=output_dir / "identity-audit.json", log=log,
             )
             audit = evaluate_identity_similarity(
@@ -300,15 +317,23 @@ class ProductionWorkerExecutor(ProductionCachedFullPipelineExecutor):
         metadata = dict(result.metadata)
         metadata.update(
             {
-                "runtime_image_backend": "z_image_turbo_facefusion",
+                "runtime_image_backend": (
+                    "z_image_turbo_qwen_reference_edit"
+                    if phase in {"turnaround", "character_master"}
+                    else "z_image_turbo_facefusion"
+                ),
                 "primary_renderer": "z-image-turbo",
-                "identity_postprocess": "facefusion",
+                "identity_postprocess": (
+                    "qwen_reference_conditioning"
+                    if phase in {"turnaround", "character_master"}
+                    else "facefusion"
+                ),
                 "identity_postprocess_required": "false",
-                "identity_reference_id": face.reference_id,
+                "identity_reference_id": face_reference_id,
                 "identity_similarity": f"{audit.cosine_similarity:.6f}",
                 "identity_audit_policy": audit.policy_id,
                 "reference_phase": phase,
-                "turnaround_side_facefusion_weight": "0.25" if phase == "turnaround" else "",
+                "turnaround_side_facefusion_weight": "",
                 "artifact_path": str(artifact_path),
                 "bytes_written": str(artifact_path.stat().st_size),
             }

@@ -14,7 +14,7 @@ class FaceIDProfileTests(unittest.TestCase):
         self.assertTrue(profile["identity_reference"])
         self.assertTrue(profile["ip_adapter"])
         self.assertEqual(profile["multi_reference_mode"], "role_aware_chain")
-        self.assertEqual(profile["max_references"], 4)
+        self.assertEqual(profile["max_references"], 5)
         self.assertEqual(profile["reference_bindings"], [])
         self.assertEqual(workflow["12"]["class_type"], "IPAdapterUnifiedLoaderFaceID")
         self.assertEqual(workflow["12"]["inputs"]["preset"], "FACEID PLUS V2")

@@ -381,6 +381,11 @@ class RefinedAuthoringAssetService(AuthoringAssetService):
         metadata["authoring"] = authoring
         continuity = metadata.get("continuity") if isinstance(metadata.get("continuity"), dict) else {}
         core_profile = continuity.get("core_profile") if isinstance(continuity.get("core_profile"), dict) else {}
+        if _clean(canonical.get("entity_type")).lower() in {"location", "scene", "prop"}:
+            # A human correction to the stable design supersedes the earlier
+            # Stage03 free-text summary. Keeping both sends contradictory facts
+            # into the reference image contract (e.g. blade vs. scabbard).
+            core_profile.pop("阶段正式设定", None)
         core_profile["已确认稳定设定"] = text
         continuity["core_profile"] = core_profile
         metadata["continuity"] = continuity

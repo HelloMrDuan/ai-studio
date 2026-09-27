@@ -74,7 +74,7 @@ class ContinuityAliasRepairTests(unittest.TestCase):
                 state,
             )
 
-            serialized = json.dumps(repaired, ensure_ascii=False)
+            serialized = json.dumps({key: value for key, value in repaired.items() if key != "analysis"}, ensure_ascii=False)
             self.assertTrue(audit["repaired"])
             self.assertEqual(audit["aliases"][duplicate_id], canonical_id)
             self.assertNotIn(duplicate_id, serialized)

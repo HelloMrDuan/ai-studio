@@ -95,6 +95,27 @@ class RefinedAssetModelTests(unittest.TestCase):
             self.assertTrue(second["content_idempotent"])
             self.assertEqual(second["canonical_asset_kinds"], ["character", "location", "prop"])
 
+    def test_manual_prop_design_supersedes_conflicting_stage_summary(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            project_id = "e" * 24
+            director, _hero, _location, prop, _scene = self._setup(root, project_id)
+            p = director.production
+            p.update_entity(project_id, prop["entity_id"], {
+                "metadata": {"continuity": {"core_profile": {
+                    "type": "武器", "阶段正式设定": "错误的裸剑描述",
+                }}},
+            })
+            service = RefinedAuthoringAssetService(type("S", (), {"data_dir": root})(), _Legacy(director))
+            service.status(project_id)
+            result = service.update_profile(
+                project_id, prop["entity_id"],
+                stable_design="完整入鞘的一把古剑，剑鞘为深色木质并有暗银纹路。",
+            )
+            profile = p.read_text_asset(project_id, result["profile_asset_id"])
+            self.assertIn("完整入鞘", profile)
+            self.assertNotIn("错误的裸剑描述", profile)
+
     def test_reference_status_excludes_narrative_scene_duplicates(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

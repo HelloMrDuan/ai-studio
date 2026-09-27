@@ -635,7 +635,13 @@ class CharacterReferencePackageBootstrap(CanonicalReferenceAssetBootstrap):
                 phase = "ready" if ready is not None else "reference"
                 active_target = final_target
 
-            candidate = self._pending_candidate(project_id, active_target)
+            if kind in {"location", "prop"}:
+                candidate = (
+                    self._current_domain_candidate(project_id, active_target, prompt_asset)
+                    if ready is None else None
+                )
+            else:
+                candidate = self._pending_candidate(project_id, active_target)
             prompt_text = self._master_prompt(entity) if kind == "character" else self._reference_prompt(entity)
             if prompt_asset is not None and self._prompt_asset_is_user_edited(prompt_asset):
                 stored = self._read_prompt_asset(project_id, prompt_asset)
@@ -683,7 +689,7 @@ class CharacterReferencePackageBootstrap(CanonicalReferenceAssetBootstrap):
             "ready_count": sum(1 for item in items if item.get("ready")),
             "manual_adoption_required": True,
             "upload_required": False,
-            "generation_backend": "zimage_front_layout_then_i2l_identity_master",
+            "generation_backend": "zimage_front_then_qwen_reference_camera_edits_plus_facefusion",
             "asset_policy": "one_adopted_character_master; location_prop_direct_reference",
             "canonical_asset_kinds": ["character", "location", "prop"],
             "stable_profile_required": True,

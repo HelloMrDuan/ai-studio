@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import unittest
+import json
+from pathlib import Path
 
 from app.services.prompt_compiler import PromptCompiler
 from app.services.reference_templates import get_reference_template
 from app.services.visual_direction import VisualDirection
 from app.v3.reference_assets import ReferenceAssetBootstrap
+from app.v3.zimage_temporal_executor import compile_qwen_domain_reference_workflow
 
 
 class _Legacy:
@@ -61,7 +64,7 @@ class ReferenceDomainIsolationTests(unittest.TestCase):
 
         template = get_reference_template("location")
         self.assertIn("empty environment plate", template.positive)
-        self.assertIn("empty stairs", template.positive)
+        self.assertIn("vacant stairs", template.positive)
         self.assertNotIn("character", template.positive.lower())
         self.assertIn("tiny distant person", template.negative.lower())
         self.assertIn("character", template.negative.lower())
@@ -171,6 +174,91 @@ class ReferenceDomainIsolationTests(unittest.TestCase):
         self.assertIn("tiny distant person", compiled.negative_prompt.lower())
         self.assertIn("stable_profile", compiled.negative_prompt.lower())
         self.assertIn("character", compiled.negative_prompt.lower())
+
+    def test_formal_prop_prompt_uses_only_its_own_visual_facts(self):
+        prompt = self.service._reference_prompt({
+            "entity_type": "prop",
+            "name": "玉佩",
+            "metadata": {"stable_profile": {"type": "道具", "design": "椭圆形，青玉材质，顶部穿孔有一根系绳"}},
+        })
+        compiled = self.compiler.compile(
+            asset_kind="prop",
+            asset_description=prompt,
+            visual_direction=VisualDirection(prop_rules={"all_props": "古剑和玉佩"}),
+            contract_context=(
+                "kind: prop; stable_profile.type: 道具; "
+                "stable_profile.design: 椭圆形，青玉材质; "
+                "source_entity_ids: ent_123"
+            ),
+        )
+        positive = compiled.positive_prompt
+        self.assertIn("exactly one 玉佩", positive)
+        self.assertIn("椭圆形，青玉材质", positive)
+        self.assertIn("single attachment cord visibly threaded", positive)
+        for leak in ("古剑", "kind:", "source_entity_ids", "ent_123", "stable_profile", "禁止", "参考图布局要求"):
+            self.assertNotIn(leak, positive)
+
+    def test_sheathed_prop_is_one_assembled_object(self):
+        prompt = self.service._reference_prompt({
+            "entity_type": "prop",
+            "name": "古剑",
+            "metadata": {"stable_profile": {"design": "乌木剑身，暗银纹剑鞘"}},
+        })
+        compiled = self.compiler.compile(
+            asset_kind="prop", asset_description=prompt,
+            visual_direction=VisualDirection(),
+        )
+        self.assertIn("one closed scabbard holding one sword", compiled.positive_prompt)
+        self.assertIn("scabbard body extending from the guard", compiled.positive_prompt)
+
+    def test_formal_location_prompt_excludes_layout_prose_and_schema(self):
+        prompt = self.service._reference_prompt({
+            "entity_type": "location",
+            "name": "青云山",
+            "metadata": {"stable_profile": {"terrain": "山体环绕，雪中石阶，悬崖附近"}},
+        })
+        compiled = self.compiler.compile(
+            asset_kind="location",
+            asset_description=prompt,
+            visual_direction=VisualDirection(),
+            contract_context="kind: location; stable_design: 山体环绕，雪中石阶，悬崖附近; source_entity_ids: ent_456",
+        )
+        positive = compiled.positive_prompt
+        self.assertIn("山体环绕，雪中石阶，悬崖附近", positive)
+        self.assertIn("empty environment plate", positive)
+        self.assertTrue(positive.startswith("very wide panoramic environmental identity photograph of the entire 青云山 mountain massif"))
+        self.assertIn("stone staircase winds across the slope as one subordinate landmark", positive)
+        for leak in ("kind:", "source_entity_ids", "ent_456", "stable_design", "禁止", "参考图布局要求"):
+            self.assertNotIn(leak, positive)
+
+    def test_domain_edits_use_existing_image_conditioned_workflow(self):
+        workflow_path = Path(__file__).resolve().parents[1] / "workflows" / "qwen_image_edit_turnaround_api.json"
+        template = json.loads(workflow_path.read_text(encoding="utf-8"))
+        for kind, identity, expected in (
+            ("prop", "一件带完整系绳的青玉佩饰", "entire loop"),
+            ("prop", "一件带乌木剑鞘和暗银纹路的武器", "outside surface"),
+            ("location", "环绕山体与覆雪石阶的完整走向", "Remove any human"),
+        ):
+            with self.subTest(kind=kind):
+                compiled = compile_qwen_domain_reference_workflow(
+                    template, source_name=f"source-{kind}.png", identity=identity,
+                    kind=kind, seed=21, filename_prefix=f"test/{kind}",
+                )
+                self.assertEqual(compiled["1"]["inputs"]["image"], f"source-{kind}.png")
+                self.assertEqual(compiled["4"]["inputs"]["model"], ["2", 0])
+                self.assertEqual(compiled["14"]["inputs"]["positive"], ["13", 0])
+                self.assertEqual(compiled["14"]["inputs"]["seed"], 21)
+                if kind == "prop":
+                    self.assertIn(identity, compiled["12"]["inputs"]["prompt"])
+                else:
+                    self.assertNotIn(identity, compiled["12"]["inputs"]["prompt"])
+                self.assertIn(expected, compiled["12"]["inputs"]["prompt"])
+                self.assertNotIn("LoraLoaderModelOnly", {node["class_type"] for node in compiled.values()})
+        with self.assertRaisesRegex(ValueError, "requires prop or location"):
+            compile_qwen_domain_reference_workflow(
+                template, source_name="character.png", identity="一名少年",
+                kind="character", seed=21, filename_prefix="test/character",
+            )
 
 
 if __name__ == "__main__":

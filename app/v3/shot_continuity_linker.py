@@ -100,11 +100,6 @@ class ShotContinuityLinker:
         if prev_scene and curr_scene and prev_scene != curr_scene:
             return False, "地点/场次发生变化"
 
-        prev_chars = _ids(previous.get("character_entity_ids"))
-        curr_chars = _ids(current.get("character_entity_ids"))
-        if prev_chars != curr_chars:
-            return False, "可见人物集合发生变化"
-
         prev_looks = _appearance_signature(previous)
         curr_looks = _appearance_signature(current)
         if prev_looks and curr_looks and prev_looks != curr_looks:
@@ -113,7 +108,11 @@ class ShotContinuityLinker:
         if _TIME_JUMP.search(self._time_text(current)):
             return False, "检测到明确时间跳跃"
 
-        return True, "同地点、同人物集合、无明确时间/形象断点"
+        # A character entering or leaving the frame does not reset the
+        # location, established identities, or camera continuity.  The next
+        # image can edit the adopted preceding frame and add the new entity's
+        # canonical reference in another model input slot.
+        return True, "同地点、无明确时间/形象断点；人物出入画由下一镜头处理"
 
     def link(self, project_id: str) -> dict[str, Any]:
         state = self._load(project_id)

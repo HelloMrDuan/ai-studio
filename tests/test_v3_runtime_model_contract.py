@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import asyncio
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+
+from PIL import Image, ImageDraw
 
 from app.config import Settings
 from app.services.comfyui import (
@@ -21,7 +24,9 @@ from app.v3.zimage_temporal_executor import (
     compile_zimage_controlled_master_workflow,
     compile_zimage_controlled_layout_workflow,
     compile_character_front_prompt,
+    normalize_controlled_layout,
     compile_zimage_turnaround_workflow,
+    compile_qwen_edit_turnaround_workflow,
 )
 
 
@@ -29,6 +34,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class V3RuntimeModelContractTests(unittest.TestCase):
+    def test_four_figure_layout_is_normalized_before_identity_diffusion(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = Image.new("RGB", (2304, 1024), (220, 222, 224))
+            draw = ImageDraw.Draw(source)
+            colors = ((18, 42, 82), (22, 70, 105), (25, 55, 90), (30, 80, 115))
+            for center, color in zip((280, 820, 1360, 1940), colors):
+                draw.ellipse((center - 55, 60, center + 55, 190), fill=(35, 28, 25))
+                draw.rectangle((center - 125, 190, center + 125, 930), fill=color)
+            source_path = root / "four.png"
+            output_path = root / "three.png"
+            source.save(source_path)
+            normalize_controlled_layout(source_path, output_path)
+            with Image.open(output_path) as normalized:
+                self.assertEqual(normalized.size, (2304, 1024))
+                pixels = normalized.convert("RGB")
+                for index in range(3):
+                    panel = pixels.crop((index * 768, 0, (index + 1) * 768, 1024))
+                    self.assertLess(min(value[2] for value in panel.getdata()), 150)
+
     def test_character_front_prompt_cannot_inherit_model_sheet_layout(self) -> None:
         prompt = compile_character_front_prompt(
             "专业角色身份母版；18岁少女；黑色高发髻；浅青色古式长裙；4-panel character turnaround sheet"
@@ -139,43 +164,31 @@ class V3RuntimeModelContractTests(unittest.TestCase):
             )
         )
 
-    def test_turnaround_compiles_adopted_front_plus_generated_side_and_back(self) -> None:
+    def test_turnaround_compiles_reference_bound_qwen_camera_edits(self) -> None:
         workflow = json.loads(
-            (ROOT / "workflows" / "z_image_turbo_turnaround_api.json").read_text(encoding="utf-8")
+            (ROOT / "workflows" / "qwen_image_edit_turnaround_api.json").read_text(encoding="utf-8")
         )
-        compiled = compile_zimage_turnaround_workflow(
+        compiled = compile_qwen_edit_turnaround_workflow(
             workflow,
             adopted_costume_name="xiaoduan-v3/adopted-costume.png",
-            adopted_face_name="xiaoduan-v3/adopted-face.png",
-            side_pose_name="xiaoduan-v3/side-pose.png",
-            back_pose_name="xiaoduan-v3/back-pose.png",
-            positive_prompt=(
-                "STRICT VISUAL AGE: 17岁, stable_profile.阶段正式设定: "
-                "17岁的少年，身穿深蓝色古式长袍。; 4-panel character turnaround sheet"
-            ),
-            negative_prompt="costume drift",
             seed=101,
             filename_prefix="test/turnaround",
         )
         self.assertEqual(compiled["1"]["inputs"]["image"], "xiaoduan-v3/adopted-costume.png")
-        self.assertEqual(compiled["2"]["inputs"]["image"], "xiaoduan-v3/adopted-face.png")
-        self.assertEqual(compiled["3"]["inputs"]["image"], "xiaoduan-v3/side-pose.png")
-        self.assertEqual(compiled["4"]["inputs"]["image"], "xiaoduan-v3/back-pose.png")
-        self.assertEqual(compiled["5"]["inputs"]["base_model"], "z-image-turbo")
-        self.assertTrue(compiled["5"]["inputs"]["load_controlnet"])
-        self.assertEqual(compiled["7"]["inputs"]["image2"], ["2", 0])
-        self.assertEqual(compiled["8"]["inputs"]["images"], ["7", 0])
-        self.assertEqual(compiled["9"]["inputs"]["control_image"], ["3", 0])
-        self.assertEqual(compiled["10"]["inputs"]["control_image"], ["4", 0])
-        self.assertEqual(compiled["9"]["inputs"]["cfg_scale"], 1.0)
-        self.assertEqual(compiled["9"]["inputs"]["num_inference_steps"], 12)
-        self.assertIn("90-degree side profile", compiled["9"]["inputs"]["prompt"])
-        self.assertIn("180-degree rear view", compiled["10"]["inputs"]["prompt"])
-        self.assertNotIn("4-panel", compiled["9"]["inputs"]["prompt"])
-        self.assertNotIn("turnaround sheet", compiled["10"]["inputs"]["prompt"])
-        self.assertEqual(compiled["11"]["inputs"]["image1"], ["1", 0])
-        self.assertEqual(compiled["13"]["inputs"]["images"], ["12", 0])
-        self.assertNotIn("未明确描述", compiled["9"]["inputs"]["prompt"])
+        self.assertEqual(compiled["2"]["inputs"]["unet_name"], "qwen_image_edit_2511_int8_convrot.safetensors")
+        self.assertEqual(compiled["3"]["inputs"]["lora_name"], "qwen-image-edit-2511-multiple-angles-lora.safetensors")
+        self.assertEqual(compiled["6"]["inputs"]["clip_name"], "qwen_2.5_vl_7b_nvfp4.safetensors")
+        self.assertEqual(compiled["10"]["inputs"]["prompt"], "")
+        self.assertTrue(compiled["12"]["inputs"]["prompt"].startswith("<sks> right side view"))
+        self.assertTrue(compiled["15"]["inputs"]["prompt"].startswith("<sks> back view"))
+        self.assertIn("absence of bangs", compiled["12"]["inputs"]["prompt"])
+        self.assertIn("Do not add or remove", compiled["15"]["inputs"]["prompt"])
+        self.assertEqual(compiled["14"]["inputs"]["seed"], 101)
+        self.assertEqual(compiled["17"]["inputs"]["seed"], 101)
+        self.assertEqual(compiled["14"]["inputs"]["steps"], 40)
+        self.assertEqual(compiled["17"]["inputs"]["cfg"], 4.0)
+        self.assertEqual(compiled["20"]["inputs"]["image1"], ["1", 0])
+        self.assertEqual(compiled["22"]["inputs"]["images"], ["21", 0])
 
     def test_character_master_binds_identity_lora_to_controlled_layout(self) -> None:
         layout_workflow = json.loads(

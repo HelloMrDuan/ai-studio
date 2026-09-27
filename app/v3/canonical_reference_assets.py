@@ -51,6 +51,25 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
         rows.sort(key=lambda item: (int(item.get("version") or 0), _clean(item.get("updated_at"))))
         return rows[-1] if rows else None
 
+    def _ready_reference(self, project_id: str, entity: dict[str, Any]) -> dict[str, Any] | None:
+        ready = super()._ready_reference(project_id, entity)
+        kind = _clean(entity.get("entity_type")).lower()
+        if ready is None or kind == "character":
+            return ready
+        profile = self._profile_asset(project_id, _clean(entity.get("entity_id")), kind)
+        contract_id = _clean(ready.get("contract_artifact_id"))
+        if profile is None or not contract_id:
+            return None
+        try:
+            contract = self.director.production.get_asset(project_id, contract_id)
+        except (FileNotFoundError, ValueError):
+            return None
+        if _clean(contract.get("dependency_state")).lower() == "stale":
+            return None
+        if _clean(profile.get("asset_id")) not in {_clean(value) for value in contract.get("parent_asset_ids") or []}:
+            return None
+        return ready
+
     @staticmethod
     def _name_from_profile(profile: dict[str, Any]) -> str:
         value = _clean(profile.get("name"))
@@ -312,6 +331,38 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
             None,
         )
 
+    def _current_domain_candidate(
+        self,
+        project_id: str,
+        target: dict[str, Any] | None,
+        prompt_asset: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Do not surface a candidate compiled from a superseded prop/location prompt."""
+        if target is None or prompt_asset is None:
+            return None
+        current_source_id = _clean(prompt_asset.get("asset_id"))
+        for row in self._candidate_rows(project_id, _clean(target.get("asset_id"))):
+            if _clean(row.get("confirmed_asset_id")) or _clean(row.get("status")).lower() in {"rejected", "failed"}:
+                continue
+            compiled_id = _clean(row.get("prompt_asset_id"))
+            if not compiled_id:
+                continue
+            try:
+                compiled = self.director.production.get_asset(project_id, compiled_id)
+            except (FileNotFoundError, ValueError):
+                continue
+            source_id = _clean((compiled.get("metadata") or {}).get("source_prompt_asset_id"))
+            contract_id = _clean(row.get("target_contract_artifact_id"))
+            try:
+                contract = self.director.production.get_asset(project_id, contract_id)
+            except (FileNotFoundError, ValueError):
+                continue
+            if _clean(contract.get("dependency_state")).lower() == "stale":
+                continue
+            if source_id == current_source_id:
+                return row
+        return None
+
     def status(self, project_id: str) -> dict[str, Any]:
         project = self.director.get_project(project_id)
         items: list[dict[str, Any]] = []
@@ -337,7 +388,13 @@ class CanonicalReferenceAssetBootstrap(ReferenceAssetBootstrap):
                 phase = "turnaround" if kind == "character" else "reference"
                 active_target = final_target
 
-            candidate = self._pending_candidate(project_id, active_target)
+            if kind in {"location", "prop"}:
+                candidate = (
+                    self._current_domain_candidate(project_id, active_target, prompt_asset)
+                    if ready is None else None
+                )
+            else:
+                candidate = self._pending_candidate(project_id, active_target)
             prompt_text = self._reference_prompt(entity)
             if prompt_asset is not None and self._prompt_asset_is_user_edited(prompt_asset):
                 stored = self._read_prompt_asset(project_id, prompt_asset)

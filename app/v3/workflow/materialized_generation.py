@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import re
+import secrets
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -127,6 +128,8 @@ class MaterializedDomainExecutor:
             result = self._semantic("RESOURCE_STATE_CONFLICT", exc)
         except ValueError as exc:
             result = self._semantic("INVALID_STEP_PAYLOAD", exc)
+        except (TimeoutError, RuntimeError, TypeError) as exc:
+            result = self._semantic("GENERATION_RUNTIME_FAILURE", exc)
         if result.metadata.get("identity_postprocess_required") != "true":
             self.base.results.put(input.project_id, input.step.idempotency_key, result)
         return result
@@ -304,7 +307,11 @@ class MaterializedDomainExecutor:
         size = await self._download_artifact(adapter, artifact, path)
         artifact_ref = f"artifact://image/{artifact_id}"
         candidate = self._candidate_once(input, payload, provider_id=selected.spec.provider_id, model_id=selected.spec.model_id, reference_ids=references, artifact_ref=artifact_ref, artifact_path=path, prompt_id=prompt_id, kind="image")
-        return StepActivityResult(kind="completed", message="image candidate materialized", output_refs=(artifact_ref,), metadata={"executor": "v3-materialized-domain-executor", "resource_id": candidate["resource_id"], "artifact_ref": artifact_ref, "artifact_path": str(path), "size": size, "prompt_id": prompt_id, "reference_ids": references})
+        self.jobs.put(input.project_id, input.step.idempotency_key, {
+            **job, "state": "materialized", "artifact_ref": artifact_ref,
+            "artifact_path": str(path), "bytes_written": size,
+        })
+        return StepActivityResult(kind="completed", message="image candidate materialized", output_ref=artifact_ref, metadata={"executor": "v3-materialized-domain-executor", "resource_id": candidate["resource_id"], "artifact_ref": artifact_ref, "artifact_path": str(path), "size": str(size), "prompt_id": prompt_id, "reference_ids": json.dumps(references)})
 
     async def _h3_generate_candidate(self, input: StepActivityInput, payload: dict[str, Any]) -> StepActivityResult:
         provider_id = self._optional(payload, "provider_id") or "local-h3-video"
@@ -314,15 +321,62 @@ class MaterializedDomainExecutor:
         entity_id = str((self._strings(payload, "entity_ids") or [""])[0])
         first_ref, _ = self._adopted_reference(input.project_id, logical_key, entity_id=entity_id)
         adapter = self.adapter_factory(selected.spec)
-        config = H3WorkflowConfig(width=int(payload.get("width") or 768), height=int(payload.get("height") or 448), length=int(payload.get("length") or 124), steps=int(payload.get("steps") or 20), seed=int(payload.get("seed") or 0))
-        workflow = H3WorkflowCompiler(config).compile(first_frame_name="__REFERENCE__", prompt=str(payload.get("prompt") or ""))
-        reference = self.base.references.resolve(first_ref)
-        receipt = await H3ReferenceFirstExecutor(adapter=adapter).execute(workflow=workflow, first_frame=reference)
-        artifact = await self._wait_for_artifact(adapter, receipt.prompt_id, timeout_seconds=float(payload.get("timeout_seconds") or 1800.0))
+        prompt = self._required(payload, "prompt")
+        width = int(payload.get("width") or 768)
+        height = int(payload.get("height") or 448)
+        length = int(payload.get("length") or 124)
+        steps = int(payload.get("steps") or 20)
+        job = self.jobs.get(input.project_id, input.step.idempotency_key)
+        if job is None:
+            seed = int(payload.get("seed") if payload.get("seed") is not None else -1)
+            if seed < 0:
+                seed = secrets.randbelow(2**63 - 1)
+            config = H3WorkflowConfig(
+                fl2va_model=self.settings.h3_fl2va_model,
+                ref2va_model=self.settings.h3_ref2va_model,
+                text_encoder=self.settings.h3_text_encoder,
+                video_vae=self.settings.h3_video_vae,
+                audio_vae=self.settings.h3_audio_vae,
+                sampler=self.settings.h3_sampler,
+                scheduler=self.settings.h3_scheduler,
+            )
+            contract = GenerationContract(
+                shot_id=self._required(payload, "shot_id"), source_text=prompt,
+                entity_ids=tuple(self._strings(payload, "entity_ids")),
+                reference_ids=(first_ref,), provider_reference_ids=(first_ref,),
+                provider_id=selected.spec.provider_id, model_id=selected.spec.model_id,
+                required_capabilities=frozenset({
+                    Capability.video_generation, Capability.image_reference, Capability.first_frame,
+                }),
+                width=width, height=height, steps=steps, seed=seed,
+                duration_seconds=length / 24.0,
+            )
+            receipt = await H3ReferenceFirstExecutor(
+                adapter=adapter, references=self.base.references,
+                compiler=H3WorkflowCompiler(config),
+            ).execute_first_frame(
+                contract, prompt=prompt, width=width, height=height,
+                length=length, steps=steps, seed=seed,
+            )
+            job = self.jobs.put(input.project_id, input.step.idempotency_key, {
+                "kind": "video", "state": "queued", "prompt_id": receipt.prompt_id,
+                "provider_id": receipt.provider_id, "model_id": receipt.model_id,
+                "first_frame_reference_id": first_ref,
+                "first_frame_upload": receipt.uploaded_reference_names[0],
+                "seed": seed,
+            })
+        elif str(job.get("kind") or "") != "video" or str(job.get("first_frame_reference_id") or "") != first_ref:
+            raise ValueError("persisted video job is bound to a different adopted first frame")
+        prompt_id = self._required(job, "prompt_id")
+        artifact = await self._wait_for_artifact(adapter, prompt_id, timeout_seconds=float(payload.get("timeout_seconds") or 1800.0))
         artifact_id = self._artifact_id("video", input.step.idempotency_key)
         suffix = self._suffix(str(artifact["filename"]), "video")
         path = self.video_root / input.project_id / f"{artifact_id}{suffix}"
         size = await self._download_artifact(adapter, artifact, path)
         artifact_ref = f"artifact://video/{artifact_id}"
-        candidate = self._candidate_once(input, payload, provider_id=selected.spec.provider_id, model_id=selected.spec.model_id, reference_ids=[first_ref], artifact_ref=artifact_ref, artifact_path=path, prompt_id=receipt.prompt_id, kind="video")
-        return StepActivityResult(kind="completed", message="video candidate materialized", output_refs=(artifact_ref,), metadata={"executor": "v3-materialized-domain-executor", "resource_id": candidate["resource_id"], "artifact_ref": artifact_ref, "artifact_path": str(path), "size": size, "prompt_id": receipt.prompt_id, "reference_ids": [first_ref]})
+        candidate = self._candidate_once(input, payload, provider_id=selected.spec.provider_id, model_id=selected.spec.model_id, reference_ids=[first_ref], artifact_ref=artifact_ref, artifact_path=path, prompt_id=prompt_id, kind="video")
+        self.jobs.put(input.project_id, input.step.idempotency_key, {
+            **job, "state": "materialized", "artifact_ref": artifact_ref,
+            "artifact_path": str(path), "bytes_written": size,
+        })
+        return StepActivityResult(kind="completed", message="video candidate materialized", output_ref=artifact_ref, metadata={"executor": "v3-materialized-domain-executor", "resource_id": candidate["resource_id"], "artifact_ref": artifact_ref, "artifact_path": str(path), "size": str(size), "prompt_id": prompt_id, "reference_ids": json.dumps([first_ref])})

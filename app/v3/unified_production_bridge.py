@@ -104,6 +104,7 @@ class UnifiedProductionBridge(ProductionReadyLegacyBridge):
                 "source": "unified_temporal_txt2img",
                 "legacy_target_asset_id": target_asset_id,
                 "reference_phase": phase,
+                "reference_identity": str(params.get("reference_identity") or ""),
                 "runtime_image_backend": "z_image_turbo",
                 "provider_ready_prompt_frozen": True,
             },

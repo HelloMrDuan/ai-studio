@@ -26,15 +26,56 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
     def _formal_shot(self, project_id: str, target: dict[str, Any]) -> dict[str, Any]:
         shot_id = self._shot_id(target)
         loader = getattr(self.legacy, "_studio_formal_shot", None)
+        raw = None
         if shot_id and callable(loader):
             try:
                 raw = loader(project_id, shot_id)
-                if isinstance(raw, dict):
-                    return dict(raw)
             except Exception:
                 pass
+        if isinstance(raw, dict):
+            return self._assert_visible_prop_ids(project_id, dict(raw))
         metadata = target.get("metadata") if isinstance(target.get("metadata"), dict) else {}
-        return dict(metadata)
+        return self._assert_visible_prop_ids(project_id, dict(metadata))
+
+    def _assert_visible_prop_ids(self, project_id: str, formal: dict[str, Any]) -> dict[str, Any]:
+        """Require frozen formal IDs for explicitly visible, profile-backed props.
+
+        Names only detect a missing formal reference. They are never used to
+        silently add an identity while preparing a generation request.
+        """
+        frame = str(formal.get("representative_state") or "")
+        if not frame:
+            return formal
+        production = self.legacy.director.production
+        stable_ids = {
+            str(entity_id)
+            for asset in production.list_assets(project_id, active_only=True)
+            if str(asset.get("asset_role") or "") == "prop_profile"
+            and self._status_value(asset.get("status")) == "ready"
+            and self._status_value(asset.get("dependency_state")) != "stale"
+            for entity_id in asset.get("entity_ids") or []
+        }
+        declared = {str(value) for value in formal.get("prop_entity_ids") or [] if str(value)}
+        missing: list[str] = []
+        for entity in production.list_entities(project_id):
+            entity_id = str(entity.get("entity_id") or "")
+            name = str(entity.get("name") or "").strip()
+            if entity_id not in stable_ids or entity.get("entity_type") != "prop" or len(name) < 2:
+                continue
+            start = 0
+            while (position := frame.find(name, start)) >= 0:
+                context = frame[max(0, position - 4):position]
+                if not context.endswith(("没有", "无", "禁止", "不含", "不要", "缺少")):
+                    if entity_id not in declared:
+                        missing.append(name)
+                    break
+                start = position + len(name)
+        if missing:
+            raise ValueError(
+                "正式分镜提到已登记道具，但 prop_entity_ids 缺少 canonical ID：" +
+                "、".join(sorted(set(missing))) + "；请先修正式分镜"
+            )
+        return formal
 
     def _relevant_entity_ids(self, project_id: str, target: dict[str, Any]) -> set[str]:
         result = {str(item) for item in target.get("entity_ids") or [] if str(item)}
@@ -163,30 +204,46 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
                 unowned.append(item)
 
         limit = self._reference_limit()
+        missing = relevant - set(by_entity)
+        if missing:
+            raise ValueError(
+                f"当前镜头缺少 {len(missing)} 个已采用的角色、场景或道具参考图；"
+                "不能只用其余参考图继续生成"
+            )
+        if len(relevant) > limit:
+            raise ValueError(
+                f"当前镜头需要 {len(relevant)} 个独立身份参考图，图像提供器最多支持 {limit} 个；"
+                "请拆分镜头或使用可覆盖全部身份的图像条件方案，不能静默丢弃参考图"
+            )
         selected_rows: list[dict[str, Any]] = []
         selected_asset_ids: set[str] = set()
 
         # Pass 1: one authoritative core reference for each relevant entity.
-        # The adopted identity master wins because it carries face, costume and
-        # all views from one sample. Legacy face anchors remain a compatibility
-        # fallback for projects created before the master pipeline.
+        # A shot needs one face image per character. The adopted multi-view
+        # master is a useful design package, but feeding its whole sheet into
+        # one IP-Adapter slot can copy empty garments or multiple bodies into
+        # the scene. Use the adopted face anchor for FaceID; retain the master
+        # as a fallback for projects without a separate anchor.
         for entity_id in sorted(relevant):
             candidates = by_entity.get(entity_id, [])
             if not candidates:
                 continue
             kind = entity_types.get(entity_id, "")
             if kind == "character":
+                shot_keyframe = str(target.get("asset_role") or "") == "shot_keyframe"
+                multi_character_shot = shot_keyframe and sum(
+                    entity_types.get(eid) == "character" for eid in relevant
+                ) > 1
+                preferred = (
+                    ("character_turnaround", "character_costume_reference", "character_reference")
+                    if multi_character_shot else
+                    ("character_costume_reference", "character_reference", "character_face_anchor")
+                    if shot_keyframe else
+                    ("character_face_anchor", "character_reference", "character_turnaround")
+                )
                 core = next(
-                    (item for item in candidates if str(item.get("asset_role") or "") == "character_reference"),
-                    None,
-                ) or next(
-                    (item for item in candidates if str(item.get("asset_role") or "") == "character_face_anchor"),
-                    None,
-                ) or next(
-                    (
-                        item for item in candidates
-                        if str(item.get("asset_role") or "") in {"character_reference", "character_turnaround", "character_consistency"}
-                    ),
+                    (item for role in preferred for item in candidates
+                     if str(item.get("asset_role") or "") == role),
                     candidates[0],
                 )
             else:
@@ -201,7 +258,7 @@ class ReferenceAwareLegacyCandidateV3Bridge(LegacyCandidateV3Bridge):
         # Pass 2: use remaining budget for structure/wardrobe references. This
         # means a character can legitimately contribute both FaceID evidence and
         # a separate full-body/turnaround image.
-        if len(selected_rows) < limit:
+        if str(target.get("asset_role") or "") != "shot_keyframe" and len(selected_rows) < limit:
             for item in rows:
                 asset_id = str(item.get("asset_id") or "")
                 if not asset_id or asset_id in selected_asset_ids:

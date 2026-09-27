@@ -32,8 +32,11 @@ REFERENCE_TEMPLATES = {
         role="location_identity_reference",
         positive=(
             "unoccupied location identity reference, completely empty environment plate, environment-only composition, "
-            "architecture and terrain are the sole visual content, empty paths and empty stairs, no focal living subject, "
-            "stable spatial layout, environment materials, fixed structures, pathways, foreground-midground-background "
+            "architecture and terrain are the sole visual content, vacant paths and vacant stairs "
+            "from foreground through the far distance, "
+            "wide establishing view of the complete usable environment, all confirmed major spatial anchors visible "
+            "together rather than one cropped pathway detail, stable spatial layout, environment materials, fixed "
+            "structures, pathways, foreground-midground-background "
             "relationships, lighting condition, world-building consistency, reusable static environment baseline, "
             "purely visual unlettered plate, caption-free, typography-free, graphic-overlay-free"
         ),

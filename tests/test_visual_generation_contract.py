@@ -62,6 +62,40 @@ def test_prompt_compiler_keeps_negative_constraints():
     assert "modern hairstyle" in result["negative_prompt"]
 
 
+def test_shot_prompt_recipe_is_saved_with_frozen_generation_contract(tmp_path):
+    production = ProductionAssetService(tmp_path)
+    project = "9" * 24
+    production.set_visual_direction(project, {"world_style": "western fantasy", "art_style": "cinematic"})
+    hero = production.create_entity(project, entity_type="character", name="任意角色", logical_key="hero")
+    target = production.declare_asset(
+        project, stage="04", skill="test", logical_key="shot:frame", asset_type="IMAGE",
+        asset_role="shot_keyframe", name="分镜首帧", entity_ids=[hero["entity_id"]],
+    )
+    prompt = production.create_text_asset(
+        project, stage="04", skill="test", logical_key="shot:visual-prompt",
+        asset_role="shot_visual_prompt", name="画面要求", content="侧面中景，角色朝向门口",
+        entity_ids=[hero["entity_id"]],
+    )
+    prepared = MediaGenerationPipeline().prepare_candidate(production, project, {
+        "target_asset_id": target["asset_id"], "prompt_asset_id": prompt["asset_id"],
+        "shot_prompt_context": {
+            "shot_id": "shot-1", "visual_plan_asset_id": "plan-version-1",
+            "formal_shot_fingerprint": "formal-hash-1",
+            "reference_ids": ["ref-character-1", "ref-location-1"],
+        },
+    })
+    saved = json.loads(production.read_text_asset(project, prepared["generation_contract_id"]))
+    recipe = saved["prompt_recipe"]
+    assert recipe["template_id"] == "scene-storytelling"
+    assert recipe["visual_plan_asset_id"] == "plan-version-1"
+    assert recipe["reference_ids"] == ["ref-character-1", "ref-location-1"]
+    assert recipe["entity_ids"] == [hero["entity_id"]]
+    assert recipe["style_tags"] == ["cinematic"]
+    assert "侧面中景" in saved["positive_prompt"]
+    assert "仙侠" not in saved["positive_prompt"]
+    assert production.get_asset(project, prepared["generation_contract_id"])["metadata"]["prompt_recipe"] == recipe
+
+
 def create_reference(production, project_id, kind, name, key):
     entity = production.create_entity(project_id, entity_type=kind, name=name, logical_key=key)
     profile = production.create_text_asset(
@@ -129,6 +163,34 @@ def test_project_isolation_and_all_three_real_templates(tmp_path):
         assert all(f"{other} identity reference" not in result["positive_prompt"] for other in {"character", "location", "prop"} - {kind})
         assert all(word not in result["positive_prompt"] for word in ["仙侠", "东方", "chinese", "hanfu"])
         assert "western face" not in result["negative_prompt"]
+
+
+def test_new_prop_contract_excludes_superseded_compiled_prompt(tmp_path):
+    production = ProductionAssetService(tmp_path)
+    project = "e" * 24
+    production.set_visual_direction(project, {"world_style": "ancient"})
+    entity, target, payload = create_reference(production, project, "prop", "单一道具", "prop")
+    first = MediaGenerationPipeline().prepare_candidate(production, project, payload)
+    old_compiled_id = first["prompt_asset_id"]
+    old_profile = production.get_asset(project, target["parent_asset_ids"][0])
+    new_profile = production.create_text_asset(
+        project, stage="03", skill="test", logical_key=old_profile["logical_key"],
+        asset_role="prop_profile", name="单一道具", content="修订后的完整组装结构",
+        entity_ids=[entity["entity_id"]],
+    )
+    source = production.get_asset(project, payload["prompt_asset_id"])
+    new_prompt = production.create_text_asset(
+        project, stage="03", skill="test", logical_key=source["logical_key"],
+        asset_role="reference_prompt", name="单一道具", content="单件完整组装的物体",
+        parent_asset_ids=[new_profile["asset_id"]],
+    )
+    second = MediaGenerationPipeline().prepare_candidate(
+        production, project, {**payload, "prompt_asset_id": new_prompt["asset_id"]},
+    )
+    contract = production.get_asset(project, second["generation_contract_id"])
+    assert new_profile["asset_id"] in contract["parent_asset_ids"]
+    assert old_compiled_id not in contract["parent_asset_ids"]
+    assert contract["dependency_state"] == "current"
 
 
 def test_appearance_versions_survive_rename_and_reference_adoption(tmp_path):

@@ -7,6 +7,10 @@ Temporal、参考图优先、连续镜头、智能质量、媒体复用和完整
 
 from __future__ import annotations
 
+from typing import Any
+
+from fastapi.routing import APIRoute
+
 from app.config import get_settings
 from app.legacy_snapshot import load_original_workbench_runtime
 
@@ -137,7 +141,7 @@ from app.v3.project_management import create_project_management_router
 from app.v3.character_reference_package import create_character_reference_package_router
 from app.v3.stage_revision import create_stage_revision_router
 from app.v3.production_authoring_assets import create_production_authoring_asset_router
-from app.v3.shot_authoring import create_shot_authoring_router
+from app.v3.shot_authoring import create_shot_authoring_router, install_shot_video_keyframe_route
 from app.v3.character_appearances import create_character_appearance_router
 from app.v3.shot_refinement import create_shot_refinement_router
 from app.v3.bgm_prefetch import create_bgm_prefetch_router
@@ -167,6 +171,7 @@ app.include_router(create_stage_revision_router(settings, legacy_runtime))
 app.include_router(create_production_authoring_asset_router(settings, legacy_runtime))
 app.include_router(create_character_appearance_router(legacy_runtime))
 app.include_router(create_shot_authoring_router(settings, legacy_runtime))
+install_shot_video_keyframe_route(app, legacy_runtime)
 app.include_router(create_shot_refinement_router(legacy_runtime))
 app.include_router(create_bgm_prefetch_router(settings, legacy_runtime))
 app.include_router(create_asset_explorer_router(settings, legacy_runtime))
@@ -174,6 +179,33 @@ app.include_router(create_authoring_progress_router(stage_progress_tracker))
 app.include_router(create_single_pass_finalizer_router(legacy_runtime, stage_progress_tracker))
 app.include_router(create_typed_entity_graph_router(typed_entity_graph_authority))
 app.include_router(original_workbench_router)
+
+# The archived workbench registered its route before V3 replaced the module
+# function. FastAPI retains the original endpoint object, so rebinding the
+# module name alone leaves the page button on the V2 media path. Register one
+# route that resolves the installed V3 bridge at request time.
+_candidate_path = "/api/director/workbench/projects/{project_id}/execute-candidate"
+_archived_candidate_routes = [
+    route for route in app.router.routes
+    if isinstance(route, APIRoute) and route.path == _candidate_path and "POST" in route.methods
+]
+if len(_archived_candidate_routes) != 1:
+    raise RuntimeError("Expected exactly one archived workbench candidate route")
+_archived_candidate_route = _archived_candidate_routes[0]
+app.router.routes.remove(_archived_candidate_route)
+
+
+async def _v3_execute_candidate_route(project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    return await legacy_runtime.director_workbench_execute_candidate(project_id, payload)
+
+
+app.add_api_route(
+    _candidate_path,
+    _v3_execute_candidate_route,
+    methods=["POST"],
+    name=_archived_candidate_route.name,
+    include_in_schema=_archived_candidate_route.include_in_schema,
+)
 app.title = "小段映画 · 漫剧工作台"
 
 __all__ = [

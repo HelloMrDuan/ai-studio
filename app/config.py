@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     identity_runtime_python: Path = Path(
         "/root/autodl-tmp/envs/ai-studio-comfy/bin/python"
     )
+    person_segmentation_model: Path = Path(
+        "/root/autodl-tmp/models/image/ultralytics/segm/person_yolov8n-seg.pt"
+    )
+    person_pose_model: Path = Path(
+        "/root/autodl-tmp/models/image/ultralytics/segm/yolov8n-pose.pt"
+    )
     character_identity_pass_threshold: float = 0.90
 
     gpu_device_id: int = 0

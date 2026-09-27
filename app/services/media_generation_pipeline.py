@@ -5,7 +5,7 @@ import json
 import re
 from typing import Any
 
-from app.services.prompt_compiler import PromptCompiler, naturalize_visual_anchor
+from app.services.prompt_compiler import PromptCompiler, naturalize_visual_anchor, shot_prompt_recipe
 from app.services.generation_contract import GenerationContract
 from app.services.visual_direction import VisualDirection
 
@@ -128,10 +128,19 @@ class MediaGenerationPipeline:
         direction = production.get_visual_direction(project_id, context.get("visual_direction_id", ""))
         entity_ids = tuple(target.get("entity_ids") or [])
         anchors: list[str] = []
-        parents = [source_id, *[
-            pid for pid in target.get("parent_asset_ids", [])
-            if production.get_asset(project_id, pid).get("asset_role") != "generation_contract"
-        ]]
+        domain_reference = target.get("asset_role") in {"location_reference", "scene_reference", "prop_reference"}
+        parents = [source_id]
+        for pid in target.get("parent_asset_ids", []):
+            parent = production.get_asset(project_id, pid)
+            if parent.get("asset_role") == "generation_contract":
+                continue
+            if domain_reference and (
+                parent.get("asset_role") == "compiled_image_prompt"
+                or not parent.get("active", True)
+                or parent.get("dependency_state") == "stale"
+            ):
+                continue
+            parents.append(pid)
         selections = list(target["metadata"].get("character_appearances") or [])
         profiles = production.list_assets(project_id, active_only=True)
         selected = {row["character_id"]: row["appearance_version"] for row in selections}
@@ -206,16 +215,39 @@ class MediaGenerationPipeline:
             "prop_reference",
         }
         params = dict(incoming_params)
+        scoped_direction = {
+            f.name: direction[f.name] for f in fields(VisualDirection) if f.name in direction
+        }
+        if target.get("asset_role") in {"shot_keyframe", "shot_video_start_frame"}:
+            # Project style applies to every shot, but reusable character,
+            # location and prop rules are entity-specific. The shot's matched
+            # stable profiles above provide those anchors. Injecting all project
+            # rules here can make an absent prop or character appear in a shot.
+            scoped_direction.update({
+                "character_rules": {},
+                "environment_rules": {},
+                "prop_rules": {},
+            })
         compiled = self.prompt_compiler.compile(
             asset_kind=context.get("asset_identity_type", ""),
             asset_description=description,
-            visual_direction=VisualDirection(**{
-                f.name: direction[f.name] for f in fields(VisualDirection) if f.name in direction
-            }),
+            visual_direction=VisualDirection(**scoped_direction),
             contract=contract,
             reference=reference,
             provider_negative=str(params.get("negative_prompt") or ""),
         )
+
+        recipe_input = payload.get("shot_prompt_context") if isinstance(payload.get("shot_prompt_context"), dict) else {}
+        prompt_recipe = None
+        if target.get("asset_role") == "shot_keyframe" and recipe_input:
+            prompt_recipe = shot_prompt_recipe(
+                shot_id=str(recipe_input.get("shot_id") or ""),
+                visual_plan_asset_id=str(recipe_input.get("visual_plan_asset_id") or ""),
+                formal_shot_fingerprint=str(recipe_input.get("formal_shot_fingerprint") or ""),
+                reference_ids=list(recipe_input.get("reference_ids") or []),
+                entity_ids=list(entity_ids),
+                art_style=str(direction.get("art_style") or ""),
+            )
 
         contract_asset = production.create_text_asset(
             project_id,
@@ -224,12 +256,15 @@ class MediaGenerationPipeline:
             logical_key=f"{target['logical_key']}:generation-contract",
             asset_role="generation_contract",
             name="视觉生成合同",
-            content=json.dumps({**asdict(contract), **asdict(compiled)}, ensure_ascii=False, sort_keys=True),
+            content=json.dumps({**asdict(contract), **asdict(compiled),
+                                **({"prompt_recipe": prompt_recipe} if prompt_recipe else {})},
+                               ensure_ascii=False, sort_keys=True),
             asset_type="STRUCTURED_DATA",
             extension=".json",
             entity_ids=list(entity_ids),
             parent_asset_ids=list(dict.fromkeys(parents)),
-            metadata={"visual_context": context, "reference_phase": reference_phase},
+            metadata={"visual_context": context, "reference_phase": reference_phase,
+                      **({"prompt_recipe": prompt_recipe} if prompt_recipe else {})},
         )
         prompt_asset = production.create_text_asset(
             project_id,

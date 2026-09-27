@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import secrets
 from pathlib import Path
 from typing import Any
@@ -447,7 +448,13 @@ class LegacyCandidateV3Bridge:
         bootstrap = getattr(self, "reference_bootstrap", None)
         if project_id and bootstrap is not None and hasattr(bootstrap, "validate_master_adoption"):
             bootstrap.validate_master_adoption(project_id, row, output_index)
-        result = self.original_publish(**kwargs)
+        target = kwargs.get("target") if isinstance(kwargs.get("target"), dict) else {}
+        target_meta = target.get("metadata") if isinstance(target.get("metadata"), dict) else {}
+        if (str(target.get("asset_role") or "") == "shot_clip"
+                and str(target_meta.get("video_contract_version") or "") == "h3-adopted-keyframe-lineage-v1"):
+            result = self._publish_adopted_keyframe_video(kwargs, target, target_meta)
+        else:
+            result = self.original_publish(**kwargs)
         confirmed_row = (
             result.get("candidate")
             if isinstance(result, dict) and isinstance(result.get("candidate"), dict)
@@ -487,6 +494,50 @@ class LegacyCandidateV3Bridge:
                 raise RuntimeError(f"原页面已采用，但新版资源同步失败：{exc}") from exc
             result["v3_resource"] = adopted
             result["v3_manual_adoption_mirrored"] = True
+        return result
+
+    def _publish_adopted_keyframe_video(
+        self, kwargs: dict[str, Any], target: dict[str, Any], target_meta: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Adapt the archived publisher to the V3 shot-keyframe first-frame contract."""
+        project_id = str(kwargs.get("project_id") or "").strip()
+        shot_id = self._shot_id(target)
+        first_id = str(target_meta.get("first_frame_asset_id") or "").strip()
+        row = kwargs.get("row") if isinstance(kwargs.get("row"), dict) else {}
+        if not project_id or not shot_id or not first_id:
+            raise ValueError("视频候选缺少项目、镜头或已采用首帧 ID")
+        first = self.legacy._studio_current_role_asset(project_id, shot_id, "shot_keyframe")
+        if (not self.legacy._studio_rep_keyframe_valid(first)
+                or str(first.get("asset_id") or "") != first_id):
+            raise ValueError("视频候选首帧不是当前镜头已采用的正式分镜图")
+        deps = {str(value) for value in row.get("dependency_asset_ids") or []}
+        if first_id not in deps:
+            raise ValueError("视频候选依赖中缺少当前已采用首帧")
+        prompt_id = str(target_meta.get("video_motion_prompt_asset_id") or "").strip()
+        if not prompt_id or prompt_id not in deps:
+            raise ValueError("视频候选依赖中缺少正式运动 Prompt")
+        if str(target_meta.get("first_frame_role") or "") != "shot_keyframe":
+            raise ValueError("视频候选首帧角色不符合正式分镜图合同")
+
+        # The pinned publisher enforces its older independent-start-frame tag.
+        # Satisfy that one compatibility check, then persist the actual V3 tag.
+        compatible = copy.deepcopy(target)
+        compatible["metadata"].update({
+            "video_contract_version": "h3-start-frame-lineage-v2",
+            "video_start_frame_asset_id": first_id,
+        })
+        result = self.original_publish(**{**kwargs, "target": compatible})
+        asset_id = str((result.get("asset") or {}).get("asset_id") or "")
+        if not asset_id:
+            raise RuntimeError("视频采用未发布正式资产")
+        production = self.legacy.director.production
+        graph = production.get_graph(project_id)
+        published = graph["assets"][asset_id]
+        metadata = published.setdefault("metadata", {})
+        metadata.pop("video_start_frame_asset_id", None)
+        metadata.update(copy.deepcopy(target_meta))
+        production._save(graph)
+        result["asset"] = production.get_asset(project_id, asset_id)
         return result
 
     def install(self) -> None:

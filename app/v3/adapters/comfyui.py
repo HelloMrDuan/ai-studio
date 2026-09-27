@@ -68,6 +68,22 @@ class ComfyUIAdapter:
             raise ValueError("ComfyUI upload response missing image name")
         return body
 
+    async def require_models(self, required: dict[str, tuple[str, str]]) -> None:
+        """Fail before generation if a required Comfy model has not been installed."""
+        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+            for node_type, (input_name, model_name) in required.items():
+                response = await client.get(f"{self.base_url}/object_info/{node_type}")
+                response.raise_for_status()
+                node = response.json().get(node_type, {})
+                choices = (
+                    node.get("input", {}).get("required", {}).get(input_name, [[]])[0]
+                )
+                if model_name not in choices:
+                    raise RuntimeError(
+                        f"ComfyUI 缺少三视图参考图编辑模型：{model_name} "
+                        f"({node_type}.{input_name})；先安装完整模型，再提交角色生成"
+                    )
+
     async def queue_workflow(
         self,
         workflow: dict[str, Any],
@@ -84,7 +100,11 @@ class ComfyUIAdapter:
             payload.update(prompt_extra)
         async with httpx.AsyncClient(timeout=self.timeout_seconds, trust_env=False) as client:
             response = await client.post(f"{self.base_url}/prompt", json=payload)
-            response.raise_for_status()
+            if response.is_error:
+                detail = response.text[:3000]
+                raise RuntimeError(
+                    f"ComfyUI workflow rejected: HTTP {response.status_code}; {detail}"
+                )
             body = response.json()
         if not isinstance(body, dict) or not str(body.get("prompt_id") or "").strip():
             raise ValueError("ComfyUI queue response missing prompt_id")

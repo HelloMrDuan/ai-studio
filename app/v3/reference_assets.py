@@ -156,6 +156,30 @@ class ReferenceAssetBootstrap:
         result.sort(key=lambda item: _clean(item.get("updated_at") or item.get("created_at")), reverse=True)
         return result
 
+    def _domain_candidate_matches_profile(
+        self, project_id: str, entity: dict[str, Any], candidate: dict[str, Any],
+    ) -> bool:
+        """A pending prop/location candidate must use the current formal profile."""
+        if _clean(entity.get("entity_type")).lower() not in {"location", "scene", "prop"}:
+            return True
+        profile_ids = {
+            _clean(row.get("source_asset_id")) for row in entity.get("evidence") or []
+            if isinstance(row, dict) and _clean(row.get("source_asset_id"))
+        }
+        if not profile_ids:
+            return True
+        contract_id = _clean(candidate.get("target_contract_artifact_id"))
+        if not contract_id:
+            return False
+        try:
+            contract = self.director.production.get_asset(project_id, contract_id)
+        except (FileNotFoundError, ValueError):
+            return False
+        return (
+            _clean(contract.get("dependency_state")).lower() != "stale"
+            and bool(profile_ids & {_clean(value) for value in contract.get("parent_asset_ids") or []})
+        )
+
     def _target(self, project_id: str, entity: dict[str, Any]) -> dict[str, Any] | None:
         key = self._logical_key(_clean(entity.get("entity_id")))
         if entity.get("appearance_version") not in {None, "", "v1"}:
@@ -234,7 +258,8 @@ class ReferenceAssetBootstrap:
             )
             format_rule = (
                 "生成一张4:3横向空场景环境基准图（unoccupied environment plate / location identity reference）："
-                "完整展示空间边界、主要建筑或自然结构、地形、路径、材质、固定陈设以及前中后景关系，"
+                "采用能交代全貌的远景广角构图，完整展示空间边界、主要建筑或自然结构、地形、路径走向、"
+                "材质、固定陈设以及前中后景关系，不能只截取局部台阶或单个细节；"
                 "至少保留三个稳定可辨识空间锚点。环境结构是画面唯一可见内容，路径、台阶和建筑保持空置，"
                 "构图稳定、信息完整，可直接作为后续镜头的场景母版。"
             )
@@ -423,6 +448,8 @@ class ReferenceAssetBootstrap:
             prompt_override=prompt_override,
         )
         for row in self._candidate_rows(project_id, _clean(target.get("asset_id"))):
+            if not self._domain_candidate_matches_profile(project_id, entity, row):
+                continue
             state = _clean(row.get("status")).lower()
             if not _clean(row.get("confirmed_asset_id")) and state in _ACTIVE and force:
                 raise ValueError("当前参考图仍在生成，请完成后再重新生成")
@@ -431,7 +458,7 @@ class ReferenceAssetBootstrap:
 
         kind = _clean(entity.get("entity_type")).lower()
         params: dict[str, Any] = {
-            "aspect_ratio": "1:1" if kind == "prop" else "4:3",
+            "aspect_ratio": "1:1" if kind == "prop" else "16:9" if kind in {"scene", "location"} else "4:3",
             "model_key": "smart",
             "steps": 32,
             "cfg": 6.5,
@@ -443,6 +470,27 @@ class ReferenceAssetBootstrap:
         }
         if kind == "prop":
             params.update({"width": 1024, "height": 1024})
+        elif kind in {"scene", "location"}:
+            params.update({"width": 1536, "height": 864})
+        if kind in {"prop", "scene", "location"}:
+            metadata = entity.get("metadata") if isinstance(entity.get("metadata"), dict) else {}
+            authoring = metadata.get("authoring") if isinstance(metadata.get("authoring"), dict) else {}
+            continuity = metadata.get("continuity") if isinstance(metadata.get("continuity"), dict) else {}
+            core_profile = continuity.get("core_profile") if isinstance(continuity.get("core_profile"), dict) else {}
+            stable_profile = metadata.get("stable_profile") if isinstance(metadata.get("stable_profile"), dict) else {}
+            identity = _clean(
+                metadata.get("stable_design")
+                or authoring.get("stable_design")
+                or stable_profile.get("已确认稳定设定")
+                or stable_profile.get("阶段正式设定")
+                or core_profile.get("已确认稳定设定")
+                or core_profile.get("阶段正式设定")
+                or "；".join(_flatten_reference_values(metadata)[:12])
+            )
+            params.update({
+                "reference_phase": "prop_identity" if kind == "prop" else "location_identity",
+                "reference_identity": identity,
+            })
 
         generation_payload = MediaGenerationPipeline().prepare_candidate(
             self.director.production,

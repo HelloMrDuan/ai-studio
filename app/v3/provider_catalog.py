@@ -118,6 +118,43 @@ def platform_provider_specs(settings: Settings) -> list[ProviderModelSpec]:
             },
         ),
         ProviderModelSpec(
+            provider_id="local-qwen-image-edit",
+            model_id="qwen-image-edit-2511",
+            transport=ProviderTransport.local_comfyui,
+            capabilities={
+                Capability.image_generation,
+                Capability.image_reference,
+                Capability.multi_reference,
+            },
+            base_url=str(settings.comfyui_base_url).rstrip("/"),
+            priority=6,
+            max_references=5,
+            metadata={
+                "source": "existing-platform",
+                "adapter": "qwen-image-edit-2511-staged-shot",
+                "physical_reference_slots": 3,
+                "reference_mode": "typed-staged-edit",
+            },
+        ),
+        ProviderModelSpec(
+            provider_id="local-zimage-shot-controlnet",
+            model_id="z-image-turbo-fun-controlnet-union",
+            transport=ProviderTransport.local_comfyui,
+            capabilities={
+                Capability.image_generation,
+                Capability.image_reference,
+                Capability.multi_reference,
+            },
+            base_url=str(settings.comfyui_base_url).rstrip("/"),
+            priority=6,
+            max_references=6,
+            metadata={
+                "source": "existing-platform",
+                "adapter": "z-image-turbo-fun-union-shot",
+                "reference_mode": "canonical-composite-layout",
+            },
+        ),
+        ProviderModelSpec(
             provider_id="local-comfyui-image",
             model_id="configured-image-workflow",
             transport=ProviderTransport.local_comfyui,

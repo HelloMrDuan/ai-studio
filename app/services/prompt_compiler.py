@@ -48,6 +48,12 @@ _DOMAIN_BOILERPLATE_TOKENS = (
     "保持静态环境基准表达", "保持静态产品参考表达", "不得用参考图版式重新设计角色",
 )
 _DOMAIN_GENERIC_VALUES = {"道具", "场景", "地点", "prop", "scene", "location"}
+_DOMAIN_TECHNICAL_FIELD = re.compile(
+    r"^(?:kind|type|source_entity_ids|entity_ids|entity_id|asset_id|logical_key|"
+    r"source|evidence|reference_kind|stable_profile\.type)\s*[:：]",
+    flags=re.IGNORECASE,
+)
+_DOMAIN_INSTRUCTION_TOKENS = ("禁止", "不得", "不能", "不出现", "不要", "without ", "no ")
 
 
 @dataclass(frozen=True)
@@ -57,6 +63,32 @@ class CompiledPrompt:
 
     def __getitem__(self, key: str) -> str:
         return getattr(self, key)
+
+
+def shot_prompt_recipe(*, shot_id: str, visual_plan_asset_id: str,
+                       formal_shot_fingerprint: str, reference_ids: list[str],
+                       entity_ids: list[str], art_style: str = "") -> dict[str, Any]:
+    """Record the selected narrative template and exact inputs, not case prompts.
+
+    The category/template taxonomy follows awesome-gpt-image-2's
+    scene-storytelling entry. The image instructions still come from our frozen
+    Stage04 shot and canonical assets; this is not a second prompt compiler.
+    """
+    if not shot_id or not visual_plan_asset_id or not formal_shot_fingerprint:
+        raise ValueError("shot prompt recipe requires the frozen shot and visual plan")
+    return {
+        "schema_version": 1,
+        "template_id": "scene-storytelling",
+        "template_category": "Scenes & Storytelling",
+        "template_source": "https://github.com/freestylefly/awesome-gpt-image-2",
+        "template_source_revision": "0dc09c46c8a30b1fdd89c18cc78a894dac2104e3",
+        "style_tags": [art_style] if art_style else [],
+        "shot_id": shot_id,
+        "formal_shot_fingerprint": formal_shot_fingerprint,
+        "visual_plan_asset_id": visual_plan_asset_id,
+        "entity_ids": list(dict.fromkeys(entity_ids)),
+        "reference_ids": list(dict.fromkeys(reference_ids)),
+    }
 
 
 def _cn_number(value: str) -> int | None:
@@ -319,17 +351,61 @@ def _strip_domain_schema_prefix(value: str) -> str:
 
 
 def _domain_reference_subject_name(text: str, kind: str) -> str:
-    if kind != "prop":
+    if kind not in {"prop", "scene", "location"}:
         return ""
     source = str(text or "")
-    for pattern in (
-        r"道具\s*[「『\"']([^」』\"']+)[」』\"']",
-        r"prop\s*[\"']([^\"']+)[\"']",
-    ):
+    patterns = (
+        (r"道具\s*[「『\"']([^」』\"']+)[」』\"']", r"prop\s*[\"']([^\"']+)[\"']")
+        if kind == "prop" else
+        (r"(?:场景|地点)\s*[「『\"']([^」』\"']+)[」』\"']", r"location\s*[\"']([^\"']+)[\"']")
+    )
+    for pattern in patterns:
         match = re.search(pattern, source, flags=re.IGNORECASE)
         if match:
             return " ".join(match.group(1).split()).strip()
     return ""
+
+
+def _prop_reference_configuration(subject: str, facts: str) -> str:
+    """Keep multi-part props physically assembled and ornament nonfigurative."""
+    description = f"{subject}; {facts}".lower()
+    if any(token in description for token in ("剑鞘", "scabbard", "sheath")):
+        material = "matte ebony wood-grain" if "乌木" in description or "ebony" in description else "opaque solid"
+        return (
+            "catalog photograph of one closed scabbard holding one sword, ornate hilt seated "
+            f"at its top, a single continuous {material} scabbard body extending from the guard "
+            "to a rounded end cap, surface engravings on the outside, one uninterrupted "
+            "assembled silhouette"
+        )
+    if any(token in description for token in ("系绳", "绳结", "挂绳", "cord", "lanyard")):
+        return (
+            "one complete ornament with its single attachment cord visibly threaded "
+            "through the object's own hole and tied to the same object, full cord loop, knot "
+            "and ornament all visible inside the frame with clear top margin"
+        )
+    return ""
+
+
+def _location_reference_configuration(subject: str, facts: str) -> str:
+    """Put the whole site ahead of local landmarks in an environment plate."""
+    description = f"{subject}; {facts}".lower()
+    name = subject or "the named location"
+    if any(token in description for token in ("山体", "山脊", "山峰", "mountain", "ridge", "峰顶")):
+        parts = [
+            f"very wide panoramic environmental identity photograph of the entire {name} mountain massif "
+            "viewed from a distant opposite ridgeline, full mountain visible from lower slopes to summit "
+            "with surrounding ridges; the mountain is the dominant subject"
+        ]
+        if any(token in description for token in ("石阶", "台阶", "山路", "path", "stair")):
+            parts.append("a small but traceable path or stone staircase winds across the slope as one subordinate landmark")
+        if any(token in description for token in ("悬崖", "岩壁", "cliff", "rock wall")):
+            parts.append("the cliff edge and rock wall are visible in their spatial relationship to the mountain route")
+        return "; ".join(parts)
+    return (
+        f"very wide establishing environmental identity view of the entire {name} site "
+        "from a distant or opposite vantage point, main spatial structure fully visible; "
+        "local paths and details remain subordinate landmarks within the whole environment"
+    )
 
 
 def _domain_reference_text(text: str, kind: str) -> str:
@@ -348,9 +424,15 @@ def _domain_reference_text(text: str, kind: str) -> str:
         if not value:
             continue
         lowered = value.lower()
+        if _DOMAIN_TECHNICAL_FIELD.match(value):
+            continue
+        if any(token in lowered for token in _DOMAIN_INSTRUCTION_TOKENS):
+            continue
         if any(token.lower() in lowered for token in _DOMAIN_SUBJECT_LEAK_TOKENS):
             continue
         if any(token in value for token in _DOMAIN_BOILERPLATE_TOKENS):
+            continue
+        if kind == "prop" and any(token in value for token in ("拔剑时", "出鞘时", "when drawn", "when unsheathed")):
             continue
         if re.match(r"^(?:name|名称|名字)\s*[:：]", value, flags=re.IGNORECASE):
             continue
@@ -369,6 +451,21 @@ def _domain_reference_text(text: str, kind: str) -> str:
         if value not in rows:
             rows.append(value)
     return "; ".join(rows)
+
+
+def _domain_reference_description(text: str, kind: str) -> str:
+    """Compile only the formal profile facts from an auto reference prompt.
+
+    The layout and exclusion prose belongs to the typed reference template, not
+    to the provider's positive subject description. Hand-edited free text still
+    goes through the same domain filter.
+    """
+    source = str(text or "")
+    if "项目已确认设定：" in source and "参考图布局要求" in source:
+        facts = source.split("项目已确认设定：", 1)[1].split("参考图布局要求", 1)[0]
+        rows = [line.strip()[2:].strip() for line in facts.splitlines() if line.strip().startswith("- ")]
+        return _domain_reference_text("; ".join(rows), kind)
+    return _domain_reference_text(source, kind)
 
 
 def _domain_reference_direction_context(direction: VisualDirection, kind: str) -> str:
@@ -450,11 +547,11 @@ class PromptCompiler:
             anchor_text = naturalize_visual_anchor(contract.identity_anchors)
 
         domain_reference = reference and kind in _DOMAIN_REFERENCE_KINDS
-        prop_subject = _domain_reference_subject_name(asset_description, kind) if domain_reference else ""
+        domain_subject = _domain_reference_subject_name(asset_description, kind) if domain_reference else ""
         if domain_reference:
             safe_anchor = _domain_reference_text(anchor_text, kind)
             safe_contract = _domain_reference_text(contract_context, kind)
-            safe_description = _domain_reference_text(asset_description, kind)
+            safe_description = _domain_reference_description(asset_description, kind)
             visual_context = _join_unique([
                 _domain_reference_direction_context(visual_direction, kind),
                 safe_anchor,
@@ -480,17 +577,28 @@ class PromptCompiler:
 
         if reference:
             if domain_reference:
-                subject_clause = (
-                    f"single isolated product study of exactly one {prop_subject}, one complete assembled item"
-                    if kind == "prop" and prop_subject
-                    else ""
-                )
-                positive = _join_unique([
-                    subject_clause,
-                    visual_context,
-                    safe_description,
-                    template.positive if template else "",
-                ])
+                if kind == "prop":
+                    subject_clause = (
+                        f"single isolated product study of exactly one {domain_subject}, one complete assembled item"
+                        if domain_subject else ""
+                    )
+                    positive_parts = [
+                        subject_clause,
+                        _prop_reference_configuration(domain_subject, safe_description),
+                        visual_context, safe_description,
+                        template.positive if template else "",
+                    ]
+                else:
+                    subject_clause = _location_reference_configuration(domain_subject, safe_description)
+                    positive_parts = [
+                        subject_clause,
+                        "location identity reference",
+                        "unoccupied empty environment plate, stable foreground-midground-background spatial layout, "
+                        "purely visual unlettered image, caption-free, no graphic overlays",
+                        _domain_reference_direction_context(visual_direction, kind),
+                        safe_description,
+                    ]
+                positive = _join_unique(positive_parts)
                 negative = _join_unique([
                     ", ".join(str(item) for item in visual_direction.negative_constraints if item),
                     provider_negative,

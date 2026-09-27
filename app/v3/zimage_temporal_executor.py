@@ -5,6 +5,7 @@ import re
 from copy import deepcopy
 from io import BytesIO
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 from PIL import Image, ImageDraw
@@ -19,6 +20,7 @@ from app.v3.contracts import ProviderModelSpec
 
 
 TURNAROUND_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / "workflows" / "z_image_turbo_turnaround_api.json"
+QWEN_EDIT_TURNAROUND_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / "workflows" / "qwen_image_edit_turnaround_api.json"
 CONTROLLED_LAYOUT_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / "workflows" / "z_image_turbo_controlled_layout_api.json"
 CONTROLLED_MASTER_WORKFLOW_PATH = Path(__file__).resolve().parents[2] / "workflows" / "z_image_turbo_controlled_master_api.json"
 
@@ -57,6 +59,9 @@ def _appearance_facts(positive: str) -> list[str]:
         lowered = value.lower()
         if (
             lowered.startswith("keep the confirmed")
+            or lowered.startswith("compose this as")
+            or lowered.startswith("without any")
+            or lowered.startswith("one person")
             or "logo or watermark" in lowered
             or lowered in {
                 "age", "gender", "face", "facial", "makeup", "hairstyle",
@@ -393,12 +398,19 @@ def compile_zimage_turnaround_workflow(
     side_sample["inputs"]["prompt"] = (
         identity
         + ", render only one strict left-facing 90-degree side profile, head and entire body rotated left, "
-          "one eye visible, complete body and both feet visible, plain seamless background"
+          "one eye visible, complete body and both feet visible. Treat the canonical front pixels as a binding "
+          "hair design: preserve the exact forehead exposure, hairline, temple hair, parting, tied-hair height, "
+          "tie or ornament position and loose-hair length. Do not invent or remove bangs, fringe, braids, side locks, "
+          "ponytails, buns or ornaments; keep every element exactly as present or absent in the canonical front. "
+          "Use the exact collar overlap, sleeve width, sash, hem and footwear from the canonical front, plain seamless background"
     )
     back_sample["inputs"]["prompt"] = (
         identity
         + ", render only one strict 180-degree rear view, face completely invisible, back of head, hair and "
-          "garment construction visible, complete body and both feet visible, plain seamless background"
+          "garment construction visible, complete body and both feet visible. Preserve the canonical front's exact "
+          "tied-hair height, tie or ornament, bun or ponytail structure, loose-hair length, collar, shoulder width, "
+          "sleeves, sash, hem and footwear. Do not invent or remove any braid, bun, ponytail, hair ornament or garment layer; "
+          "keep every element exactly as present or absent in the canonical front, plain seamless background"
     )
     negative = (
         "different person, identity drift, age drift, gender drift, face redesign, hairstyle change, "
@@ -417,6 +429,189 @@ def compile_zimage_turnaround_workflow(
         "width": 768, "height": 1024, "negative_prompt": negative,
     })
     save["inputs"]["filename_prefix"] = str(filename_prefix or "Xiaoduan/ZImageTurbo/Turnaround")
+    return compiled
+
+
+def compile_qwen_edit_turnaround_workflow(
+    workflow: dict[str, Any],
+    *,
+    adopted_costume_name: str,
+    seed: int,
+    filename_prefix: str,
+) -> dict[str, Any]:
+    """Compile two camera-angle edits from one canonical full-body image.
+
+    Z-Image i2L predicts a style LoRA, so separate pose-controlled samples can
+    still redesign bangs, hair ornaments and garment construction.  Qwen Image
+    Edit receives the adopted front pixels as edit conditioning and the
+    Multiple-Angles LoRA changes only the requested camera angle.  Side and
+    back use the same source image, model instance and seed.
+    """
+    costume_name = str(adopted_costume_name or "").strip()
+    if not costume_name:
+        raise ZImageWorkflowError("Qwen turnaround requires the adopted costume image")
+    compiled = deepcopy(workflow)
+    source = _required_node(compiled, "1", "LoadImage")
+    _required_node(compiled, "2", "UNETLoader")
+    _required_node(compiled, "3", "LoraLoaderModelOnly")
+    _required_node(compiled, "4", "ModelSamplingAuraFlow")
+    _required_node(compiled, "5", "CFGNorm")
+    _required_node(compiled, "6", "CLIPLoader")
+    _required_node(compiled, "7", "VAELoader")
+    _required_node(compiled, "8", "FluxKontextImageScale")
+    _required_node(compiled, "9", "VAEEncode")
+    negative = _required_node(compiled, "10", "TextEncodeQwenImageEditPlus")
+    side_text = _required_node(compiled, "12", "TextEncodeQwenImageEditPlus")
+    side_sample = _required_node(compiled, "14", "KSampler")
+    back_text = _required_node(compiled, "15", "TextEncodeQwenImageEditPlus")
+    back_sample = _required_node(compiled, "17", "KSampler")
+    _required_node(compiled, "20", "ImageStitch")
+    _required_node(compiled, "21", "ImageStitch")
+    save = _required_node(compiled, "22", "SaveImage")
+
+    source["inputs"]["image"] = costume_name
+    # The upstream Multiple-Angles LoRA is trained on these exact camera tokens.
+    # The rest of each instruction freezes every reusable identity attribute.
+    preserve = (
+        "Change the camera viewpoint only. Keep the exact same person, apparent age, gender, face, "
+        "forehead exposure, hairline, parting, bangs or absence of bangs, side locks, tied-hair height, "
+        "hair ornament, loose-hair length, body proportions, collar overlap, every garment layer, sleeve "
+        "shape, sash, fabric, colors, hem and footwear from the input image. Do not add or remove any hair "
+        "element, ornament, accessory or clothing part. One full-body person, head and both feet visible, "
+        "neutral standing pose, same plain studio background."
+    )
+    negative["inputs"]["prompt"] = ""
+    side_text["inputs"]["prompt"] = (
+        "<sks> right side view eye-level shot wide shot\n" + preserve
+        + " Show a strict 90-degree right profile with one eye visible."
+    )
+    back_text["inputs"]["prompt"] = (
+        "<sks> back view eye-level shot wide shot\n" + preserve
+        + " Show a strict 180-degree rear view with the face completely invisible."
+    )
+    for sampler in (side_sample, back_sample):
+        sampler["inputs"].update({
+            "seed": int(seed),
+            "steps": 40,
+            "cfg": 4.0,
+            "sampler_name": "euler",
+            "scheduler": "simple",
+            "denoise": 1.0,
+        })
+    save["inputs"]["filename_prefix"] = str(
+        filename_prefix or "Xiaoduan/QwenEdit/Turnaround"
+    )
+    return compiled
+
+
+def compile_qwen_domain_reference_workflow(
+    workflow: dict[str, Any], *, source_name: str, identity: str,
+    kind: str, seed: int, filename_prefix: str,
+) -> dict[str, Any]:
+    """Refine a prop's components or clear occupants from a location plate.
+
+    The source image supplies composition and appearance. The formal stable
+    profile supplies the missing persistent structure; story action and other
+    entities are deliberately absent from this edit contract.
+    """
+    if kind not in {"prop", "location"}:
+        raise ZImageWorkflowError("domain reference edit requires prop or location")
+    source_name = str(source_name or "").strip()
+    identity = str(identity or "").strip()
+    if not source_name or not identity:
+        raise ZImageWorkflowError("domain reference edit requires source image and stable identity")
+    keep = {"1", "2", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "18", "22"}
+    compiled = {key: deepcopy(value) for key, value in workflow.items() if key in keep}
+    source = _required_node(compiled, "1", "LoadImage")
+    _required_node(compiled, "2", "UNETLoader")
+    model = _required_node(compiled, "4", "ModelSamplingAuraFlow")
+    _required_node(compiled, "5", "CFGNorm")
+    _required_node(compiled, "6", "CLIPLoader")
+    _required_node(compiled, "7", "VAELoader")
+    _required_node(compiled, "8", "FluxKontextImageScale")
+    _required_node(compiled, "9", "VAEEncode")
+    negative = _required_node(compiled, "10", "TextEncodeQwenImageEditPlus")
+    positive = _required_node(compiled, "12", "TextEncodeQwenImageEditPlus")
+    sampler = _required_node(compiled, "14", "KSampler")
+    decode = _required_node(compiled, "18", "VAEDecode")
+    save = _required_node(compiled, "22", "SaveImage")
+    source["inputs"]["image"] = source_name
+    model["inputs"]["model"] = ["2", 0]
+    negative["inputs"]["prompt"] = ""
+    if kind == "prop":
+        lower_identity = identity.lower()
+        component_rules = []
+        if any(token in lower_identity for token in ("剑鞘", "鞘", "scabbard", "sheath")):
+            component_rules.append(
+                "A specified scabbard is an opaque solid cover around the blade, "
+                "joined to the hilt as one assembled item."
+            )
+            if any(token in lower_identity for token in ("纹路", "纹样", "刻纹", "engraving", "pattern")):
+                component_rules.append(
+                    "Put the specified visible engravings or patterns on the outside surface "
+                    "of the scabbard itself, along its body rather than only on the hilt."
+                )
+            if any(token in lower_identity for token in ("暗银", "银色", "silver")):
+                component_rules.append("The scabbard engravings have the specified dark-silver color.")
+        if any(token in lower_identity for token in ("系绳", "绳", "cord", "strap", "lanyard")):
+            component_rules.append(
+                "A specified attachment cord or strap has its entire loop, knot "
+                "and connection to the object visible within the canvas."
+            )
+        instruction = (
+            "Edit this existing studio product photograph to match the confirmed stable design: "
+            + identity
+            + ". Show exactly one complete assembled object, with every attached component and connection "
+              "visible inside the frame. Preserve its identity, centered placement and plain studio background. "
+            + " ".join(component_rules)
+            + " No other object, person, landscape, writing, logo or watermark."
+        )
+    else:
+        instruction = (
+            "Preserve this existing location photograph exactly: the same camera, complete environment layout, "
+            "terrain, architecture, pathways, lighting, framing, materials and colors. "
+            "Remove any human or animal figure, including tiny distant figures on paths, stairs or buildings. "
+            "Fill only those pixels with matching empty environment. Keep the whole location entirely unoccupied. "
+            "Do not redesign the location or add any new structure, city, prop, writing, logo or watermark."
+        )
+    positive["inputs"]["prompt"] = instruction
+    sampler["inputs"].update({
+        "seed": int(seed), "steps": 40, "cfg": 4.0,
+        "sampler_name": "euler", "scheduler": "simple",
+        "positive": ["13", 0], "negative": ["11", 0],
+        "latent_image": ["9", 0], "denoise": 1.0,
+    })
+    decode["inputs"]["samples"] = ["14", 0]
+    save["inputs"].update({
+        "images": ["18", 0],
+        "filename_prefix": str(filename_prefix or "Xiaoduan/QwenEdit/DomainReference"),
+    })
+    return compiled
+
+
+def compile_qwen_shot_workflow(
+    workflow: dict[str, Any], *, image_names: list[str],
+    prompt: str, seed: int, filename_prefix: str,
+) -> dict[str, Any]:
+    """Bind every image in one Qwen edit pass to a real workflow node."""
+    if not 1 <= len(image_names) <= 3:
+        raise ZImageWorkflowError("Qwen shot edit accepts one to three images per pass")
+    if not str(prompt or "").strip():
+        raise ZImageWorkflowError("Qwen shot edit requires a formal shot prompt")
+    compiled = compile_qwen_domain_reference_workflow(
+        workflow,
+        source_name=image_names[0],
+        identity="formal shot location",
+        kind="location",
+        seed=seed,
+        filename_prefix=filename_prefix,
+    )
+    for index, name in enumerate(image_names[1:], start=2):
+        node_id = str(28 + index)
+        compiled[node_id] = {"class_type": "LoadImage", "inputs": {"image": name}}
+        for text_id in ("10", "12"):
+            compiled[text_id]["inputs"][f"image{index}"] = [node_id, 0]
+    compiled["12"]["inputs"]["prompt"] = str(prompt).strip()
     return compiled
 
 
@@ -471,6 +666,175 @@ def _letterbox_reference(path: Path, *, width: int = 768, height: int = 1024) ->
     output = BytesIO()
     canvas.save(output, format="PNG", compress_level=4)
     return output.getvalue()
+
+
+def normalize_controlled_layout(path: Path, output_path: Path) -> Path:
+    """Turn an over-generated structural draft into exactly three controls.
+
+    The native layout pass occasionally draws an extra fourth front figure even
+    on a three-panel canvas.  This runs before identity diffusion: it extracts
+    the first requested front/side/back silhouettes and places them into three
+    fixed 768px panels.  Missing views fail instead of reaching publication.
+    """
+    with Image.open(path) as source:
+        image = source.convert("RGB")
+    scan_height = max(1, round(image.height * 0.9))
+    pixels = image.load()
+    border_pixels = list(image.crop((0, 0, 24, scan_height)).getdata())
+    border_pixels += list(image.crop((image.width - 24, 0, image.width, scan_height)).getdata())
+    background_intensity = median((r + g + b) / 3 for r, g, b in border_pixels)
+    sample_step = 4
+    sample_count = max(1, (scan_height + sample_step - 1) // sample_step)
+    active: list[bool] = []
+    for x in range(image.width):
+        foreground_count = 0
+        for y in range(0, scan_height, sample_step):
+            r, g, b = pixels[x, y]
+            saturation = max(r, g, b) - min(r, g, b)
+            intensity = (r + g + b) / 3
+            if saturation > 18 or intensity < background_intensity - 24:
+                foreground_count += 1
+        active.append(foreground_count > max(3, round(sample_count * 0.05)))
+    radius = 8
+    active = [
+        any(active[max(0, index - radius): min(image.width, index + radius + 1)])
+        for index in range(image.width)
+    ]
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, value in enumerate(active + [False]):
+        if value and start is None:
+            start = index
+        elif not value and start is not None:
+            if index - start >= max(32, round(image.width * 0.04)):
+                runs.append((start, index))
+            start = None
+    if len(runs) < 3:
+        raise ZImageWorkflowError(
+            f"controlled layout requires three visible view silhouettes; detected {len(runs)}"
+        )
+    if len(runs) == 3 and image.size == (2304, 1024):
+        image.save(output_path, format="PNG", compress_level=4)
+        return output_path
+
+    background_rgb = tuple(int(median(pixel[channel] for pixel in border_pixels)) for channel in range(3))
+    canvas = Image.new("RGB", (2304, 1024), background_rgb)
+    for panel_index, (left, right) in enumerate(runs[:3]):
+        padding = max(24, round((right - left) * 0.12))
+        crop_left = max(0, left - padding)
+        crop_right = min(image.width, right + padding)
+        crop = image.crop((crop_left, 0, crop_right, image.height))
+        if crop.height != 1024:
+            scale = 1024 / crop.height
+            crop = crop.resize((max(1, round(crop.width * scale)), 1024), Image.Resampling.LANCZOS)
+        if crop.width > 744:
+            scale = 744 / crop.width
+            crop = crop.resize((744, max(1, round(crop.height * scale))), Image.Resampling.LANCZOS)
+        x = panel_index * 768 + (768 - crop.width) // 2
+        y = (1024 - crop.height) // 2
+        canvas.paste(crop, (x, y))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output_path, format="PNG", compress_level=4)
+    return output_path
+
+
+def compose_shot_control_layout(
+    *, location_path: Path, subjects: list[tuple[Path, tuple[float, float, float, float], str]],
+    props: list[tuple[Path, tuple[float, float, float, float], str] |
+                tuple[Path, tuple[float, float, float, float], str, str]],
+    width: int, height: int,
+) -> bytes:
+    """Place adopted scene, character and prop pixels in the typed shot layout.
+
+    Foreground extraction is used only to construct an inference-time control
+    image. It never modifies adopted sources or a finished candidate.
+    """
+    import numpy as np
+    from PIL import ImageFilter
+
+    if not subjects or len(subjects) > 3 or len(props) > 3:
+        raise ZImageWorkflowError("controlled shot requires one to three canonical characters")
+    with Image.open(location_path) as opened:
+        canvas = opened.convert("RGBA").resize((width, height), Image.Resampling.LANCZOS)
+
+    def paste_reference(path: Path, box: tuple[float, float, float, float], *, prop: bool,
+                        body_view: str = "front", attachment: str = "") -> None:
+        left, top, right, bottom = box
+        if not (0 <= left < right <= 1 and 0 <= top < bottom <= 1):
+            raise ZImageWorkflowError("invalid shot reference screen_box")
+        with Image.open(path) as opened:
+            source_rgba = opened.convert("RGBA")
+            source = opened.convert("RGB")
+            has_cutout_alpha = opened.mode in {"RGBA", "LA"} and source_rgba.getchannel("A").getextrema()[0] < 255
+        if not prop and not has_cutout_alpha:
+            if source.width >= source.height * 1.9:
+                panel_width = source.width // 3
+                panel = {"front": 0, "left_profile": 1, "right_profile": 1,
+                         "back": 2}.get(body_view)
+                if panel is None:
+                    raise ZImageWorkflowError(f"unsupported character body_view: {body_view}")
+                source = source.crop((panel * panel_width, 0,
+                                      source.width if panel == 2 else (panel + 1) * panel_width,
+                                      source.height))
+                if body_view == "right_profile":
+                    source = source.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+            elif body_view != "front":
+                raise ZImageWorkflowError(
+                    f"character view {body_view} requires an adopted three-view reference: {path}"
+                )
+        if has_cutout_alpha:
+            foreground_image = source_rgba
+            alpha = np.asarray(source_rgba.getchannel("A"))
+        else:
+            rgb = np.asarray(source)
+            source_height, source_width = rgb.shape[:2]
+            edge_width = max(2, source_width // 32)
+            side_pixels = np.concatenate((rgb[:, :edge_width], rgb[:, -edge_width:]), axis=1)
+            studio_by_row = np.median(side_pixels, axis=1).astype(np.float32)
+            distance = np.max(np.abs(rgb.astype(np.float32) - studio_by_row[:, None, :]), axis=2)
+            alpha = np.where(distance > (16 if prop else 18), 255, 0).astype(np.uint8)
+            foreground_image = source.convert("RGBA")
+            foreground_image.putalpha(Image.fromarray(alpha).filter(ImageFilter.GaussianBlur(1.1)))
+        coverage = float(np.count_nonzero(alpha)) / alpha.size
+        if coverage < 0.001 or coverage > (0.65 if prop else 0.78):
+            raise ZImageWorkflowError(f"reference lacks a reliable foreground mask: {path}")
+        bounds = foreground_image.getbbox()
+        if bounds is None:
+            raise ZImageWorkflowError(f"reference foreground segmentation failed: {path}")
+        cropped = foreground_image.crop(bounds)
+        if prop and attachment == "back" and cropped.height >= cropped.width * 3:
+            cropped = cropped.rotate(25, resample=Image.Resampling.BICUBIC, expand=True)
+            rotated_bounds = cropped.getbbox()
+            if rotated_bounds is None:
+                raise ZImageWorkflowError("rotated back prop lost its foreground")
+            cropped = cropped.crop(rotated_bounds)
+        box_width, box_height = round((right - left) * width), round((bottom - top) * height)
+        scale = min(box_width / cropped.width, box_height / cropped.height)
+        if scale <= 0:
+            raise ZImageWorkflowError("character control box has zero visible area")
+        resized = cropped.resize((max(1, round(cropped.width * scale)),
+                                  max(1, round(cropped.height * scale))), Image.Resampling.LANCZOS)
+        x = round(left * width + (box_width - resized.width) / 2)
+        y = round(bottom * height) - resized.height
+        canvas.alpha_composite(resized, (x, y))
+
+    for item in props:
+        path, box, layer = item[:3]
+        attachment = item[3] if len(item) == 4 else ""
+        if layer == "behind_subject":
+            paste_reference(path, box, prop=True, attachment=attachment)
+    for path, box, body_view in subjects:
+        paste_reference(path, box, prop=False, body_view=body_view)
+    for item in props:
+        path, box, layer = item[:3]
+        attachment = item[3] if len(item) == 4 else ""
+        if layer in {"front_of_subject", "world"}:
+            paste_reference(path, box, prop=True, attachment=attachment)
+        elif layer != "behind_subject":
+            raise ZImageWorkflowError(f"unsupported prop placement layer: {layer}")
+    buffer = BytesIO()
+    canvas.convert("RGB").save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 class ZImageTemporalExecutor:
@@ -538,35 +902,139 @@ class ZImageTemporalExecutor:
         name = str(uploaded["name"])
         subfolder = str(uploaded.get("subfolder") or "").strip("/\\")
         uploaded_name = f"{subfolder}/{name}" if subfolder else name
-        face_uploaded = await self.adapter.upload_reference(
-            filename=f"turnaround-face-{face_path.stem}.png",
-            content=_letterbox_reference(face_path), overwrite=True,
-        )
-        side_uploaded = await self.adapter.upload_reference(
-            filename=f"turnaround-side-{path.stem}.png",
-            content=_turnaround_pose_png("side"), overwrite=True,
-        )
-        back_uploaded = await self.adapter.upload_reference(
-            filename=f"turnaround-back-{path.stem}.png",
-            content=_turnaround_pose_png("back"), overwrite=True,
-        )
-
-        def uploaded_name_of(value: dict[str, Any]) -> str:
-            folder = str(value.get("subfolder") or "").strip("/\\")
-            return f"{folder}/{value['name']}" if folder else str(value["name"])
-        workflow = json.loads(TURNAROUND_WORKFLOW_PATH.read_text(encoding="utf-8"))
-        compiled = compile_zimage_turnaround_workflow(
+        workflow = json.loads(QWEN_EDIT_TURNAROUND_WORKFLOW_PATH.read_text(encoding="utf-8"))
+        compiled = compile_qwen_edit_turnaround_workflow(
             workflow,
             adopted_costume_name=uploaded_name,
-            adopted_face_name=uploaded_name_of(face_uploaded),
-            side_pose_name=uploaded_name_of(side_uploaded),
-            back_pose_name=uploaded_name_of(back_uploaded),
-            positive_prompt=positive_prompt,
-            negative_prompt=negative_prompt,
             seed=seed,
             filename_prefix=filename_prefix,
         )
         return await self.adapter.queue_workflow(compiled)
+
+    async def queue_domain_reference_edit(
+        self, *, source_path: Path, identity: str, kind: str,
+        seed: int, filename_prefix: str,
+    ) -> dict[str, Any]:
+        source_path = Path(source_path)
+        if not source_path.is_file() or source_path.stat().st_size <= 0:
+            raise ZImageWorkflowError("domain reference source image is unavailable")
+        content = source_path.read_bytes()
+        upload_name = f"domain-reference-{source_path.name}"
+        if kind == "prop":
+            # A cut-off cord, strap or thin component at the source border gives
+            # the edit model no canvas in which to complete it. Enlarge the
+            # conditioning canvas before inference when a product touches the
+            # top edge; this is framing control, not post-generation repair.
+            with Image.open(source_path) as opened:
+                source = opened.convert("RGB")
+            corners = [source.getpixel(point) for point in (
+                (0, 0), (source.width - 1, 0),
+                (0, source.height - 1), (source.width - 1, source.height - 1),
+            )]
+            background = tuple(int(median(pixel[channel] for pixel in corners)) for channel in range(3))
+            top = source.crop((0, 0, source.width, max(1, source.height // 50)))
+            foreground_at_top = sum(
+                1 for pixel in top.getdata()
+                if max(abs(pixel[channel] - background[channel]) for channel in range(3)) > 38
+            )
+            if foreground_at_top > max(8, round(top.width * top.height * 0.004)):
+                resized = source.resize((round(source.width * 0.68), round(source.height * 0.68)), Image.Resampling.LANCZOS)
+                canvas = Image.new("RGB", source.size, background)
+                canvas.paste(resized, ((source.width - resized.width) // 2, round(source.height * 0.29)))
+                buffer = BytesIO()
+                canvas.save(buffer, format="PNG", compress_level=4)
+                content = buffer.getvalue()
+                upload_name = f"domain-reference-framed-{source_path.stem}.png"
+        uploaded = await self.adapter.upload_reference(
+            filename=upload_name,
+            content=content,
+            overwrite=True,
+        )
+        name = str(uploaded["name"])
+        subfolder = str(uploaded.get("subfolder") or "").strip("/\\")
+        uploaded_name = f"{subfolder}/{name}" if subfolder else name
+        workflow = json.loads(QWEN_EDIT_TURNAROUND_WORKFLOW_PATH.read_text(encoding="utf-8"))
+        compiled = compile_qwen_domain_reference_workflow(
+            workflow, source_name=uploaded_name, identity=identity,
+            kind=kind, seed=seed, filename_prefix=filename_prefix,
+        )
+        return await self.adapter.queue_workflow(compiled)
+
+    async def queue_shot_edit(
+        self, *, image_paths: list[Path], prompt: str,
+        seed: int, filename_prefix: str,
+    ) -> dict[str, Any]:
+        if not 1 <= len(image_paths) <= 3:
+            raise ZImageWorkflowError("Qwen shot edit accepts one to three images per pass")
+        names: list[str] = []
+        suffix = Path(filename_prefix).name
+        for index, source in enumerate(image_paths, start=1):
+            path = Path(source)
+            if not path.is_file() or path.stat().st_size <= 0:
+                raise ZImageWorkflowError(f"shot reference image is unavailable: {path}")
+            uploaded = await self.adapter.upload_reference(
+                filename=f"shot-{suffix}-{index}-{path.name}",
+                content=path.read_bytes(),
+                overwrite=True,
+            )
+            name = str(uploaded["name"])
+            subfolder = str(uploaded.get("subfolder") or "").strip("/\\")
+            names.append(f"{subfolder}/{name}" if subfolder else name)
+        workflow = json.loads(QWEN_EDIT_TURNAROUND_WORKFLOW_PATH.read_text(encoding="utf-8"))
+        compiled = compile_qwen_shot_workflow(
+            workflow, image_names=names, prompt=prompt,
+            seed=seed, filename_prefix=filename_prefix,
+        )
+        queued = await self.adapter.queue_workflow(compiled)
+        queued["reference_bindings"] = list(names)
+        return queued
+
+    async def queue_shot_controlnet(
+        self, *, layout_png: bytes, positive_prompt: str, seed: int,
+        width: int, height: int, filename_prefix: str,
+    ) -> dict[str, Any]:
+        """Submit a real spatially conditioned Z-Image shot to ComfyUI."""
+        if not layout_png or width < 512 or height < 512:
+            raise ZImageWorkflowError("shot ControlNet requires a valid layout and render dimensions")
+        await self.adapter.require_models({
+            "UNETLoader": ("unet_name", "z_image_turbo_bf16.safetensors"),
+            "CLIPLoader": ("clip_name", "zimage_qwen_3_4b.safetensors"),
+            "VAELoader": ("vae_name", "zimage_ae.safetensors"),
+            "ModelPatchLoader": ("name", "Z-Image-Turbo-Fun-Controlnet-Union.safetensors"),
+        })
+        uploaded = await self.adapter.upload_reference(
+            filename=f"shot-layout-{Path(filename_prefix).name}.png",
+            content=layout_png, overwrite=True,
+        )
+        name = str(uploaded["name"])
+        subfolder = str(uploaded.get("subfolder") or "").strip("/\\")
+        image_name = f"{subfolder}/{name}" if subfolder else name
+        graph = {
+            "1": {"class_type": "LoadImage", "inputs": {"image": image_name}},
+            "2": {"class_type": "Canny", "inputs": {"image": ["1", 0], "low_threshold": 0.1, "high_threshold": 0.32}},
+            "3": {"class_type": "UNETLoader", "inputs": {"unet_name": "z_image_turbo_bf16.safetensors", "weight_dtype": "default"}},
+            "4": {"class_type": "ModelPatchLoader", "inputs": {"name": "Z-Image-Turbo-Fun-Controlnet-Union.safetensors"}},
+            "5": {"class_type": "VAELoader", "inputs": {"vae_name": "zimage_ae.safetensors"}},
+            "6": {"class_type": "QwenImageDiffsynthControlnet", "inputs": {
+                "model": ["3", 0], "model_patch": ["4", 0], "vae": ["5", 0],
+                "image": ["2", 0], "strength": 1.0,
+            }},
+            "7": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["6", 0], "shift": 3.0}},
+            "8": {"class_type": "CLIPLoader", "inputs": {"clip_name": "zimage_qwen_3_4b.safetensors", "type": "lumina2", "device": "default"}},
+            "9": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["8", 0], "text": positive_prompt}},
+            "10": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["9", 0]}},
+            "11": {"class_type": "VAEEncode", "inputs": {"pixels": ["1", 0], "vae": ["5", 0]}},
+            "12": {"class_type": "KSampler", "inputs": {
+                "model": ["7", 0], "positive": ["9", 0], "negative": ["10", 0],
+                "latent_image": ["11", 0], "seed": seed, "steps": 8, "cfg": 1.0,
+                "sampler_name": "res_multistep", "scheduler": "simple", "denoise": 0.55,
+            }},
+            "13": {"class_type": "VAEDecode", "inputs": {"samples": ["12", 0], "vae": ["5", 0]}},
+            "14": {"class_type": "SaveImage", "inputs": {"images": ["13", 0], "filename_prefix": filename_prefix}},
+        }
+        queued = await self.adapter.queue_workflow(graph)
+        queued["layout_binding"] = image_name
+        return queued
 
     async def queue_controlled_layout(
         self,
@@ -683,4 +1151,5 @@ __all__ = [
     "compile_zimage_turnaround_workflow",
     "compile_zimage_controlled_layout_workflow",
     "compile_zimage_controlled_master_workflow",
+    "normalize_controlled_layout",
 ]

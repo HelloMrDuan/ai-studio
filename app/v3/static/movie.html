@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>xiaoduan映画 · 一键成片全链路</title>
+  <style>
+    :root { color-scheme: dark; font-family: Inter,"PingFang SC","Microsoft YaHei",sans-serif; }
+    * { box-sizing:border-box; } body { margin:0; background:#0b0d12; color:#eef1f7; }
+    header { padding:24px 32px; border-bottom:1px solid #252c3a; background:#10141d; }
+    h1 { margin:0; font-size:26px; } header p { color:#9aa6ba; margin:8px 0 0; }
+    main { max-width:1450px; margin:0 auto; padding:24px 32px 60px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; }
+    .card { background:#121722; border:1px solid #252c3a; border-radius:14px; padding:18px; margin-bottom:16px; }
+    label { display:block; color:#aeb9ca; margin:10px 0 6px; font-size:13px; }
+    textarea,input,select { width:100%; background:#0d1119; color:#eef1f7; border:1px solid #343c4d; border-radius:9px; padding:10px; }
+    textarea { min-height:150px; resize:vertical; }
+    button { border:0; border-radius:9px; padding:11px 16px; font-weight:700; cursor:pointer; background:#e8edf7; color:#121722; }
+    button.secondary { background:#222a38; color:#dbe4f3; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    .row > * { flex:1; min-width:180px; }
+    .steps { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:8px; }
+    .step { padding:10px; border:1px solid #343c4d; border-radius:9px; color:#8f9bad; }
+    .step.active { border-color:#8ab4ff; color:#d7e5ff; }
+    .step.done { border-color:#4b8f6c; color:#8fe0b5; }
+    .bad { color:#ff9b9b; } .good { color:#8fe0b5; } .muted { color:#8f9bad; }
+    pre { background:#090d13; border:1px solid #242a36; border-radius:10px; padding:12px; overflow:auto; max-height:420px; white-space:pre-wrap; }
+    video { width:100%; max-height:680px; background:#000; border-radius:10px; }
+    a { color:#9bc2ff; }
+  </style>
+</head>
+<body>
+<header>
+  <h1>xiaoduan映画 · 故事到最终成片</h1>
+  <p>真实链路：故事 → LLM 剧本 → 角色 → 分镜 → ComfyUI 图片 → H3 视频 → TTS → 字幕 → BGM → FFmpeg 最终 MP4</p>
+</header>
+<main>
+  <div class="grid">
+    <section class="card">
+      <h2>1. 故事与角色参考</h2>
+      <label>故事文本</label>
+      <textarea id="story">雪夜里，一名年轻女侠沿着古老山道寻找失踪的师父。她在风雪中发现一枚熟悉的玉佩，意识到师父刚刚经过这里，于是继续向山顶追去。</textarea>
+      <label>Canonical Reference ID</label>
+      <input id="referenceId" value="hero-v1" />
+      <label>可选：上传新的角色参考图</label>
+      <input id="referenceFile" type="file" accept="image/png,image/jpeg,image/webp" />
+      <button class="secondary" id="uploadReference">上传并注册参考图</button>
+      <div id="referenceResult" class="muted"></div>
+    </section>
+
+    <section class="card">
+      <h2>2. BGM 与运行参数</h2>
+      <label>BGM（全链路验收必须有；可上传，也可使用服务器已有 BGM 库）</label>
+      <input id="bgmFile" type="file" accept="audio/*" />
+      <button class="secondary" id="uploadBgm">上传 BGM</button>
+      <input id="bgmPath" type="hidden" />
+      <div id="bgmResult" class="muted">未上传时将自动选择 BGM 库第一首；库为空则明确失败。</div>
+      <div class="row">
+        <div><label>H3 宽</label><input id="width" type="number" value="512" /></div>
+        <div><label>H3 高</label><input id="height" type="number" value="320" /></div>
+      </div>
+      <div class="row">
+        <div><label>H3 Length</label><input id="length" type="number" value="56" /></div>
+        <div><label>H3 Steps</label><input id="steps" type="number" value="12" /></div>
+      </div>
+      <label>TTS Voice</label>
+      <input id="voice" value="zh-CN-XiaoxiaoNeural" />
+    </section>
+  </div>
+
+  <section class="card">
+    <div class="row">
+      <button id="start">开始完整制作</button>
+      <div><strong>Workflow：</strong><span id="workflow">—</span></div>
+      <div><strong>状态：</strong><span id="status">未开始</span></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>全链路进度</h2>
+    <div class="steps" id="stepsView"></div>
+  </section>
+
+  <div class="grid">
+    <section class="card"><h2>剧本</h2><pre id="screenplay">—</pre></section>
+    <section class="card"><h2>角色卡</h2><pre id="characters">—</pre></section>
+    <section class="card"><h2>分镜</h2><pre id="storyboard">—</pre></section>
+  </div>
+
+  <section class="card" id="finalCard" style="display:none">
+    <h2>最终成片</h2>
+    <video id="finalVideo" controls></video>
+    <p><a id="finalLink" target="_blank">打开最终 MP4</a></p>
+  </section>
+
+  <section class="card"><h2>运行明细</h2><pre id="details">—</pre></section>
+</main>
+<script>
+const stageOrder = ['screenplay','characters','storyboard','image','h3','tts','subtitle','bgm','composition','completed'];
+const labels = {
+  screenplay:'LLM 剧本', characters:'角色卡', storyboard:'分镜', image:'图片生成/采纳',
+  h3:'H3 视频/采纳', tts:'TTS', subtitle:'字幕', bgm:'BGM', composition:'最终合成', completed:'完成'
+};
+const stepsView = document.querySelector('#stepsView');
+function renderSteps(stage) {
+  const current = Math.max(0, stageOrder.indexOf(stage));
+  stepsView.innerHTML = stageOrder.slice(0,-1).map((s,i)=>`<div class="step ${i<current?'done':i===current?'active':''}">${i+1}. ${labels[s]}</div>`).join('');
+}
+renderSteps('screenplay');
+async function request(url, options={}) {
+  const r = await fetch(url, options); let body;
+  try { body = await r.json(); } catch { body = {detail: await r.text()}; }
+  if (!r.ok) throw new Error(body.detail || JSON.stringify(body));
+  return body;
+}
+document.querySelector('#uploadReference').onclick = async () => {
+  const file = document.querySelector('#referenceFile').files[0];
+  if (!file) return alert('请选择参考图');
+  const id = document.querySelector('#referenceId').value.trim();
+  const form = new FormData(); form.append('file', file); form.append('entity_id','char_hero');
+  try {
+    const data = await request(`/api/v3/references/${encodeURIComponent(id)}`, {method:'POST', body:form});
+    document.querySelector('#referenceResult').textContent = `已注册 ${data.reference_id} · ${data.sha256.slice(0,12)}`;
+  } catch(e) { document.querySelector('#referenceResult').innerHTML = `<span class="bad">${e}</span>`; }
+};
+document.querySelector('#uploadBgm').onclick = async () => {
+  const file = document.querySelector('#bgmFile').files[0];
+  if (!file) return alert('请选择 BGM 文件');
+  const form = new FormData(); form.append('file', file);
+  try {
+    const data = await request('/api/v3/full-pipeline/bgm', {method:'POST', body:form});
+    document.querySelector('#bgmPath').value = data.bgm_path;
+    document.querySelector('#bgmResult').textContent = `已保存 ${data.filename} · ${data.bytes} bytes`;
+  } catch(e) { document.querySelector('#bgmResult').innerHTML = `<span class="bad">${e}</span>`; }
+};
+let pollTimer = null;
+async function poll(id) {
+  try {
+    const data = await request(`/api/v3/full-pipeline/${encodeURIComponent(id)}`);
+    document.querySelector('#status').textContent = `${data.status} / ${data.stage}`;
+    renderSteps(data.stage);
+    if (data.screenplay) document.querySelector('#screenplay').textContent = JSON.stringify(data.screenplay,null,2);
+    if (data.characters) document.querySelector('#characters').textContent = JSON.stringify(data.characters,null,2);
+    if (data.storyboard) document.querySelector('#storyboard').textContent = JSON.stringify(data.storyboard,null,2);
+    document.querySelector('#details').textContent = JSON.stringify(data,null,2);
+    if (data.final_url) {
+      document.querySelector('#finalCard').style.display = '';
+      document.querySelector('#finalVideo').src = data.final_url + `?t=${Date.now()}`;
+      document.querySelector('#finalLink').href = data.final_url;
+    }
+    if (data.status === 'completed' || data.status === 'semantic_failure' || ['failed','cancelled','terminated','timed_out'].includes(data.status)) {
+      clearInterval(pollTimer); pollTimer=null; document.querySelector('#start').disabled=false;
+      if (data.status !== 'completed') document.querySelector('#status').className='bad'; else document.querySelector('#status').className='good';
+    }
+  } catch(e) {
+    document.querySelector('#details').textContent = String(e);
+  }
+}
+document.querySelector('#start').onclick = async () => {
+  const button = document.querySelector('#start'); button.disabled=true;
+  document.querySelector('#status').className=''; document.querySelector('#status').textContent='正在创建 Workflow';
+  document.querySelector('#finalCard').style.display='none';
+  const payload = {
+    project_id:'full-movie-validation',
+    story_text:document.querySelector('#story').value,
+    reference_id:document.querySelector('#referenceId').value.trim(),
+    bgm_path:document.querySelector('#bgmPath').value,
+    tts_voice:document.querySelector('#voice').value.trim(),
+    h3_width:Number(document.querySelector('#width').value),
+    h3_height:Number(document.querySelector('#height').value),
+    h3_length:Number(document.querySelector('#length').value),
+    h3_steps:Number(document.querySelector('#steps').value)
+  };
+  try {
+    const data = await request('/api/v3/full-pipeline', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+    document.querySelector('#workflow').textContent=data.workflow_id;
+    await poll(data.workflow_id);
+    pollTimer=setInterval(()=>poll(data.workflow_id),3000);
+  } catch(e) {
+    button.disabled=false; document.querySelector('#status').innerHTML=`<span class="bad">${e}</span>`;
+  }
+};
+</script>
+</body>
+</html>

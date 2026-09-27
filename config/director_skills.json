@@ -1,40 +1,39 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "source": {
-    "repo": "https://github.com/zhangxiansheng-888/chuanzhangAIshijie.git",
-    "commit": "c8a0f883b2c53fc8cf6ef6d7001b5bdb2844514f",
-    "root": "/root/autodl-tmp/ai-studio/skills/chuanzhangAIshijie",
-    "license": "MIT"
+    "type": "builtin",
+    "module": "app.services.production_skills",
+    "contract": "xiaoduan-production-skills-v1"
   },
-  "workflow_skill": "chuanzhang-ai-shijie-workflow",
+  "workflow_skill": "xiaoduan-production-router",
   "stage_order": [
     {
       "stage": "01",
-      "skill": "chuanzhang-chuangzuo-v1"
+      "skill": "xiaoduan-story-bible",
+      "name": "故事生产圣经"
     },
     {
       "stage": "02",
-      "skill": "ai-studio-character-design"
+      "skill": "xiaoduan-character-assets",
+      "name": "角色资产设计"
     },
     {
       "stage": "03",
-      "skill": "ai-studio-visual-design"
+      "skill": "xiaoduan-visual-assets",
+      "name": "视觉资产设计"
     },
     {
       "stage": "04",
-      "skill": "chuanzhang-fenjing-biaoqing"
+      "skill": "xiaoduan-storyboard-director",
+      "name": "正式分镜导演"
     }
   ],
-  "local_stage_overrides": {
-    "02": {
-      "skill": "ai-studio-character-design",
-      "reason": "Stage02 is general character design; portrait-only skill remains available outside the short-video stage pipeline",
-      "version": "2.35.3-character-design-stage"
-    },
-    "03": {
-      "skill": "ai-studio-visual-design",
-      "reason": "Stage03 is a bounded full visual-design package; generic image-prompt skill remains available outside the short-video stage workflow",
-      "version": "2.35.5-stage03-visual-closure"
-    }
+  "runtime": {
+    "story_bible": true,
+    "stage_specific_context": true,
+    "versioned_assets": true,
+    "persistent_content_hash_cache": true,
+    "manual_candidate_adoption": true,
+    "local_dependency_invalidation": true
   }
 }

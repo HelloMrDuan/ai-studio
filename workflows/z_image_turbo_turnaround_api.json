@@ -1,0 +1,15 @@
+{
+  "1": {"class_type": "LoadImage", "inputs": {"image": ""}},
+  "2": {"class_type": "LoadImage", "inputs": {"image": ""}},
+  "3": {"class_type": "LoadImage", "inputs": {"image": ""}},
+  "4": {"class_type": "LoadImage", "inputs": {"image": ""}},
+  "5": {"class_type": "ZImageI2LV2Loader", "inputs": {"device": "cuda", "dtype": "bfloat16", "low_vram": true, "modelscope_cache": "", "load_controlnet": true, "base_model": "z-image-turbo"}},
+  "6": {"class_type": "ImageBatch", "inputs": {"image1": ["1", 0], "image2": ["1", 0]}},
+  "7": {"class_type": "ImageBatch", "inputs": {"image1": ["6", 0], "image2": ["2", 0]}},
+  "8": {"class_type": "ZImageI2LV2ExtractLoRA", "inputs": {"template": ["5", 1], "images": ["7", 0]}},
+  "9": {"class_type": "ZImageI2LV2SampleControlNet", "inputs": {"pipe": ["5", 0], "lora": ["8", 0], "control_image": ["3", 0], "prompt": "", "control_scale": 0.75, "seed": 1, "cfg_scale": 1.0, "num_inference_steps": 12, "sigma_shift": 0.0, "width": 768, "height": 1024, "negative_prompt": ""}},
+  "10": {"class_type": "ZImageI2LV2SampleControlNet", "inputs": {"pipe": ["5", 0], "lora": ["8", 0], "control_image": ["4", 0], "prompt": "", "control_scale": 0.75, "seed": 2, "cfg_scale": 1.0, "num_inference_steps": 12, "sigma_shift": 0.0, "width": 768, "height": 1024, "negative_prompt": ""}},
+  "11": {"class_type": "ImageStitch", "inputs": {"image1": ["1", 0], "image2": ["9", 0], "direction": "right", "match_image_size": true, "spacing_width": 0, "spacing_color": "white"}},
+  "12": {"class_type": "ImageStitch", "inputs": {"image1": ["11", 0], "image2": ["10", 0], "direction": "right", "match_image_size": true, "spacing_width": 0, "spacing_color": "white"}},
+  "13": {"class_type": "SaveImage", "inputs": {"filename_prefix": "Xiaoduan/ZImageTurbo/Turnaround", "images": ["12", 0]}}
+}

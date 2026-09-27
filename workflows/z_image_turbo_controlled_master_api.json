@@ -1,0 +1,11 @@
+{
+  "1": {"class_type": "LoadImage", "inputs": {"image": ""}},
+  "2": {"class_type": "LoadImage", "inputs": {"image": ""}},
+  "3": {"class_type": "ZImageI2LV2Loader", "inputs": {"device": "cuda", "dtype": "bfloat16", "low_vram": true, "modelscope_cache": "", "load_controlnet": true, "base_model": "z-image-turbo"}},
+  "4": {"class_type": "ImageBatch", "inputs": {"image1": ["1", 0], "image2": ["1", 0]}},
+  "5": {"class_type": "ImageBatch", "inputs": {"image1": ["4", 0], "image2": ["2", 0]}},
+  "6": {"class_type": "ZImageI2LV2ExtractLoRA", "inputs": {"template": ["3", 1], "images": ["5", 0]}},
+  "7": {"class_type": "LoadImage", "inputs": {"image": ""}},
+  "8": {"class_type": "ZImageI2LV2SampleControlNet", "inputs": {"pipe": ["3", 0], "lora": ["6", 0], "control_image": ["7", 0], "prompt": "", "control_scale": 0.75, "seed": 1, "cfg_scale": 1.0, "num_inference_steps": 16, "sigma_shift": 0.0, "width": 2304, "height": 1024, "negative_prompt": ""}},
+  "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "Xiaoduan/ZImageTurbo/ControlledMaster", "images": ["8", 0]}}
+}

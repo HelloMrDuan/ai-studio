@@ -1,0 +1,27 @@
+{
+  "models": [
+    {
+      "provider_id": "local-tts",
+      "model_id": "configured-speech-model",
+      "transport": "local_openai_compatible",
+      "base_url": "http://127.0.0.1:6010/v1",
+      "capabilities": ["tts"],
+      "priority": 10,
+      "metadata": {
+        "note": "Example only. Point base_url at a real local OpenAI-compatible /audio/speech service."
+      }
+    },
+    {
+      "provider_id": "remote-tts",
+      "model_id": "configured-speech-model",
+      "transport": "remote_api",
+      "base_url": "https://example.invalid/v1",
+      "secret_ref": "XIAODUAN_TTS_API_KEY",
+      "capabilities": ["tts"],
+      "priority": 20,
+      "metadata": {
+        "note": "Example only. Remote and local providers are peers; no silent fallback."
+      }
+    }
+  ]
+}

@@ -4,8 +4,7 @@ set -euo pipefail
 source "$(dirname "$0")/env.sh"
 FF_REF=${FF_REF:-3.9.1}
 turbo_on
-[ -d "$FF_DIR/.git" ] || git clone https://github.com/facefusion/facefusion.git "$FF_DIR"
-git -C "$FF_DIR" fetch --tags -q && git -C "$FF_DIR" checkout -q "$FF_REF"
+[ -d "$FF_DIR/.git" ] || gh_clone https://github.com/facefusion/facefusion.git "$FF_DIR" "$FF_REF" || die "克隆 FaceFusion 失败"
 turbo_off
 make_env facefusion
 cd "$FF_DIR"

@@ -43,6 +43,17 @@ if nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -qiv "no
 turbo_on() { [ -f /etc/network_turbo ] && source /etc/network_turbo >/dev/null 2>&1 || true; }
 turbo_off() { unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY; }
 
+# GitHub 克隆：有学术加速（AutoDL）直连；否则先走 GH_PROXY 镜像（默认 gh-proxy.com，可 export GH_PROXY= 关闭），失败再直连
+if [ -f /etc/network_turbo ]; then GH_PROXY=${GH_PROXY-}; else GH_PROXY=${GH_PROXY-https://gh-proxy.com/}; fi
+gh_clone() {  # gh_clone <github_url> <dir> [tag/branch]
+  local url=$1 dir=$2 ref=${3:-} args=(--depth 1)
+  [ -n "$ref" ] && args+=(--branch "$ref")
+  if [ -n "$GH_PROXY" ] && git clone "${args[@]}" "${GH_PROXY}${url}" "$dir"; then
+    git -C "$dir" remote set-url origin "$url"; return 0
+  fi
+  rm -rf "$dir"; git clone "${args[@]}" "$url" "$dir"
+}
+
 log() { echo -e "\033[1;36m[$(date +%H:%M:%S)] $*\033[0m"; }
 die() { echo -e "\033[1;31m[错误] $*\033[0m" >&2; exit 1; }
 

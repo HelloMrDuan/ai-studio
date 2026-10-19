@@ -7,10 +7,9 @@ COMFY_REF=${COMFY_REF:-v0.42.1}
 turbo_on
 if [ ! -d "$COMFY_DIR/.git" ]; then
   log "克隆 ComfyUI $COMFY_REF"
-  git clone https://github.com/comfyanonymous/ComfyUI.git "$COMFY_DIR"
+  gh_clone https://github.com/comfyanonymous/ComfyUI.git "$COMFY_DIR" "$COMFY_REF" || die "克隆 ComfyUI 失败"
 fi
 cd "$COMFY_DIR"
-git fetch --tags -q && git checkout -q "$COMFY_REF" || log "（保持当前版本）"
 turbo_off
 
 # 继承镜像自带的 torch（省 3GB 下载）；版本不够新时再在环境里单独安装

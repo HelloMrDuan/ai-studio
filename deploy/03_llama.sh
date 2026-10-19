@@ -8,7 +8,7 @@ if [ "$HAS_GPU" != 1 ] && [ -z "${CUDA_ARCH:-}" ]; then
 fi
 turbo_on
 if [ ! -d "$LLAMA_DIR/.git" ]; then
-  git clone --depth 1 https://github.com/ggml-org/llama.cpp.git "$LLAMA_DIR"
+  gh_clone https://github.com/ggml-org/llama.cpp.git "$LLAMA_DIR" || die "克隆 llama.cpp 失败"
 else
   git -C "$LLAMA_DIR" pull --ff-only || true
 fi

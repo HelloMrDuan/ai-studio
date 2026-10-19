@@ -101,22 +101,26 @@ def test_full_flow(client):
         wait(client, t["id"])
     snap = client.get(f"/api/projects/{pid}").json()
     assert all(c["ref_image"] for c in snap["characters"])
-    assert len(snap["assets"][snap["characters"][0]["id"]]) == 2
+    kinds = [a["kind"] for a in snap["assets"][snap["characters"][0]["id"]]]
+    assert kinds.count("portrait") == 2 and kinds.count("face") == 1       # 定妆照之后自动派生脸部特写
+    assert all(c["face_image"] for c in snap["characters"])
 
     wait(client, client.post(f"/api/projects/{pid}/storyboard/generate").json()["id"])
     snap = client.get(f"/api/projects/{pid}").json()
     shots = snap["shots"]
     assert len(shots) == 2 and len(shots[1]["character_ids"]) == 2 and shots[1]["location_id"]
 
-    # 多人镜头：两个角色参考图 + 场景图都应作为参考图传入，提示词里按 <imageN> 指代
+    # 多人镜头：两个角色的全身图 + 脸部特写 + 场景图都作为参考图传入，提示词里按 <imageN> 指代
     plan = client.get(f"/api/shots/{shots[1]['id']}/plan").json()
-    assert len(plan["keyframe"]["refs"]) == 3
-    assert "<image2>" in plan["keyframe"]["prompt"] and "共有 2 个主要人物" in plan["keyframe"]["prompt"]
+    assert plan["keyframe"]["labels"] == ["角色:阿杰", "角色:小雨", "脸部:阿杰", "脸部:小雨", "场景:天台"]
+    kp = plan["keyframe"]["prompt"]
+    assert "<image1> 是角色「阿杰」的全身设定图" in kp and "<image3> 是其脸部特写" in kp
+    assert "<image5> 是场景「天台」" in kp and "共有 2 个主要人物" in kp
     CALLS["comfy"].clear()
     wait(client, client.post(f"/api/shots/{shots[1]['id']}/keyframe", json={"count": 2}).json()["id"])
     wf = CALLS["comfy"][0]
     enc = next(n for n in wf.values() if n["class_type"] == "TextEncodeQwenImage21")["inputs"]
-    assert {"images.image_1", "images.image_2", "images.image_3"} <= set(enc)
+    assert {f"images.image_{i}" for i in range(1, 6)} <= set(enc)
     assert len(CALLS["comfy"]) == 2
 
     r = client.post(f"/api/projects/{pid}/batch/keyframes", json={"only_missing": True}).json()
@@ -161,6 +165,7 @@ def test_full_flow(client):
     status = client.get("/api/system/status").json()
     assert any(not m["ok"] for m in status["models"])
     assert client.get("/api/facefusion/processors").json()["processors"]["face_swapper"]
+    check_face_fix(client, pid)
     assert client.delete(f"/api/projects/{pid}").json()["ok"]
 
 
@@ -178,3 +183,42 @@ def test_storyboard_validator_fixes_names_and_duration():
                          "dialogue": [{"speaker": "小雨", "line": "一" * 40}], "duration": 2}]})
     assert rows[0]["characters"] == ["阿杰", "小雨"]
     assert rows[0]["shot_size"] == "特写" and rows[0]["duration"] >= 11
+
+
+def check_face_fix(client, pid):
+    from app import facefusion
+    calls = []
+
+    async def fake_ff(processor, target, output, source=None, params=None, log=None):
+        calls.append({"processor": processor, "target": Path(target).name, "source": Path(source).name,
+                      **(params or {})})
+        output.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(target, output)
+        return output
+
+    facefusion.run = fake_ff
+    snap = client.get(f"/api/projects/{pid}").json()
+    single, duo = snap["shots"][0], snap["shots"][1]
+    # 单人镜头：默认选画面中最大的脸，最后一步串联面部增强
+    wait(client, client.post(f"/api/shots/{single['id']}/facefix", json={}).json()["id"])
+    assert len(calls) == 1 and calls[0]["face_selector_mode"] == "one"
+    assert calls[0]["processor"] == "face_swapper face_enhancer"
+    # 多人镜头：按位置逐个换脸，前一步的输出是下一步的输入
+    calls.clear()
+    items = [{"character_id": duo["character_ids"][0], "position": "0"},
+             {"character_id": duo["character_ids"][1], "position": 1}]
+    wait(client, client.post(f"/api/shots/{duo['id']}/facefix", json={"items": items}).json()["id"])
+    assert [c["reference_face_position"] for c in calls] == [0, 1]
+    assert calls[0]["processor"] == "face_swapper" and calls[1]["target"].startswith("facefix_")
+    new = client.get(f"/api/projects/{pid}").json()["shots"][1]
+    assert "facefix_" in new["video"] and new["video"] != duo["video"]
+    # 分镜图也能修；没有可处理的角色时直接报错
+    wait(client, client.post(f"/api/shots/{duo['id']}/facefix", json={"target": "keyframe"}).json()["id"])
+    assert client.post(f"/api/shots/{duo['id']}/facefix",
+                       json={"items": [{"character_id": duo["character_ids"][0], "position": "skip"}]}).status_code == 400
+    # 生成脸部特写任务：以定妆照为 <image1>
+    CALLS["comfy"].clear()
+    cid = snap["characters"][1]["id"]
+    wait(client, client.post(f"/api/characters/{cid}/face", json={"count": 1}).json()["id"])
+    enc = next(n for n in CALLS["comfy"][0].values() if n["class_type"] == "TextEncodeQwenImage21")["inputs"]
+    assert "images.image_1" in enc and "<image1>" in enc["prompt"]

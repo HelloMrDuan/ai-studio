@@ -160,6 +160,11 @@ COMMON_PARAMS = [
 ]
 
 
+# 不在工具箱界面上展示、但程序内部会用到的人脸选择参数（人脸修正按位置/大小挑人）
+INTERNAL_PARAMS = {"face_selector_order", "reference_face_position", "reference_face_distance",
+                   "reference_frame_number"}
+
+
 def is_image(path: Path) -> bool:
     return path.suffix.lower() in {".jpg",".jpeg",".png",".webp",".bmp",".tif",".tiff"}
 
@@ -177,23 +182,27 @@ def common_params() -> list[dict[str, Any]]:
 
 async def run(processor: str, target: Path, output: Path, source: Path | None = None,
               params: dict[str, Any] | None = None, log=None) -> Path:
+    """processor 可以是多个处理器，用空格分隔（如 "face_swapper face_enhancer"，按顺序串联处理）。"""
     s = get_settings()
-    spec = PROCESSOR_SPECS.get(processor)
-    if spec is None:
+    names = processor.split()
+    specs = [PROCESSOR_SPECS.get(n) for n in names]
+    if not names or None in specs:
         raise ValueError(f"不支持的处理功能：{processor}")
-    if spec.get("source_required") and source is None:
-        raise ValueError(f"{spec['label']} 需要来源文件")
+    for spec in specs:
+        if spec.get("source_required") and source is None:
+            raise ValueError(f"{spec['label']} 需要来源文件")
     if not s.facefusion_python.is_file():
         raise RuntimeError(f"找不到 FaceFusion Python：{s.facefusion_python}")
     params = params or {}
     output.parent.mkdir(parents=True, exist_ok=True)
     cmd = [str(s.facefusion_python), "facefusion.py", "headless-run",
-           "--processors", processor, "--target-path", str(target), "--output-path", str(output),
+           "--processors", *names, "--target-path", str(target), "--output-path", str(output),
            "--execution-providers", "cuda", "--execution-thread-count", "4",
            "--face-selector-mode", str(params.pop("face_selector_mode", "many")), "--log-level", "info"]
     if source is not None:
         cmd += ["--source-paths", str(source)]
-    allowed = {p["name"] for p in spec.get("params", [])} | {p["name"] for p in COMMON_PARAMS}
+    allowed = {p["name"] for spec in specs for p in spec.get("params", [])} | {p["name"] for p in COMMON_PARAMS} \
+        | INTERNAL_PARAMS
     for name, value in params.items():
         if name not in allowed or value in (None, ""):
             continue

@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE TABLE IF NOT EXISTS characters (
   id TEXT PRIMARY KEY, project_id TEXT, name TEXT, role TEXT DEFAULT '', gender TEXT DEFAULT '',
   age TEXT DEFAULT '', appearance TEXT DEFAULT '', personality TEXT DEFAULT '', voice TEXT DEFAULT '',
-  ref_image TEXT DEFAULT '', locked INTEGER DEFAULT 0, sort INTEGER DEFAULT 0, created_at REAL
+  ref_image TEXT DEFAULT '', face_image TEXT DEFAULT '', locked INTEGER DEFAULT 0, sort INTEGER DEFAULT 0,
+  created_at REAL
 );
 CREATE TABLE IF NOT EXISTS locations (
   id TEXT PRIMARY KEY, project_id TEXT, name TEXT, description TEXT DEFAULT '',
@@ -68,7 +69,19 @@ def conn() -> sqlite3.Connection:
             _conn.row_factory = sqlite3.Row
             _conn.execute("PRAGMA journal_mode=WAL")
             _conn.executescript(SCHEMA)
+            _migrate(_conn)
         return _conn
+
+
+MIGRATIONS = [("characters", "face_image", "TEXT DEFAULT ''")]
+
+
+def _migrate(c: sqlite3.Connection) -> None:
+    """老数据库补列（CREATE TABLE IF NOT EXISTS 不会给已存在的表加新列）。"""
+    for table, col, decl in MIGRATIONS:
+        cols = {r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+        if col not in cols:
+            c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
 
 
 def reset_for_tests() -> None:

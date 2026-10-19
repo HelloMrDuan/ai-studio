@@ -91,6 +91,32 @@ def portrait_prompt(project: dict, char: dict) -> str:
             f"画风：{style_text(project)}。画面中只有这一个人，不要文字和水印。")
 
 
+def face_prompt(project: dict, char: dict, has_ref: bool) -> str:
+    """脸部特写：以定妆照为 <image1> 派生，保证与全身图是同一个人；近景/特写镜头靠它锁五官。"""
+    who = (f"以 <image1> 中的角色为准，生成同一个人的脸部特写。脸型五官、肤色、发型发色、妆容和配饰必须与 <image1> 完全一致。"
+           if has_ref else f"角色：{char.get('name')}，{char.get('gender')}，{char.get('age')}。外貌：{char.get('appearance')}。")
+    return (f"角色脸部特写参考图，头肩构图，正脸平视镜头，双眼看向镜头，表情自然放松，五官清晰锐利，不遮挡面部。{who}"
+            f"纯浅灰色干净背景，柔和均匀的影棚光。画风：{style_text(project)}。画面中只有这一个人，不要文字和水印。")
+
+
+def char_ref_lines(chars: list[dict], ref_map: dict[str, dict], tag: str = "image") -> list[str]:
+    """ref_map: {角色id: {"full": 序号, "face": 序号}}，生成「<imageN> 是谁的什么参考」说明。"""
+    lines = []
+    for c in chars:
+        m = ref_map.get(c["id"]) or {}
+        full, face = m.get("full"), m.get("face")
+        if full and face:
+            lines.append(f"<{tag}{full}> 是角色「{c['name']}」的全身设定图（体型、发型、服装），<{tag}{face}> 是其脸部特写（五官）。"
+                         f"画面中的「{c['name']}」必须与这两张图是同一个人：脸型五官以 <{tag}{face}> 为准，服装以 <{tag}{full}> 为准。")
+        elif full or face:
+            n = full or face
+            lines.append(f"<{tag}{n}> 是角色「{c['name']}」的形象参考（{c.get('appearance') or ''}）。"
+                         f"画面中的「{c['name']}」必须与 <{tag}{n}> 是同一个人：脸型五官、发型发色、服装完全一致。")
+        else:
+            lines.append(f"角色「{c['name']}」的外貌：{c.get('appearance') or ''}。")
+    return lines
+
+
 def location_prompt(project: dict, loc: dict) -> str:
     return (f"电影场景概念图，空镜，画面中没有任何人物。场景：{loc.get('name')}。{loc.get('description')}。"
             f"画风：{style_text(project)}。不要文字和水印。")
@@ -198,22 +224,14 @@ def make_storyboard_validator(char_names: list[str]):
 
 # ---------------- ④ 分镜图 ----------------
 def keyframe_prompt(project: dict, shot: dict, chars: list[dict], loc: dict | None,
-                    ref_chars: list[dict], loc_ref: bool) -> str:
-    """ref_chars 为带参考图的角色（顺序 = <image1>..），loc_ref 表示场景参考图排在最后。"""
+                    ref_map: dict[str, dict], loc_idx: int | None) -> str:
+    """ref_map 见 char_ref_lines；loc_idx 为场景参考图的序号（None 表示没有）。"""
     lines = [f"生成一张电影分镜画面，{shot.get('shot_size') or '中景'}，{shot.get('camera_angle') or '平视'}。"]
     lines.append("画面内容：" + (shot.get("image_prompt") or shot.get("description") or "").strip())
-    idx = 0
-    for c in ref_chars:
-        idx += 1
-        lines.append(f"<image{idx}> 是角色「{c['name']}」的形象参考（{c.get('appearance') or ''}）。"
-                     f"画面中的「{c['name']}」必须与 <image{idx}> 是同一个人：脸型五官、发型发色、服装完全一致。")
-    for c in chars:
-        if c not in ref_chars:
-            lines.append(f"角色「{c['name']}」的外貌：{c.get('appearance') or ''}。")
+    lines += char_ref_lines(chars, ref_map)
     if loc:
-        if loc_ref:
-            idx += 1
-            lines.append(f"<image{idx}> 是场景「{loc['name']}」的环境参考，保持空间布局、陈设和色调一致，但按本镜头的机位重新构图。")
+        if loc_idx:
+            lines.append(f"<image{loc_idx}> 是场景「{loc['name']}」的环境参考，保持空间布局、陈设和色调一致，但按本镜头的机位重新构图。")
         elif loc.get("description"):
             lines.append(f"场景：{loc['name']}，{loc['description']}。")
     if chars:
@@ -228,7 +246,8 @@ def keyframe_prompt(project: dict, shot: dict, chars: list[dict], loc: dict | No
 
 # ---------------- ⑤ 视频 ----------------
 def video_prompt(project: dict, shot: dict, chars_by_name: dict[str, dict], loc: dict | None,
-                 ref_names: list[str] | None = None) -> str:
+                 ref_descs: list[str] | None = None) -> str:
+    """ref_descs：参考生视频时 <Picture 2..> 的说明（<Picture 1> 固定是分镜图）。"""
     if (shot.get("video_prompt") or "").strip():
         body = shot["video_prompt"].strip()
     else:
@@ -247,10 +266,10 @@ def video_prompt(project: dict, shot: dict, chars_by_name: dict[str, dict], loc:
             parts.append("声音：" + shot["sound"])
         parts.append("人物外貌、服装和场景与首帧保持一致，动作自然连贯，不要出现字幕和文字。")
         body = "\n".join(parts)
-    if ref_names:
+    if ref_descs:
         head = ["<Picture 1> 是本镜头的构图与画面参考。"]
-        for i, name in enumerate(ref_names, start=2):
-            head.append(f"<Picture {i}> 是角色「{name}」的形象参考，保持同一张脸和服装。")
+        for i, desc in enumerate(ref_descs, start=2):
+            head.append(f"<Picture {i}> 是{desc}。")
         body = "\n".join(head) + "\n" + body
     return body
 

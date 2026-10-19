@@ -231,7 +231,7 @@ async def create_character(project_id: str, body: dict[str, Any]) -> dict:
 @router.patch("/characters/{char_id}")
 async def update_character(char_id: str, body: dict[str, Any]) -> dict:
     _get("characters", char_id, "角色")
-    values = _clean(body, CHAR_FIELDS | {"ref_image"})
+    values = _clean(body, CHAR_FIELDS | {"ref_image", "face_image"})
     if "locked" in values:
         values["locked"] = 1 if values["locked"] else 0
     return db.update("characters", char_id, values)
@@ -266,6 +266,23 @@ async def upload_portrait(char_id: str, file: UploadFile = File(...)) -> dict:
     target = await _save_upload(file, char["project_id"], "characters")
     asset = pipeline.add_asset(char["project_id"], "portrait", target, "character", char_id, {"uploaded": True})
     return db.update("characters", char_id, {"ref_image": asset["path"]})
+
+
+@router.post("/characters/{char_id}/face")
+async def gen_face(char_id: str, body: GenIn) -> dict:
+    """根据当前定妆照派生脸部特写（近景/特写镜头和人脸修正都用它）。"""
+    char = _get("characters", char_id, "角色")
+    return _submit("face_ref", f"脸部特写：{char['name']}", char["project_id"], "character", char_id,
+                   {"character_id": char_id, "auto_select": True, **body.model_dump()})
+
+
+@router.post("/characters/{char_id}/face/upload")
+async def upload_face(char_id: str, file: UploadFile = File(...)) -> dict:
+    char = _get("characters", char_id, "角色")
+    target = await _save_upload(file, char["project_id"], "characters")
+    asset = pipeline.add_asset(char["project_id"], "face", target, "character", char_id,
+                               {"uploaded": True, "from_ref": char.get("ref_image") or ""})
+    return db.update("characters", char_id, {"face_image": asset["path"]})
 
 
 # ================= 场景 =================
@@ -413,6 +430,34 @@ async def gen_video(shot_id: str, body: VideoIn) -> dict:
                    {"shot_id": shot_id, **body.model_dump()})
 
 
+class FaceFixItem(BaseModel):
+    character_id: str
+    position: str | int = "auto"   # "auto"=最大的脸；0,1,2…=从左数第 N+1 张脸；"skip"=不处理
+
+
+class FaceFixIn(BaseModel):
+    target: str = "video"          # video | keyframe
+    items: list[FaceFixItem] | None = None
+    enhance: bool = True
+    swapper_model: str = "hyperswap_1a_256"
+
+
+@router.post("/shots/{shot_id}/facefix")
+async def face_fix(shot_id: str, body: FaceFixIn) -> dict:
+    """人脸修正：用出镜角色的脸部特写对当前视频/分镜图换脸，结果作为新版本并设为当前使用（可在候选里切回）。"""
+    shot = _get("shots", shot_id, "镜头")
+    field = "keyframe" if body.target == "keyframe" else "video"
+    if not pipeline.exists(shot.get(field)):
+        raise HTTPException(400, "这个镜头还没有" + ("分镜图" if field == "keyframe" else "视频"))
+    items = [i.model_dump() for i in body.items] if body.items is not None else None
+    try:
+        pipeline.face_fix_plan(shot, items)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return _submit("face_fix", f"人脸修正 #{shot['sort'] + 1}", shot["project_id"], "shot", shot_id,
+                   {"shot_id": shot_id, **body.model_dump(), "target": field, "items": items}, dedupe=False)
+
+
 @router.post("/shots/{shot_id}/upload")
 async def upload_shot_media(shot_id: str, file: UploadFile = File(...)) -> dict:
     shot = _get("shots", shot_id, "镜头")
@@ -440,6 +485,9 @@ async def batch(project_id: str, kind: str, body: BatchIn) -> dict:
             if not (body.only_missing and c["ref_image"]):
                 submitted.append(_submit("portrait", f"角色形象：{c['name']}", project_id, "character", c["id"],
                                          {"character_id": c["id"], "count": body.count}))
+            elif not c.get("face_image"):
+                submitted.append(_submit("face_ref", f"脸部特写：{c['name']}", project_id, "character", c["id"],
+                                         {"character_id": c["id"], "count": 1}))
         for loc in pipeline.locations_of(project_id):
             if not (body.only_missing and loc["ref_image"]):
                 submitted.append(_submit("location_image", f"场景图：{loc['name']}", project_id, "location",
@@ -471,7 +519,8 @@ async def select_asset(body: SelectIn) -> dict:
     """把某个候选素材设为当前使用（角色参考图 / 场景参考图 / 分镜图 / 镜头视频）。"""
     asset = _get("assets", body.asset_id, "素材")
     if asset["owner_type"] == "character":
-        return db.update("characters", asset["owner_id"], {"ref_image": asset["path"]})
+        field = "face_image" if asset["kind"] == "face" else "ref_image"
+        return db.update("characters", asset["owner_id"], {field: asset["path"]})
     if asset["owner_type"] == "location":
         return db.update("locations", asset["owner_id"], {"ref_image": asset["path"]})
     if asset["owner_type"] == "shot":
@@ -486,7 +535,7 @@ async def select_asset(body: SelectIn) -> dict:
 async def delete_asset(asset_id: str) -> dict:
     asset = _get("assets", asset_id, "素材")
     db.execute("DELETE FROM assets WHERE id=?", [asset_id])
-    for table, field in (("characters", "ref_image"), ("locations", "ref_image"), ("shots", "keyframe"),
+    for table, field in (("characters", "ref_image"), ("characters", "face_image"), ("locations", "ref_image"), ("shots", "keyframe"),
                          ("shots", "video"), ("projects", "final_video")):
         db.execute(f"UPDATE {table} SET {field}='' WHERE {field}=?", [asset["path"]])
     try:

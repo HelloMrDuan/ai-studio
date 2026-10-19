@@ -177,6 +177,17 @@ function thumbs(owner, kind, current) {
     style="${isVideo(a.path) ? '' : `background-image:url('${media(a.path)}')`}">${isVideo(a.path) ? `<video src="${media(a.path)}#t=0.5" muted preload="metadata"></video>` : ''}<span class="x" data-act="del-asset" data-id="${a.id}">✕</span></div>`).join('')}</div>`;
 }
 
+function faceBox(c) {
+  const cur = assetsOf(c.id, 'face').find((a) => a.path === c.face_image);
+  const stale = cur && cur.meta && cur.meta.from_ref && c.ref_image && cur.meta.from_ref !== c.ref_image;
+  return `<label class="f" style="margin-top:10px">脸部特写 <span class="muted small">锁五官</span></label>
+    <div class="ref face" data-act="zoom" data-src="${media(c.face_image)}" style="${c.face_image ? `background-image:url('${media(c.face_image)}')` : ''}">${c.face_image ? '' : '暂无特写'}</div>
+    ${stale ? '<div class="small warn" style="margin-top:4px">⚠ 定妆照已更换，建议重新生成</div>' : ''}
+    ${thumbs(c.id, 'face', c.face_image)}
+    <div class="row" style="margin-top:6px"><button class="btn small" data-act="gen-face" data-id="${c.id}" title="以当前定妆照为参考生成同一人的脸部特写">${c.face_image ? '重新生成' : '生成'}</button>
+      <button class="btn small ghost" data-act="upload-face" data-id="${c.id}">上传</button></div>`;
+}
+
 function viewCast() {
   const s = S.snap; const busy = busyOf(`${s.project.id}:extract`);
   const chars = s.characters.map((c) => `<div class="card entity">
@@ -184,7 +195,8 @@ function viewCast() {
       ${thumbs(c.id, 'portrait', c.ref_image)}
       <div class="row" style="margin-top:6px"><select id="pc-${c.id}" style="width:56px">${[1, 2, 4].map((n) => `<option ${n === 2 ? 'selected' : ''}>${n}</option>`).join('')}</select>
       <button class="btn small" data-act="gen-portrait" data-id="${c.id}">生成</button></div>
-      <button class="btn small ghost" style="margin-top:6px;width:100%" data-act="upload-portrait" data-id="${c.id}">上传参考图</button></div>
+      <button class="btn small ghost" style="margin-top:6px;width:100%" data-act="upload-portrait" data-id="${c.id}">上传参考图</button>
+      ${faceBox(c)}</div>
     <div><div class="row"><input type="text" class="grow" data-save="characters:${c.id}:name" value="${esc(c.name)}" style="font-weight:600">
       <span class="chip ${c.locked ? 'on' : ''}" title="锁定后重新提取不会覆盖" data-act="toggle-lock" data-id="${c.id}">${c.locked ? '🔒 已锁定' : '🔓 锁定'}</span></div>
       <div class="grid3"><div><label class="f">定位</label><input type="text" data-save="characters:${c.id}:role" value="${esc(c.role)}"></div>
@@ -205,7 +217,7 @@ function viewCast() {
       <button class="btn ghost" data-act="batch-portraits">批量生成参考图（仅缺失）</button>
       <button class="btn ghost" data-act="add-char">＋ 角色</button><button class="btn ghost" data-act="add-loc">＋ 场景</button>
       <button class="btn ghost" data-go="#/p/${s.project.id}/board">下一步：分镜 →</button></div>
-    <p class="muted small">角色参考图是多人镜头不串脸的关键：生成分镜图时，镜头里每个角色的参考图（以及场景图）会一起交给 Qwen-Image 2.1 做多图参考。建议每个角色挑一张正面全身、背景干净的图。</p>
+    <p class="muted small">角色一致性靠两张图：<b>定妆照</b>（全身，锁服装体型）+ <b>脸部特写</b>（由定妆照派生，锁五官）。生成分镜图时，镜头里每个角色的这两张图（以及场景图）会一起交给 Qwen-Image 2.1 做多图参考；视频若有脸崩，可在④用「人脸修正」按特写一键换回。</p>
     <h3>角色（${s.characters.length}）</h3>${chars ? `<div class="entity-grid">${chars}</div>` : '<div class="empty">还没有角色，点击「从剧本提取」</div>'}
     <h3 style="margin-top:22px">场景（${s.locations.length}）</h3>${locs ? `<div class="entity-grid">${locs}</div>` : '<div class="empty">还没有场景</div>'}`;
 }
@@ -225,7 +237,8 @@ function viewBoard() {
         <button class="btn small" data-act="gen-keyframe" data-id="${x.id}">出图</button>
         <button class="btn small ghost" data-act="edit-keyframe" data-id="${x.id}" ${x.keyframe ? '' : 'disabled'}>改图</button>
         <button class="btn small ghost" data-act="upload-shot" data-id="${x.id}">上传</button>
-        <button class="btn small ghost" data-act="plan" data-id="${x.id}">提示词</button></div></div>
+        <button class="btn small ghost" data-act="plan" data-id="${x.id}">提示词</button>
+        <button class="btn small ghost" data-act="face-fix" data-id="${x.id}" data-target="keyframe" ${x.keyframe && x.character_ids.length ? '' : 'disabled'} title="用角色脸部特写修正分镜图里的人脸">人脸修正</button></div></div>
     <div>
       <div class="grid4">
         <div><label class="f">景别</label>${sel(S.meta.shot_sizes, x.shot_size, `data-save="shots:${x.id}:shot_size"`)}</div>
@@ -270,7 +283,8 @@ function viewVideo() {
     <details style="margin-top:6px"><summary class="muted small">自定义视频提示词（留空自动生成）</summary><textarea rows="4" data-save="shots:${x.id}:video_prompt">${esc(x.video_prompt)}</textarea></details>
     <div class="row" style="margin-top:8px"><button class="btn small" data-act="gen-video" data-id="${x.id}">${x.video ? '重新生成' : '生成视频'}</button>
       <button class="btn small ghost" data-act="plan" data-id="${x.id}">提示词</button>
-      <button class="btn small ghost" data-act="ff-enhance" data-id="${x.id}" ${x.video ? '' : 'disabled'} title="FaceFusion 面部增强并替换当前视频">修脸</button>
+      <button class="btn small ghost" data-act="face-fix" data-id="${x.id}" data-target="video" ${x.video && x.character_ids.length ? '' : 'disabled'} title="用角色脸部特写对视频换脸，修正走样的人脸">人脸修正</button>
+      <button class="btn small ghost" data-act="ff-enhance" data-id="${x.id}" ${x.video ? '' : 'disabled'} title="只做面部清晰度增强，不换脸">修脸</button>
       <button class="btn small ghost" data-act="upload-shot" data-id="${x.id}">上传</button></div></div>`).join('');
   return `<div class="toolbar"><span class="title">④ 视频 <span class="muted small">MiniMax H3 · 自带对白配音与音效</span></span>
       ${sel([['draft', '草稿 480p（快）'], ['final', '成品 768p']], 'draft', 'id="bv-q"')}
@@ -373,6 +387,29 @@ const ACTIONS = {
   async 'toggle-lock'(el) { const c = localRow('characters', el.dataset.id); await api('PATCH', '/api/characters/' + c.id, { locked: !c.locked }); loadSnap(true); },
   async 'gen-portrait'(el) { submitted(await api('POST', `/api/characters/${el.dataset.id}/portrait`, { count: Number(val('pc-' + el.dataset.id)) || 2 })); },
   async 'gen-location'(el) { submitted(await api('POST', `/api/locations/${el.dataset.id}/image`, { count: 2 })); },
+  async 'gen-face'(el) { submitted(await api('POST', `/api/characters/${el.dataset.id}/face`, { count: 1 })); },
+  async 'upload-face'(el) { const f = await pickFile('image/*'); if (f) { await upload(`/api/characters/${el.dataset.id}/face/upload`, f); loadSnap(true); } },
+  'face-fix'(el) {
+    const shot = localRow('shots', el.dataset.id); const target = el.dataset.target; const cm = charMap();
+    const chars = shot.character_ids.map((id) => cm[id]).filter(Boolean); const n = chars.length;
+    const posOpts = [['skip', '不处理'], ...(n === 1 ? [['auto', '画面中最大的脸']] : []), ...Array.from({ length: Math.max(n, 2) + 1 }, (_, k) => [String(k), `从左数第 ${k + 1} 个人`])];
+    const rows = chars.map((c, i) => `<div class="row" style="margin:8px 0">
+      <div class="ref face small" style="${(c.face_image || c.ref_image) ? `background-image:url('${media(c.face_image || c.ref_image)}')` : ''}">${(c.face_image || c.ref_image) ? '' : '无'}</div>
+      <div class="grow"><b>${esc(c.name)}</b><div class="muted small">${c.face_image ? '使用脸部特写' : (c.ref_image ? '⚠ 无脸部特写，将用定妆照' : '⚠ 没有参考图，无法修正')}</div></div>
+      ${sel(posOpts, (c.face_image || c.ref_image) ? (n === 1 ? 'auto' : String(i)) : 'skip', `data-ffpos="${c.id}" style="width:150px"`)}</div>`).join('');
+    modal(`<h3>人脸修正 · 镜头 #${shot.sort + 1}（${target === 'keyframe' ? '分镜图' : '视频'}）</h3>
+      <p class="muted small">用 FaceFusion 把画面里的人脸换成角色的脸部特写，修正走样或串脸。多人镜头请指定每个角色在画面中（${target === 'video' ? '以第一帧为准' : ''}）从左到右的位置。结果作为新版本保存，可随时在候选里切回原版。</p>
+      ${rows}
+      <div class="row" style="margin-top:10px"><label class="row small"><input type="checkbox" id="ffx-enh" checked> 换脸后做面部增强（更清晰）</label>
+        <div class="grow"></div>${sel([['hyperswap_1a_256', 'HyperSwap 1a（推荐）'], ['hyperswap_1b_256', 'HyperSwap 1b'], ['hyperswap_1c_256', 'HyperSwap 1c'], ['inswapper_128', 'InSwapper 128']], 'hyperswap_1a_256', 'id="ffx-model" style="width:190px"')}</div>
+      <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn ghost" data-act="close-modal">取消</button>
+        <button class="btn" data-act="face-fix-go" data-id="${shot.id}" data-target="${target}">开始修正</button></div>`);
+  },
+  async 'face-fix-go'(el) {
+    const items = [...document.querySelectorAll('[data-ffpos]')].map((s) => ({ character_id: s.dataset.ffpos, position: s.value }));
+    const r = await api('POST', `/api/shots/${el.dataset.id}/facefix`, { target: el.dataset.target, items, enhance: val('ffx-enh'), swapper_model: val('ffx-model') });
+    closeModal(); submitted(r, '已提交人脸修正');
+  },
   async 'upload-portrait'(el) { const f = await pickFile('image/*'); if (f) { await upload(`/api/characters/${el.dataset.id}/upload`, f); loadSnap(true); } },
   async 'upload-location'(el) { const f = await pickFile('image/*'); if (f) { await upload(`/api/locations/${el.dataset.id}/upload`, f); loadSnap(true); } },
   async 'upload-shot'(el) { const f = await pickFile('image/*,video/*'); if (f) { await upload(`/api/shots/${el.dataset.id}/upload`, f); loadSnap(true); } },

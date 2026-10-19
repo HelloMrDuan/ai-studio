@@ -194,7 +194,34 @@ async def task_portrait(ctx: TaskContext) -> dict:
                                    project_dir(project["id"], "characters"))
     assets = [add_asset(project["id"], "portrait", f, "character", char["id"], {"prompt": prompt}) for f in files]
     if not exists(char["ref_image"]):
-        db.update("characters", char["id"], {"ref_image": assets[0]["path"]})
+        char = db.update("characters", char["id"], {"ref_image": assets[0]["path"]})
+    result = {"assets": [a["id"] for a in assets]}
+    # 第一次有定妆照时，顺手派生一张脸部特写（近景/特写镜头靠它锁五官）
+    if ctx.params.get("with_face", True) and not exists(char.get("face_image")):
+        face = await _make_face(ctx, project, char, 1)
+        result["face_assets"] = [a["id"] for a in face]
+    return result
+
+
+async def _make_face(ctx: TaskContext, project: dict, char: dict, count: int) -> list[dict]:
+    has_ref = exists(char.get("ref_image"))
+    prompt = prompts.face_prompt(project, char, has_ref)
+    refs = [absolute(char["ref_image"])] if has_ref else []
+    files = await _generate_images(ctx, prompt, "1:1", refs, count, project_dir(project["id"], "characters"))
+    assets = [add_asset(project["id"], "face", f, "character", char["id"],
+                        {"prompt": prompt, "from_ref": char.get("ref_image") or ""}) for f in files]
+    current = db.get("characters", char["id"]) or char
+    if not exists(current.get("face_image")) or ctx.params.get("auto_select"):
+        db.update("characters", char["id"], {"face_image": assets[0]["path"]})
+    return assets
+
+
+@handler("face_ref")
+async def task_face_ref(ctx: TaskContext) -> dict:
+    """根据当前定妆照生成脸部特写（可多张候选）。"""
+    char = need("characters", ctx.params.get("character_id"), "角色")
+    project = need("projects", char["project_id"], "项目")
+    assets = await _make_face(ctx, project, char, ctx.params.get("count", 1))
     return {"assets": [a["id"] for a in assets]}
 
 
@@ -219,15 +246,50 @@ def _shot_context(shot: dict) -> tuple[dict, dict[str, dict], list[dict], dict |
     return project, all_chars, chars, loc
 
 
+def char_refs(chars: list[dict], limit: int, start: int = 1, faces: bool = True) -> tuple[list[Path], list[str], dict]:
+    """角色参考图编排：先保证每个角色都有一张（全身优先），名额有剩再补脸部特写。
+    返回 (图片路径, 标签, ref_map)；ref_map = {角色id: {"full": 序号, "face": 序号}}，序号从 start 开始。"""
+    refs: list[Path] = []
+    labels: list[str] = []
+    ref_map: dict[str, dict] = {}
+
+    def add(c: dict, field: str, kind: str, label: str) -> None:
+        refs.append(absolute(c[field]))
+        labels.append(f"{label}:{c['name']}")
+        ref_map.setdefault(c["id"], {})[kind] = start + len(refs) - 1
+
+    for c in chars:
+        if len(refs) >= limit:
+            break
+        if exists(c.get("ref_image")):
+            add(c, "ref_image", "full", "角色")
+        elif exists(c.get("face_image")):
+            add(c, "face_image", "face", "脸部")
+    if faces:
+        for c in chars:
+            if len(refs) >= limit:
+                break
+            m = ref_map.get(c["id"]) or {}
+            if "full" in m and "face" not in m and exists(c.get("face_image")):
+                add(c, "face_image", "face", "脸部")
+    return refs, labels, ref_map
+
+
 def keyframe_plan(shot: dict) -> dict:
-    """计算某镜头的出图方案：参考图顺序 + 最终提示词（预览接口也用它）。"""
+    """计算某镜头的出图方案：参考图顺序 + 最终提示词（预览接口也用它）。
+    场景图优先级高于「第二张脸部参考」：先给每个角色一张，再放场景图，最后用剩余名额补脸部特写。"""
     project, _, chars, loc = _shot_context(shot)
-    ref_chars = [c for c in chars if exists(c.get("ref_image"))][:MAX_IMAGE_REFS]
-    loc_ref = bool(loc and exists(loc.get("ref_image")) and len(ref_chars) < MAX_IMAGE_REFS)
-    refs = [absolute(c["ref_image"]) for c in ref_chars] + ([absolute(loc["ref_image"])] if loc_ref else [])
-    labels = [f"角色:{c['name']}" for c in ref_chars] + ([f"场景:{loc['name']}"] if loc_ref else [])
+    has_loc = bool(loc and exists(loc.get("ref_image")))
+    base, _, _ = char_refs(chars, MAX_IMAGE_REFS, faces=False)
+    room = MAX_IMAGE_REFS - (1 if has_loc and len(base) < MAX_IMAGE_REFS else 0)
+    refs, labels, ref_map = char_refs(chars, room)
+    loc_idx = None
+    if has_loc and len(refs) < MAX_IMAGE_REFS:
+        refs.append(absolute(loc["ref_image"]))
+        labels.append(f"场景:{loc['name']}")
+        loc_idx = len(refs)
     return {"project": project, "chars": chars, "loc": loc, "refs": refs, "ref_labels": labels,
-            "prompt": prompts.keyframe_prompt(project, shot, chars, loc, ref_chars, loc_ref)}
+            "prompt": prompts.keyframe_prompt(project, shot, chars, loc, ref_map, loc_idx)}
 
 
 @handler("keyframe")
@@ -253,11 +315,10 @@ async def task_keyframe_edit(ctx: TaskContext) -> dict:
     if not exists(shot["keyframe"]) or not instruction:
         raise ValueError("需要先有分镜图，并填写修改说明")
     plan = keyframe_plan(shot)
-    refs = [absolute(shot["keyframe"])]
+    char_paths, _, ref_map = char_refs(plan["chars"], MAX_IMAGE_REFS - 1, start=2)
+    refs = [absolute(shot["keyframe"]), *char_paths]
     lines = ["以 <image1> 为基础画面，保持构图、机位、人物身份、服装和画风不变，只做以下修改：" + instruction]
-    for c in [c for c in plan["chars"] if exists(c.get("ref_image"))][:MAX_IMAGE_REFS - 1]:
-        refs.append(absolute(c["ref_image"]))
-        lines.append(f"<image{len(refs)}> 是角色「{c['name']}」的形象参考，画面中该角色必须与它保持一致。")
+    lines += [ln for ln in prompts.char_ref_lines(plan["chars"], ref_map) if ln.startswith("<image")]
     lines.append("不要出现任何文字、字幕或水印。")
     prompt = "\n".join(lines)
     files = await _generate_images(ctx, prompt, plan["project"]["aspect_ratio"], refs, ctx.params.get("count", 1),
@@ -289,16 +350,17 @@ def video_plan(shot: dict, mode: str = "auto") -> dict:
         return {"project": project, "mode": mode, "refs": refs, "prompt": prompt}
     if has_key:
         refs.append(absolute(shot["keyframe"]))
-    names = []
-    for c in chars:
-        if exists(c.get("ref_image")) and len(refs) < MAX_VIDEO_REFS:
-            refs.append(absolute(c["ref_image"]))
-            names.append(c["name"])
+    char_paths, labels, _ = char_refs(chars, MAX_VIDEO_REFS - len(refs))
+    refs += char_paths
     if not refs:
         raise ValueError("参考生视频需要分镜图或角色参考图")
-    prompt = prompts.video_prompt(project, shot, by_name, loc, names if has_key else None)
+    descs = []
+    for label in labels:
+        kind, name = label.split(":", 1)
+        descs.append(f"角色「{name}」的{'脸部特写，保持同一张脸' if kind == '脸部' else '形象参考，保持同一张脸和服装'}")
+    prompt = prompts.video_prompt(project, shot, by_name, loc, descs if has_key else None)
     if not has_key:
-        head = [f"<Picture {i}> 是角色「{n}」的形象参考，保持同一张脸和服装。" for i, n in enumerate(names, 1)]
+        head = [f"<Picture {i}> 是{d}。" for i, d in enumerate(descs, 1)]
         prompt = "\n".join(head) + "\n" + prompt
     return {"project": project, "mode": mode, "refs": refs, "prompt": prompt}
 
@@ -370,6 +432,63 @@ async def task_assemble(ctx: TaskContext) -> dict:
                       {"shots": len(clips), "seconds": round(t, 1), "skipped": skipped})
     db.update("projects", project["id"], {"final_video": asset["path"]})
     return {"path": asset["path"], "seconds": round(t, 1), "skipped": skipped}
+
+
+# ---------------- 人脸修正：用角色脸部特写对镜头做 FaceFusion 换脸 ----------------
+def face_fix_plan(shot: dict, items: list[dict] | None = None) -> list[dict]:
+    """items: [{"character_id", "position": "auto" | 0.. | "skip"}]；缺省时按出镜角色自动编排：
+    单人镜头 → 画面中最大的脸；多人镜头 → 按出镜顺序对应从左到右第 N 张脸。"""
+    _, all_chars, chars, _ = _shot_context(shot)
+    if items is None:
+        items = [{"character_id": c["id"], "position": "auto" if len(chars) == 1 else i} for i, c in enumerate(chars)]
+    plan = []
+    for it in items:
+        c = all_chars.get(it.get("character_id") or "")
+        pos = it.get("position", "auto")
+        if not c or pos in ("skip", None, ""):
+            continue
+        source = c.get("face_image") if exists(c.get("face_image")) else c.get("ref_image")
+        if not exists(source):
+            raise ValueError(f"角色「{c['name']}」还没有脸部特写或定妆照")
+        plan.append({"character": c, "source": absolute(source), "position": pos})
+    if not plan:
+        raise ValueError("没有需要修正的角色")
+    return plan
+
+
+@handler("face_fix")
+async def task_face_fix(ctx: TaskContext) -> dict:
+    shot = need("shots", ctx.params.get("shot_id"), "镜头")
+    field = "keyframe" if ctx.params.get("target") == "keyframe" else "video"
+    if not exists(shot.get(field)):
+        raise ValueError("这个镜头还没有" + ("分镜图" if field == "keyframe" else "视频"))
+    plan = face_fix_plan(shot, ctx.params.get("items"))
+    current = absolute(shot[field])
+    out_dir = project_dir(shot["project_id"], "facefusion")
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    enhance = bool(ctx.params.get("enhance", True))
+    model = ctx.params.get("swapper_model") or "hyperswap_1a_256"
+    async with gpu.use("facefusion", ctx.task.get("title") or "人脸修正"):
+        for i, step in enumerate(plan):
+            last = i == len(plan) - 1
+            processors = "face_swapper face_enhancer" if (enhance and last) else "face_swapper"
+            params: dict[str, Any] = {"face_swapper_model": model, "face_swapper_pixel_boost": "512x512",
+                                      "face_mask_types": ["box", "occlusion"]}
+            if step["position"] == "auto":
+                params.update(face_selector_mode="one", face_selector_order="large-small")
+            else:
+                params.update(face_selector_mode="reference", face_selector_order="left-right",
+                              reference_face_position=int(step["position"]))
+            if processors.endswith("face_enhancer"):
+                params.update(face_enhancer_model="gfpgan_1.4", face_enhancer_blend=60)
+            output = out_dir / f"facefix_{shot['id']}_{stamp}_{i}{current.suffix}"
+            await ctx.progress(5 + 90 * i // len(plan), f"修正「{step['character']['name']}」的脸 ({i + 1}/{len(plan)})")
+            await facefusion.run(processors, current, output, step["source"], params, log=ctx.log)
+            current = output
+    asset = add_asset(shot["project_id"], field, current, "shot", shot["id"],
+                      {"face_fix": [s["character"]["name"] for s in plan], "enhance": enhance})
+    db.update("shots", shot["id"], {field: asset["path"]})
+    return {"asset": asset["id"], "path": asset["path"]}
 
 
 # ---------------- 工具箱：FaceFusion ----------------

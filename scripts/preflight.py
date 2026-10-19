@@ -32,7 +32,8 @@ EXPECTED_GB = {
     "minimax_h3_video_vae_int8_convrot.safetensors": 2.81, "minimax_h3_audio_vae_fp32.safetensors": 0.61,
     "minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors": 1.96,
     "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors": 1.96,
-    "Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf": 22.28,
+    "Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf": 22.28, "Qwen_Qwen3.6-35B-A3B-IQ4_XS.gguf": 19.69,
+    "minimax_h3_fl2va_pruned_w6a8.safetensors": 15.98, "minimax_h3_ref2va_pruned_w6a8.safetensors": 15.98,
 }
 REQUIRED_NODES = ["UNETLoader", "CLIPLoader", "VAELoader", "TextEncodeQwenImage21", "QwenImage21Cache",
                   "ManualSigmas", "CFGGuider", "SamplerCustomAdvanced", "MiniMaxH3ImageToVideo",
@@ -61,7 +62,9 @@ def check_gpu() -> None:
         ok(out)
         mem = int(out.split(",")[1].strip().split()[0])
         if mem < 30000:
-            warn("显存小于 32GB，H3 视频可能显存不足")
+            warn("24GB 显卡：请确认使用 --24g 方案（H3 w6a8 + IQ4_XS），视频建议用草稿 480p、单镜头 ≤8 秒")
+        ram = int(open("/proc/meminfo").read().split()[1]) // 1024 // 1024
+        (ok if ram >= 60 else warn)(f"内存 {ram}GB" + ("" if ram >= 60 else "，建议 ≥64GB（H3 文本编码器 27GB 需要放在内存里分段加载）"))
     except Exception as exc:  # noqa: BLE001
         bad(f"nvidia-smi 不可用：{exc}")
 

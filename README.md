@@ -1,0 +1,57 @@
+# AI Studio v3 · 漫剧工作台
+
+从一句话创意 / 小说 / 剧本，到带对白配音、字幕和配乐的成片。单卡 32GB 本地全流程运行。
+
+```
+① 剧本 ──▶ ② 角色与场景（设定 + 参考图）──▶ ③ 分镜表 ──▶ ④ 分镜图（多图参考）──▶ ⑤ 镜头视频 ──▶ ⑥ 成片
+ Qwen3.6         Qwen3.6 + Qwen-Image 2.1         Qwen3.6      Qwen-Image 2.1          MiniMax H3     ffmpeg
+```
+
+| 环节 | 模型 | 说明 |
+|---|---|---|
+| 文字（剧本/提取/分镜） | Qwen3.6-35B-A3B Q4_K_M（llama.cpp） | 全流程只用这一个文字模型；也可切换到任意 OpenAI 兼容 API |
+| 图片 | Qwen-Image 2.1 Turbo | 文生图 + 最多 16 张参考图。分镜图会把镜头里**每个角色的参考图 + 场景图**一起输入，多人镜头不再串脸 |
+| 视频 | MiniMax H3 | 图生视频（分镜图作首帧）/ 参考生视频，**同时生成对白、音效** |
+| 人脸工具 | FaceFusion 3.9 | 换脸、修脸、口型、年龄、背景移除等 10 种处理 |
+| 成片 | ffmpeg | 拼接、字幕（自动由台词生成）、背景音乐 |
+
+## 和旧版相比
+
+- **重写**：旧版 `main.py` 2.7 万行（34 个函数被重复定义 58 次）、分镜 1.1 万行审计逻辑，全部替换为后端约 2,500 行 + 前端约 1,000 行的清晰实现。
+- **修复多人镜头出图问题**：旧版出图时用叙事句覆盖了提示词、角色设定从未传给出图模型、只能纯文生图。现在每个镜头的提示词 = 景别机位 + 画面描述 + `<imageN>` 角色参考 + 场景参考 + 人数约束 + 画风，并且**在界面里可以预览实际发送给模型的完整内容**。
+- **去掉僵化审计**：分镜只做必要的格式校验（景别/机位取值、角色名对齐、台词时长估算），不再反复改写。
+- **任务中心**：所有生成都排队执行，可取消、重试，服务重启后可恢复。
+- **候选挑选**：角色图、场景图、分镜图、视频都保留历史候选，点一下切换；支持上传自己的图片/视频替换；分镜图支持「指令改图」。
+
+## 目录
+
+```
+app/            后端（FastAPI）
+  pipeline.py   所有生成任务       prompts.py   提示词（确定性构建）
+  workflows.py  ComfyUI 工作流      api.py       HTTP 接口
+  gpu.py        单卡显存调度        tasks.py     持久化任务队列
+web/            前端（原生 JS 单页）
+deploy/         AutoDL 一键部署脚本
+scripts/preflight.py  部署自检
+docs/DEPLOY.md  部署手册（必读）
+tests/          端到端测试（模拟模型）
+```
+
+## 快速开始
+
+见 [docs/DEPLOY.md](docs/DEPLOY.md)。简版：
+
+```bash
+cd /root/autodl-tmp/ai-studio
+bash deploy/install_all.sh
+/root/autodl-tmp/envs/studio/bin/python scripts/preflight.py --smoke
+# AutoDL 控制台 → 自定义服务 → 打开 6006
+```
+
+## 本地开发
+
+```bash
+pip install -r requirements.txt pytest
+pytest -q                                   # 模拟文字模型和 ComfyUI，跑完整流程（需要 ffmpeg）
+uvicorn app.main:app --port 6006 --reload
+```

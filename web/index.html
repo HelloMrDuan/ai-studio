@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Studio · 漫剧工作台</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand" data-go="#/">🎬 AI Studio <span>漫剧工作台</span></div>
+    <nav>
+      <a href="#/" data-nav="home">项目</a>
+      <a href="#/toolbox" data-nav="toolbox">工具箱</a>
+      <a href="#/system" data-nav="system">系统状态</a>
+    </nav>
+    <div class="top-right">
+      <span id="gpu-pill" class="pill">GPU 空闲</span>
+      <button id="task-btn" class="btn ghost">任务中心 <b id="task-badge" class="badge hidden">0</b></button>
+    </div>
+  </header>
+  <main id="view"></main>
+  <aside id="drawer" class="drawer hidden">
+    <div class="drawer-head"><h3>任务中心</h3>
+      <div><button class="btn small ghost" id="task-clear">清除已结束</button>
+      <button class="btn small ghost" id="drawer-close">✕</button></div></div>
+    <div id="task-list"></div>
+  </aside>
+  <div id="modal" class="modal hidden"><div class="modal-box" id="modal-box"></div></div>
+  <div id="lightbox" class="lightbox hidden"></div>
+  <div id="toast" class="toast hidden"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

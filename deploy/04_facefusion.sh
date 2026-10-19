@@ -23,6 +23,10 @@ NV_LIBS=$("$FF_PY" -c "import glob,os,site;print(':'.join(sorted(glob.glob(os.pa
 export LD_LIBRARY_PATH=$NV_LIBS:${LD_LIBRARY_PATH:-}
 log "预下载 FaceFusion 模型（避免首次使用时卡住）"
 turbo_on
+# 先用 aria2c 多线程拉取全部模型（FaceFusion 自带的 curl 下载经镜像时容易误判大小而失败），再用 force-download 校验补漏
+"$FF_PY" "$APP_DIR/scripts/ff_prefetch.py" full "$BASE/ff_models.txt" 2>/dev/null | tail -1 || true
+[ -s "$BASE/ff_models.txt" ] && aria2c -c -j 8 -x 4 -s 4 --file-allocation=none --console-log-level=warn \
+  --summary-interval=60 --auto-file-renaming=false --allow-overwrite=true -i "$BASE/ff_models.txt" || true
 "$FF_PY" facefusion.py force-download || echo "部分模型下载失败，首次使用时会自动补下"
 turbo_off
 "$FF_PY" -c "import onnxruntime as o; print('onnxruntime', o.__version__, o.get_available_providers())"

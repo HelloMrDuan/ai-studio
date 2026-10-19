@@ -24,7 +24,7 @@ for m in mods + procs:
         for group in ('hashes', 'sources'):
             for item in (model.get(group) or {}).values():
                 url, path = item.get('url'), item.get('path')
-                if not url or path in seen or os.path.isfile(path):
+                if not url or path in seen or (os.path.isfile(path) and not os.path.exists(path + '.aria2')):
                     continue
                 # deep_swapper 的 DeepFaceLive 模型合计 ~37GB，默认不预下载（用到时自动下载）；FF_PREFETCH_ALL=1 可全下
                 if 'deepfacelive' in url and os.environ.get('FF_PREFETCH_ALL') != '1':

@@ -4,7 +4,11 @@ set -euo pipefail
 source "$(dirname "$0")/env.sh"
 
 log "检查 GPU"
-nvidia-smi --query-gpu=name,memory.total,driver_version,compute_cap --format=csv || die "nvidia-smi 不可用"
+if [ "$HAS_GPU" = 1 ]; then
+  nvidia-smi --query-gpu=name,memory.total,driver_version,compute_cap --format=csv
+else
+  echo "⚠️  未检测到 GPU（无卡模式）：本次只安装环境和下载模型，GPU 相关步骤开卡后再做。"
+fi
 log "检查数据盘空间"
 df -h "$BASE"
 FREE_GB=$(df -BG --output=avail "$BASE" | tail -1 | tr -dc 0-9)

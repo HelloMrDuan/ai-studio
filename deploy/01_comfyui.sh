@@ -24,7 +24,9 @@ except ImportError:
     sys.exit(1)
 major, minor = (int(x) for x in torch.__version__.split("+")[0].split(".")[:2])
 cuda = tuple(int(x) for x in (torch.version.cuda or "0.0").split(".")[:2])
-sys.exit(0 if (major, minor) >= (2, 8) and cuda >= (12, 8) and torch.cuda.is_available() else 1)
+import os
+need_gpu = os.environ.get("HAS_GPU") == "1"
+sys.exit(0 if (major, minor) >= (2, 8) and cuda >= (12, 8) and (torch.cuda.is_available() or not need_gpu) else 1)
 PY
 }
 if torch_ok; then log "复用镜像自带的 PyTorch"; else

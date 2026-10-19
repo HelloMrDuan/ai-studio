@@ -22,6 +22,9 @@ mkdir -p "$ENVS" "$LOG_DIR" "$RUN_DIR" "$LLM_DIR" "$PIP_CACHE_DIR"
 BASE_PY=${BASE_PY:-$(command -v python3 || echo /root/miniconda3/bin/python)}
 export BASE_PY
 
+# 无卡模式（AutoDL 关掉 GPU 开机）检测：可以装环境、下模型，但不能编译 llama.cpp / 启动服务
+if nvidia-smi -L >/dev/null 2>&1; then export HAS_GPU=1; else export HAS_GPU=0; fi
+
 # AutoDL 学术加速（GitHub / HuggingFace 更快）。只在需要访问外网的步骤里调用 turbo_on。
 turbo_on() { [ -f /etc/network_turbo ] && source /etc/network_turbo >/dev/null 2>&1 || true; }
 turbo_off() { unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY; }

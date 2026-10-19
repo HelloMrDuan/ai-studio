@@ -28,6 +28,9 @@ export LOG_DIR=$BASE/logs
 export RUN_DIR=$BASE/run
 # 缓存也放数据盘，避免撑爆系统盘
 export PIP_CACHE_DIR=$BASE/.cache/pip
+# 有些平台默认的清华源同步滞后（新发布的 ComfyUI 依赖会找不到），统一用阿里云 + 腾讯云兜底；可自行 export 覆盖
+export PIP_INDEX_URL=${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
+export PIP_EXTRA_INDEX_URL=${PIP_EXTRA_INDEX_URL:-https://mirrors.cloud.tencent.com/pypi/simple}
 export HF_HOME=$BASE/.cache/huggingface
 export HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
 mkdir -p "$ENVS" "$LOG_DIR" "$RUN_DIR" "$LLM_DIR" "$PIP_CACHE_DIR"

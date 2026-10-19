@@ -4,6 +4,7 @@
 # 也可以手动指定：export BASE=/你的数据盘目录
 pick_base() {
   if [ -d /root/autodl-tmp ]; then echo /root/autodl-tmp; return; fi
+  if [ -d /root/sj-tmp ] && [ -w /root/sj-tmp ]; then echo /root/sj-tmp; return; fi   # 算家云数据盘
   local best="/" bestfree=0 free mnt
   while read -r free mnt; do
     case "$mnt" in /boot*|/dev*|/proc*|/sys*|/run*|/snap*|/etc*|/usr*|/var/lib/docker*) continue;; esac

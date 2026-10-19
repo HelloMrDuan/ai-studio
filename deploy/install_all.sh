@@ -13,7 +13,7 @@ bash "$D/04_facefusion.sh"
 bash "$D/05_app.sh"
 if [ "$HAS_GPU" != 1 ]; then
   log "无卡模式安装完成 ✅  环境和模型都已就绪。"
-  echo "下一步：在 AutoDL 用 GPU 模式开机，然后执行："
+  echo "下一步：用 GPU 模式开机，然后执行："
   echo "  bash deploy/install_all.sh   # 会自动跳过已完成的部分，只补编译 llama.cpp 并启动服务"
   exit 0
 fi

@@ -9,7 +9,7 @@ if [ "$HAS_GPU" = 1 ]; then
 else
   echo "⚠️  未检测到 GPU（无卡模式）：本次只安装环境和下载模型，GPU 相关步骤开卡后再做。"
 fi
-log "检查数据盘空间"
+log "安装目录：$BASE（如果不是数据盘，请 Ctrl+C 后 export BASE=/数据盘路径 再重跑）"
 df -h "$BASE"
 FREE_GB=$(df -BG --output=avail "$BASE" | tail -1 | tr -dc 0-9)
 if [ "$FREE_GB" -lt 140 ]; then

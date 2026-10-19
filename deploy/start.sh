@@ -21,5 +21,5 @@ if running studio; then log "AI Studio 已在运行"; else
   echo $! > "$RUN_DIR/studio.pid"
 fi
 sleep 3
-curl -sf http://127.0.0.1:6006/api/meta >/dev/null && log "AI Studio 就绪：在 AutoDL 控制台点「自定义服务」打开" \
+curl -sf http://127.0.0.1:6006/api/meta >/dev/null && log "AI Studio 就绪（端口 6006）：AutoDL 点「自定义服务」；算家云在实例上「开放端口」6006" \
   || echo "⚠️ AI Studio 未就绪，请查看 $LOG_DIR/studio.out"

@@ -1,7 +1,20 @@
 #!/usr/bin/env bash
-# 所有部署脚本共用的路径。全部放在 AutoDL 数据盘 /root/autodl-tmp（系统盘只有 30GB，不要往里装东西）。
-export BASE=${BASE:-/root/autodl-tmp}
-export APP_DIR=${APP_DIR:-$BASE/ai-studio}
+# 所有部署脚本共用的路径。程序、环境、模型、数据全部放在数据盘（系统盘通常很小，不要往里装东西）。
+# 安装根目录：AutoDL 用 /root/autodl-tmp；其他平台（算家云等）自动选剩余空间最大的磁盘，
+# 也可以手动指定：export BASE=/你的数据盘目录
+pick_base() {
+  if [ -d /root/autodl-tmp ]; then echo /root/autodl-tmp; return; fi
+  local best="/" bestfree=0 free mnt
+  while read -r free mnt; do
+    case "$mnt" in /boot*|/dev*|/proc*|/sys*|/run*|/snap*|/etc*|/usr*|/var/lib/docker*) continue;; esac
+    [ -d "$mnt" ] && [ -w "$mnt" ] || continue
+    if [ "$free" -gt "$bestfree" ]; then best=$mnt; bestfree=$free; fi
+  done < <(df -P -B1 -x tmpfs -x devtmpfs -x squashfs 2>/dev/null | awk 'NR>1 {print $4, $6}')
+  if [ "$best" = "/" ]; then echo /root/studio-home; else echo "${best%/}/studio-home"; fi
+}
+export BASE=${BASE:-$(cat "$HOME/.studio_base" 2>/dev/null || pick_base)}
+mkdir -p "$BASE" && echo "$BASE" > "$HOME/.studio_base"
+export APP_DIR=${APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
 export ENVS=$BASE/envs                       # 所有 Python 虚拟环境都建在数据盘
 export COMFY_DIR=$BASE/ComfyUI
 export COMFY_PY=$ENVS/comfyui/bin/python
@@ -18,14 +31,14 @@ export HF_HOME=$BASE/.cache/huggingface
 export HF_ENDPOINT=${HF_ENDPOINT:-https://hf-mirror.com}
 mkdir -p "$ENVS" "$LOG_DIR" "$RUN_DIR" "$LLM_DIR" "$PIP_CACHE_DIR"
 
-# 基础 Python：用 AutoDL 镜像自带的（推荐镜像 PyTorch 2.8 / Python 3.12 / CUDA 12.8）
+# 基础 Python：用镜像自带的（推荐镜像 PyTorch 2.8 / Python 3.12 / CUDA 12.8）
 BASE_PY=${BASE_PY:-$(command -v python3 || echo /root/miniconda3/bin/python)}
 export BASE_PY
 
-# 无卡模式（AutoDL 关掉 GPU 开机）检测：可以装环境、下模型，但不能编译 llama.cpp / 启动服务
+# 无卡模式（关掉 GPU 开机）检测：可以装环境、下模型，但不能编译 llama.cpp / 启动服务
 if nvidia-smi -L >/dev/null 2>&1; then export HAS_GPU=1; else export HAS_GPU=0; fi
 
-# AutoDL 学术加速（GitHub / HuggingFace 更快）。只在需要访问外网的步骤里调用 turbo_on。
+# 平台学术加速（AutoDL 的 /etc/network_turbo；其他平台可自己 export http_proxy）。只在访问外网的步骤里调用。
 turbo_on() { [ -f /etc/network_turbo ] && source /etc/network_turbo >/dev/null 2>&1 || true; }
 turbo_off() { unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY; }
 

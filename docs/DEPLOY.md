@@ -51,6 +51,18 @@ bash deploy/install_all.sh            # 需要参考生视频再加 --r2v；文�
 | `deploy/05_app.sh` | 安装 AI Studio，生成 `.env` | `envs/studio` |
 | `deploy/start.sh` | 启动 ComfyUI + AI Studio | 日志在 `/root/autodl-tmp/logs` |
 
+### 省钱做法：先用「无卡模式」安装
+
+下载约 100GB 模型要 1 小时以上，不需要显卡。可以在 AutoDL 选「**无卡模式开机**」（只有很少的 CPU，价格很低）先跑：
+
+```bash
+bash deploy/install_all.sh      # 自动识别无卡模式：装系统依赖、ComfyUI、FaceFusion、AI Studio，下载全部模型
+```
+
+无卡模式会自动跳过：编译 llama.cpp（需要识别显卡架构）、启动服务、自检。之后关机，改用 GPU 模式开机，再执行一次同样的命令，它会跳过已完成的部分，只补编译 llama.cpp（约 5~10 分钟）并启动服务。
+
+> 无卡模式 CPU 和内存都很少，pip 安装会比较慢，属于正常现象。
+
 ### 模型清单（自动下载，手动下载也可以照这个放）
 
 | 文件 | 仓库（魔搭/HF 同名） | 放到 |

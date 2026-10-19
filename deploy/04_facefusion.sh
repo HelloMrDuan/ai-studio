@@ -6,6 +6,12 @@ FF_REF=${FF_REF:-3.9.1}
 turbo_on
 [ -d "$FF_DIR/.git" ] || gh_clone https://github.com/facefusion/facefusion.git "$FF_DIR" "$FF_REF" || die "克隆 FaceFusion 失败"
 turbo_off
+# 无学术加速时，模型下载源换成国内可用的镜像（github → gh-proxy，huggingface → hf-mirror）
+if [ ! -f /etc/network_turbo ]; then
+  sed -i -e "s#'https://huggingface.co'#'https://hf-mirror.com'#" \
+         -e "s#'https://github.com'#'${GH_PROXY:-}https://github.com'#" "$FF_DIR/facefusion/choices.py"
+  grep -n "hf-mirror\|gh-proxy" "$FF_DIR/facefusion/choices.py" | head -3 || true
+fi
 make_env facefusion
 cd "$FF_DIR"
 log "安装 FaceFusion 依赖（onnxruntime-gpu for CUDA 12）"

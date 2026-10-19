@@ -57,6 +57,23 @@ gh_clone() {  # gh_clone <github_url> <dir> [tag/branch]
   rm -rf "$dir"; git clone "${args[@]}" "$url" "$dir"
 }
 
+# 容器可用内存（GB）与 CPU 核数（读 cgroup 限额；nproc/free 显示的是宿主机）
+mem_limit_gb() {
+  local b; b=$(cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo max)
+  case "$b" in max|"") free -g | awk '/Mem:/{print $2}';; *) echo $(( b / 1073741824 ));; esac
+}
+cpu_limit() {
+  local q p n; n=$(nproc)
+  if read -r q p < /sys/fs/cgroup/cpu.max 2>/dev/null && [ "$q" != max ]; then :;
+  else q=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null || echo -1); p=$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us 2>/dev/null || echo 100000); fi
+  if [ "${q:--1}" -gt 0 ] 2>/dev/null; then n=$(( (q + p - 1) / p )); fi
+  echo $(( n < 1 ? 1 : n ))
+}
+build_jobs() {  # 每个编译进程按 2.5GB 内存估算，避免 OOM
+  local c m; c=$(cpu_limit); m=$(( $(mem_limit_gb) * 2 / 5 )); [ $m -lt 1 ] && m=1
+  echo $(( c < m ? c : m ))
+}
+
 log() { echo -e "\033[1;36m[$(date +%H:%M:%S)] $*\033[0m"; }
 die() { echo -e "\033[1;31m[错误] $*\033[0m" >&2; exit 1; }
 

@@ -37,7 +37,7 @@ BASE_PY=${BASE_PY:-$(command -v python3 || echo /root/miniconda3/bin/python)}
 export BASE_PY
 
 # 无卡模式（关掉 GPU 开机）检测：可以装环境、下模型，但不能编译 llama.cpp / 启动服务
-if nvidia-smi -L >/dev/null 2>&1; then export HAS_GPU=1; else export HAS_GPU=0; fi
+if nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | grep -qiv "no devices"; then export HAS_GPU=1; else export HAS_GPU=0; fi   # 无卡模式下 nvidia-smi -L 也可能返回 0
 
 # 平台学术加速（AutoDL 的 /etc/network_turbo；其他平台可自己 export http_proxy）。只在访问外网的步骤里调用。
 turbo_on() { [ -f /etc/network_turbo ] && source /etc/network_turbo >/dev/null 2>&1 || true; }

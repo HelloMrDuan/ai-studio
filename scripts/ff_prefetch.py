@@ -26,6 +26,9 @@ for m in mods + procs:
                 url, path = item.get('url'), item.get('path')
                 if not url or path in seen or os.path.isfile(path):
                     continue
+                # deep_swapper 的 DeepFaceLive 模型合计 ~37GB，默认不预下载（用到时自动下载）；FF_PREFETCH_ALL=1 可全下
+                if 'deepfacelive' in url and os.environ.get('FF_PREFETCH_ALL') != '1':
+                    continue
                 seen.add(path)
                 lines.append(f"{url}\n  dir={os.path.dirname(os.path.abspath(path))}\n  out={os.path.basename(path)}\n")
 open(out, 'w').write(''.join(lines))

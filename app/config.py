@@ -44,6 +44,24 @@ class Settings(BaseSettings):
     facefusion_python: Path = Path("/root/autodl-tmp/envs/facefusion/bin/python")
     facefusion_timeout: int = 3600
 
+    # 访问密码：留空则不校验（部署脚本会自动生成一个写进 .env）
+    access_password: str = ""
+
+    # 自动质检：每次出分镜图/视频后检查「多余字幕文字」和「人脸是否像角色」，不合格自动换种子重抽
+    qa_enabled: bool = True
+    qa_python: Path | None = None          # 默认复用 FaceFusion 的环境（有 onnxruntime + opencv）
+    qa_video_retry: int = 1                # 视频不合格时额外重抽次数（每次约 2~3 分钟）
+    qa_keyframe_retry: int = 1
+    qa_face_threshold: float = 0.3         # ArcFace 余弦相似度，低于它判为「不像」
+
+    # 配音与对口型（deploy/06_voice.sh 安装）：IndexTTS2 固定音色配音 + LatentSync 1.6 对口型 + Demucs 去人声
+    tts_dir: Path | None = None
+    tts_python: Path | None = None
+    lipsync_dir: Path | None = None
+    lipsync_python: Path | None = None
+    lipsync_steps: int = 20
+    voice_timeout: int = 1800
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "studio.db"
@@ -60,5 +78,12 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     s = Settings()
+    envs = s.base_dir / "envs"
+    defaults = {"qa_python": s.facefusion_python, "tts_dir": s.base_dir / "index-tts",
+                "tts_python": envs / "tts" / "bin" / "python", "lipsync_dir": s.base_dir / "LatentSync",
+                "lipsync_python": envs / "lipsync" / "bin" / "python"}
+    for key, value in defaults.items():
+        if getattr(s, key) is None:
+            setattr(s, key, value)
     s.media_dir.mkdir(parents=True, exist_ok=True)
     return s

@@ -88,3 +88,63 @@ async def assemble(clips: list[Path], output: Path, width: int, height: int, wor
     output.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(current), output)
     return output
+
+
+# ---------------- 配音用的音频工具 ----------------
+async def extract_audio(video: Path, out: Path, rate: int = 44100, mono: bool = False) -> Path | None:
+    if not (await probe(video))["has_audio"]:
+        return None
+    await _run("ffmpeg", "-y", "-v", "error", "-i", str(video), "-vn", "-ac", "1" if mono else "2", "-ar", str(rate),
+               str(out))
+    return out
+
+
+async def trim_silence(audio: Path, out: Path) -> Path:
+    """去掉首尾静音（音色样本用），统一成 24kHz 单声道。"""
+    f = ("silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.1,areverse,"
+         "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.1,areverse")
+    await _run("ffmpeg", "-y", "-v", "error", "-i", str(audio), "-af", f, "-ac", "1", "-ar", "24000", str(out))
+    return out
+
+
+async def atempo(audio: Path, factor: float, out: Path) -> Path:
+    await _run("ffmpeg", "-y", "-v", "error", "-i", str(audio), "-af", f"atempo={factor:.3f}", str(out))
+    return out
+
+
+async def speech_track(lines: list[tuple[Path, float]], total: float, out: Path) -> Path:
+    """把多句台词按开始时间排进一条音轨，补静音到 total 秒（LatentSync 输出时长取视频和音频较短者）。"""
+    args = ["ffmpeg", "-y", "-v", "error"]
+    for wav, _ in lines:
+        args += ["-i", str(wav)]
+    parts = []
+    for i, (_, start) in enumerate(lines):
+        ms = int(start * 1000)
+        parts.append(f"[{i}:a]aresample=44100,aformat=channel_layouts=stereo,adelay={ms}|{ms}[a{i}]")
+    mix = "".join(f"[a{i}]" for i in range(len(lines)))
+    parts.append(f"{mix}amix=inputs={len(lines)}:normalize=0:dropout_transition=0,apad,atrim=0:{total:.3f}[out]")
+    args += ["-filter_complex", ";".join(parts), "-map", "[out]", "-ar", "44100", "-ac", "2", str(out)]
+    await _run(*args)
+    return out
+
+
+async def extend_video(video: Path, extra: float, out: Path) -> Path:
+    """台词比画面长时，定格最后一帧补足时长。"""
+    await _run("ffmpeg", "-y", "-v", "error", "-i", str(video), "-vf", f"tpad=stop_mode=clone:stop_duration={extra:.3f}",
+               "-af", f"apad=pad_dur={extra:.3f}", "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+               "-c:a", "aac", str(out))
+    return out
+
+
+async def mux(video: Path, tracks: list[tuple[Path, float]], out: Path, duration: float) -> Path:
+    """用 tracks=[(音频, 音量)] 混音后替换视频原声，时长对齐 duration。"""
+    args = ["ffmpeg", "-y", "-v", "error", "-i", str(video)]
+    for a, _ in tracks:
+        args += ["-i", str(a)]
+    parts = [f"[{i + 1}:a]aresample=44100,aformat=channel_layouts=stereo,volume={vol}[t{i}]" for i, (_, vol) in enumerate(tracks)]
+    ins = "".join(f"[t{i}]" for i in range(len(tracks)))
+    parts.append(f"{ins}amix=inputs={len(tracks)}:normalize=0:dropout_transition=0,apad,atrim=0:{duration:.3f}[a]")
+    args += ["-filter_complex", ";".join(parts), "-map", "0:v", "-map", "[a]", "-t", f"{duration:.3f}",
+             "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", str(out)]
+    await _run(*args)
+    return out

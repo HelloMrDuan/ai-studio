@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>登录 · AI Studio</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="login-page">
+  <form class="login-box" id="f">
+    <div class="brand">🎬 AI Studio <span>漫剧工作台</span></div>
+    <label class="f">访问密码</label>
+    <input type="password" id="pw" autocomplete="current-password" autofocus placeholder="部署时生成，见服务器 .env 里的 ACCESS_PASSWORD">
+    <button class="btn" type="submit" style="width:100%;margin-top:14px">进入</button>
+    <div id="err" class="small bad" style="margin-top:10px"></div>
+  </form>
+  <script>
+    document.getElementById('f').onsubmit = async (e) => {
+      e.preventDefault();
+      const r = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: document.getElementById('pw').value }) });
+      if (r.ok) location.href = '/'; else document.getElementById('err').textContent = (await r.json()).detail || '登录失败';
+    };
+  </script>
+</body>
+</html>

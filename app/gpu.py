@@ -1,4 +1,4 @@
-"""单卡显存调度：文字模型(llama.cpp) / ComfyUI / FaceFusion 三者轮流使用 GPU。
+"""单卡显存调度：文字模型(llama.cpp) / ComfyUI / FaceFusion / 配音对口型 轮流使用 GPU。
 
 规则很简单：
 - 同一时间只跑一个 GPU 任务（全局锁）。
@@ -85,9 +85,9 @@ class GPUManager:
             self.detail = detail
             if workspace == "llm":
                 await self._prepare_llm()
-            elif workspace in {"comfyui", "facefusion"}:
+            elif workspace in {"comfyui", "facefusion", "voice"}:
                 await self._stop_llm()
-                if workspace == "facefusion":
+                if workspace != "comfyui":      # FaceFusion / 配音 / 对口型 需要 ComfyUI 先让出显存
                     await self.free_comfy()
             self.owner = workspace
             try:

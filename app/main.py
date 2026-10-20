@@ -1,12 +1,15 @@
 """AI Studio v3 入口：uvicorn app.main:app --host 0.0.0.0 --port 6006"""
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import hmac
 import logging
 from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import db, pipeline  # noqa: F401  (pipeline 注册任务处理器)
@@ -44,6 +47,52 @@ app = FastAPI(title="AI Studio v3", lifespan=lifespan)
 app.include_router(router)
 app.mount("/media", StaticFiles(directory=str(get_settings().media_dir)), name="media")
 app.mount("/static", StaticFiles(directory=str(WEB)), name="static")
+
+
+# ---------------- 访问密码 ----------------
+COOKIE = "studio_auth"
+OPEN_PATHS = {"/login", "/api/login", "/api/logout"}
+
+
+def auth_token(password: str) -> str:
+    return hmac.new(password.encode(), b"ai-studio-v3", hashlib.sha256).hexdigest()
+
+
+@app.middleware("http")
+async def require_login(request: Request, call_next):
+    password = get_settings().access_password
+    path = request.url.path
+    if not password or path in OPEN_PATHS or path.startswith("/static/"):
+        return await call_next(request)
+    if hmac.compare_digest(request.cookies.get(COOKIE, ""), auth_token(password)):
+        return await call_next(request)
+    if path.startswith(("/api/", "/media/")):
+        return JSONResponse({"detail": "需要登录"}, status_code=401)
+    return RedirectResponse("/login", status_code=303)
+
+
+@app.get("/login")
+async def login_page():
+    return FileResponse(WEB / "login.html", headers={"Cache-Control": "no-cache"})
+
+
+@app.post("/api/login")
+async def login(body: dict):
+    password = get_settings().access_password
+    if password and not hmac.compare_digest(str(body.get("password") or ""), password):
+        await asyncio.sleep(1.5)   # 拖慢暴力尝试
+        return JSONResponse({"detail": "密码错误"}, status_code=401)
+    resp = JSONResponse({"ok": True})
+    if password:
+        resp.set_cookie(COOKIE, auth_token(password), max_age=30 * 86400, httponly=True, samesite="lax")
+    return resp
+
+
+@app.post("/api/logout")
+async def logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(COOKIE)
+    return resp
 
 
 @app.exception_handler(ValueError)

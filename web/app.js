@@ -17,6 +17,7 @@ async function api(method, url, body) {
   const text = await r.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+  if (r.status === 401 && !url.startsWith('/api/login')) { location.href = '/login'; throw new Error('需要登录'); }
   if (!r.ok) {
     const msg = (data && data.detail) ? (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) : `请求失败 ${r.status}`;
     toast(msg, true);
@@ -50,7 +51,10 @@ $('#modal').onclick = (e) => { if (e.target.id === 'modal') closeModal(); };
 async function route() {
   const h = location.hash || '#/';
   document.querySelectorAll('nav a').forEach((a) => a.classList.remove('active'));
-  if (!S.meta) S.meta = await api('GET', '/api/meta');
+  if (!S.meta) {
+    S.meta = await api('GET', '/api/meta');
+    if (S.meta.auth && !$('#logout-btn')) $('.top-right').insertAdjacentHTML('beforeend', '<button id="logout-btn" class="btn ghost small" data-act="logout">退出</button>');
+  }
   let m;
   if ((m = h.match(/^#\/p\/([^/]+)(?:\/(\w+))?/))) {
     S.view = 'project'; S.pid = m[1]; S.step = m[2] || 'script';
@@ -165,6 +169,8 @@ function viewScript() {
         <div><label class="f">风格</label>${sel(Object.entries(S.meta.styles), p.style, `data-save="projects:${p.id}:style" data-rerender="1"`)}</div>
         <div><label class="f">目标时长（秒）</label><input type="number" data-save="projects:${p.id}:target_seconds" data-num="1" value="${p.target_seconds}"></div></div>
         <label class="f">风格补充</label><input type="text" data-save="projects:${p.id}:style_note" value="${esc(p.style_note)}" placeholder="会附加到所有画面提示词中">
+        <label class="row small" style="margin-top:12px"><input type="checkbox" data-save="projects:${p.id}:dub_mode" ${p.dub_mode ? 'checked' : ''} data-rerender="1">
+          固定音色配音（推荐）：每个角色一个固定声音（IndexTTS2）+ 自动对口型（LatentSync）${(S.meta.voice || {}).tts ? '' : ' <span class="warn">— 组件未安装</span>'}</label>
       </div>
       <div class="panel"><h3>剧本 <span class="muted small">（可直接编辑，失焦自动保存）</span></h3>
         <label class="f">一句话梗概</label><input type="text" data-save="projects:${p.id}:synopsis" value="${esc(p.synopsis)}">
@@ -172,9 +178,32 @@ function viewScript() {
       </div></div>`;
 }
 
+const qaOf = (a) => (a && a.meta && a.meta.qa) || null;
+const qaText = (q) => (!q ? '' : q.ok ? '质检通过' : (q.issues || []).map((i) => i.detail).join('；'));
+const assetByPath = (owner, path) => assetsOf(owner).find((a) => a.path === path);
+function qaLine(owner, path) {
+  const a = assetByPath(owner, path); const q = qaOf(a); const m = (a && a.meta) || {};
+  const tags = [];
+  if (q) tags.push(q.ok ? '<span class="ok">✓ 质检通过</span>' : `<span class="warn">⚠ ${esc(qaText(q))}</span>`);
+  if (m.attempt > 1) tags.push(`<span class="muted">第 ${m.attempt} 次生成</span>`);
+  if (m.dub) tags.push(`<span class="ok">🎙 已配音${m.lipsync ? '+对口型' : ''}</span>`);
+  if (m.notes && m.notes.length) tags.push(`<span class="muted">${esc(m.notes.join('；'))}</span>`);
+  return tags.length ? `<div class="qa-line">${tags.join(' · ')}</div>` : '';
+}
 function thumbs(owner, kind, current) {
-  return `<div class="thumbs">${assetsOf(owner, kind).map((a) => `<div class="thumb ${a.path === current ? 'sel' : ''}" title="点击设为当前使用" data-act="select-asset" data-id="${a.id}"
-    style="${isVideo(a.path) ? '' : `background-image:url('${media(a.path)}')`}">${isVideo(a.path) ? `<video src="${media(a.path)}#t=0.5" muted preload="metadata"></video>` : ''}<span class="x" data-act="del-asset" data-id="${a.id}">✕</span></div>`).join('')}</div>`;
+  return `<div class="thumbs">${assetsOf(owner, kind).map((a) => { const q = qaOf(a); const tip = '点击设为当前使用' + (q ? '\n' + qaText(q) : '') + (a.meta && a.meta.dub ? '\n已配音' : '');
+    return `<div class="thumb ${a.path === current ? 'sel' : ''}" title="${esc(tip)}" data-act="select-asset" data-id="${a.id}"
+    style="${isVideo(a.path) ? '' : `background-image:url('${media(a.path)}')`}">${isVideo(a.path) ? `<video src="${media(a.path)}#t=0.5" muted preload="metadata"></video>` : ''}${q && !q.ok ? '<span class="qa-bad">⚠</span>' : ''}${a.meta && a.meta.dub ? '<span class="qa-bad" style="background:var(--ok);left:auto;right:18px">🎙</span>' : ''}<span class="x" data-act="del-asset" data-id="${a.id}">✕</span></div>`; }).join('')}</div>`;
+}
+
+function voiceBox(c) {
+  const vs = assetsOf(c.id, 'voice'); const v = S.meta.voice || {};
+  return `<div class="voice-box"><label class="f" style="margin-top:10px">音色样本 <span class="muted small">固定配音</span></label>
+    ${c.voice_ref ? `<audio src="${media(c.voice_ref)}" controls preload="none"></audio>` : '<div class="muted small">暂无（H3 按声音描述生成，或上传 3~15 秒干净人声）</div>'}
+    ${vs.length > 1 ? `<div class="chips" style="margin-top:4px">${vs.map((a, i) => `<span class="chip ${a.path === c.voice_ref ? 'on' : ''}" data-act="select-asset" data-id="${a.id}" title="设为当前音色">样本${i + 1}</span>`).join('')}</div>` : ''}
+    <div class="row" style="margin-top:6px"><button class="btn small" data-act="gen-voice" data-id="${c.id}" ${c.ref_image || c.face_image ? '' : 'disabled'} title="用视频模型按「声音」描述说一段话，提取成音色样本">${c.voice_ref ? '重新生成' : '生成'}</button>
+      <button class="btn small ghost" data-act="upload-voice" data-id="${c.id}">上传</button></div>
+    ${v.tts ? '' : '<div class="muted small" style="margin-top:4px">配音组件未安装：bash deploy/06_voice.sh</div>'}</div>`;
 }
 
 function faceBox(c) {
@@ -196,7 +225,7 @@ function viewCast() {
       <div class="row" style="margin-top:6px"><select id="pc-${c.id}" style="width:56px">${[1, 2, 4].map((n) => `<option ${n === 2 ? 'selected' : ''}>${n}</option>`).join('')}</select>
       <button class="btn small" data-act="gen-portrait" data-id="${c.id}">生成</button></div>
       <button class="btn small ghost" style="margin-top:6px;width:100%" data-act="upload-portrait" data-id="${c.id}">上传参考图</button>
-      ${faceBox(c)}</div>
+      ${faceBox(c)}${voiceBox(c)}</div>
     <div><div class="row"><input type="text" class="grow" data-save="characters:${c.id}:name" value="${esc(c.name)}" style="font-weight:600">
       <span class="chip ${c.locked ? 'on' : ''}" title="锁定后重新提取不会覆盖" data-act="toggle-lock" data-id="${c.id}">${c.locked ? '🔒 已锁定' : '🔓 锁定'}</span></div>
       <div class="grid3"><div><label class="f">定位</label><input type="text" data-save="characters:${c.id}:role" value="${esc(c.role)}"></div>
@@ -212,14 +241,23 @@ function viewCast() {
     <div><input type="text" data-save="locations:${l.id}:name" value="${esc(l.name)}" style="font-weight:600">
       <label class="f">场景描述</label><textarea rows="5" data-save="locations:${l.id}:description">${esc(l.description)}</textarea>
       <div class="row" style="justify-content:flex-end;margin-top:8px"><button class="btn small danger" data-act="del-loc" data-id="${l.id}">删除场景</button></div></div></div>`).join('');
+  const props = (s.props || []).map((pr) => `<div class="card entity">
+    <div><div class="ref prop" data-act="zoom" data-src="${media(pr.ref_image)}" style="${pr.ref_image ? `background-image:url('${media(pr.ref_image)}')` : ''};position:relative">${pr.ref_image ? '' : '暂无道具图'}${busyBox(pr.id)}</div>
+      ${thumbs(pr.id, 'prop', pr.ref_image)}
+      <div class="row" style="margin-top:6px"><button class="btn small" data-act="gen-prop" data-id="${pr.id}">生成</button><button class="btn small ghost" data-act="upload-prop" data-id="${pr.id}">上传</button></div></div>
+    <div><input type="text" data-save="props:${pr.id}:name" value="${esc(pr.name)}" style="font-weight:600">
+      <label class="f">外观描述（材质、颜色、上面的图案/内容）</label><textarea rows="4" data-save="props:${pr.id}:description">${esc(pr.description)}</textarea>
+      <div class="row" style="justify-content:flex-end;margin-top:8px"><button class="btn small danger" data-act="del-prop" data-id="${pr.id}">删除道具</button></div></div></div>`).join('');
   return `<div class="toolbar"><span class="title">② 角色与场景</span>
       <button class="btn" data-act="extract" ${busy ? 'disabled' : ''}>${busy ? '提取中…' : '从剧本提取'}</button>
       <button class="btn ghost" data-act="batch-portraits">批量生成参考图（仅缺失）</button>
-      <button class="btn ghost" data-act="add-char">＋ 角色</button><button class="btn ghost" data-act="add-loc">＋ 场景</button>
+      <button class="btn ghost" data-act="batch-voices" title="为还没有音色样本的角色生成（每个约 2 分钟）">批量生成音色样本</button>
+      <button class="btn ghost" data-act="add-char">＋ 角色</button><button class="btn ghost" data-act="add-loc">＋ 场景</button><button class="btn ghost" data-act="add-prop">＋ 道具</button>
       <button class="btn ghost" data-go="#/p/${s.project.id}/board">下一步：分镜 →</button></div>
-    <p class="muted small">角色一致性靠两张图：<b>定妆照</b>（全身，锁服装体型）+ <b>脸部特写</b>（由定妆照派生，锁五官）。生成分镜图时，镜头里每个角色的这两张图（以及场景图）会一起交给 Qwen-Image 2.1 做多图参考；视频若有脸崩，可在④用「人脸修正」按特写一键换回。</p>
+    <p class="muted small">声音一致性：开启①里的「固定音色配音」后，每个角色先生成一段<b>音色样本</b>，所有台词都用 IndexTTS2 克隆这个声音，再用 LatentSync 对口型。<br>角色一致性靠两张图：<b>定妆照</b>（全身，锁服装体型）+ <b>脸部特写</b>（由定妆照派生，锁五官）。生成分镜图时，镜头里每个角色的这两张图（以及场景图）会一起交给 Qwen-Image 2.1 做多图参考；视频若有脸崩，可在④用「人脸修正」按特写一键换回。</p>
     <h3>角色（${s.characters.length}）</h3>${chars ? `<div class="entity-grid">${chars}</div>` : '<div class="empty">还没有角色，点击「从剧本提取」</div>'}
-    <h3 style="margin-top:22px">场景（${s.locations.length}）</h3>${locs ? `<div class="entity-grid">${locs}</div>` : '<div class="empty">还没有场景</div>'}`;
+    <h3 style="margin-top:22px">场景（${s.locations.length}）</h3>${locs ? `<div class="entity-grid">${locs}</div>` : '<div class="empty">还没有场景</div>'}
+    <h3 style="margin-top:22px">关键道具（${(s.props || []).length}） <span class="muted small">反复出现的物品（照片、信物、武器…）有了参考图，每个镜头里都长一样</span></h3>${props ? `<div class="entity-grid">${props}</div>` : '<div class="empty">没有道具。重新「从剧本提取」会自动识别，也可以手动添加</div>'}`;
 }
 
 function frameClass() { const a = S.snap.project.aspect_ratio; return a === '9:16' ? 'portrait' : (a === '1:1' || a === '3:4') ? 'square' : ''; }
@@ -232,7 +270,7 @@ function viewBoard() {
     <div class="idx">${i + 1}<div style="margin-top:8px"><button class="btn small ghost" data-act="move" data-id="${x.id}" data-d="-1">↑</button></div>
       <div style="margin-top:4px"><button class="btn small ghost" data-act="move" data-id="${x.id}" data-d="1">↓</button></div></div>
     <div><div class="frame ${frameClass()}" data-act="zoom" data-src="${media(x.keyframe)}" style="${x.keyframe ? `background-image:url('${media(x.keyframe)}')` : ''}">${x.keyframe ? '' : '暂无分镜图'}${busyBox(x.id)}</div>
-      ${thumbs(x.id, 'keyframe', x.keyframe)}
+      ${thumbs(x.id, 'keyframe', x.keyframe)}${qaLine(x.id, x.keyframe)}
       <div class="row" style="margin-top:8px"><select id="kc-${x.id}" style="width:60px">${[1, 2, 4].map((n) => `<option value="${n}">${n}张</option>`).join('')}</select>
         <button class="btn small" data-act="gen-keyframe" data-id="${x.id}">出图</button>
         <button class="btn small ghost" data-act="edit-keyframe" data-id="${x.id}" ${x.keyframe ? '' : 'disabled'}>改图</button>
@@ -247,6 +285,7 @@ function viewBoard() {
         <div><label class="f">时长（秒）</label><input type="number" step="0.5" min="1" max="20" data-num="1" data-save="shots:${x.id}:duration" value="${x.duration}"></div></div>
       <div class="row" style="margin-top:8px"><div style="width:200px"><label class="f">场景</label>${sel([['', '（未指定）'], ...s.locations.map((l) => [l.id, l.name])], x.location_id, `data-save="shots:${x.id}:location_id"`)}</div>
         <div class="grow"><label class="f">出镜角色（点击切换，顺序即参考图顺序）</label><div class="chips">${s.characters.map((c) => `<span class="chip ${x.character_ids.includes(c.id) ? 'on' : ''}" data-act="toggle-char" data-id="${x.id}" data-c="${c.id}">${esc(c.name)}${c.ref_image ? '' : ' ⚠'}</span>`).join('') || '<span class="muted small">先在②添加角色</span>'}</div></div></div>
+      ${(s.props || []).length ? `<label class="f">画面中的道具</label><div class="chips">${s.props.map((pr) => `<span class="chip ${(x.prop_ids || []).includes(pr.id) ? 'on' : ''}" data-act="toggle-prop" data-id="${x.id}" data-p="${pr.id}">${esc(pr.name)}${pr.ref_image ? '' : ' ⚠'}</span>`).join('')}</div>` : ''}
       <label class="f">画面描述（首帧：站位、姿态、表情、环境、光线）</label><textarea rows="3" data-save="shots:${x.id}:description">${esc(x.description)}</textarea>
       <label class="f">镜头内动作（给视频模型）</label><textarea rows="2" data-save="shots:${x.id}:action">${esc(x.action)}</textarea>
       <label class="f">台词</label>${(x.dialogue || []).map((d, j) => `<div class="dlg-row">${sel(speakers.some((sp) => sp[0] === d.speaker) ? speakers : [[d.speaker, d.speaker], ...speakers], d.speaker, `data-dlg="${x.id}:${j}:speaker"`)}
@@ -276,7 +315,7 @@ function viewVideo() {
       <span class="small ${x.video ? 'ok' : 'muted'}">${x.video ? '✓ 已生成' : '未生成'}</span></div>
     <div class="frame ${frameClass()}" style="margin-top:8px;${!x.video && x.keyframe ? `background-image:url('${media(x.keyframe)}')` : ''}">
       ${x.video ? `<video src="${media(x.video)}" controls preload="metadata"></video>` : (x.keyframe ? '' : '<span>无分镜图（将纯文生视频）</span>')}${busyBox(x.id)}</div>
-    ${thumbs(x.id, 'video', x.video)}
+    ${thumbs(x.id, 'video', x.video)}${qaLine(x.id, x.video)}
     <div class="muted small" style="margin-top:6px;max-height:42px;overflow:hidden">${esc(x.description)}</div>
     <div class="grid3" style="margin-top:8px">${sel(modes, 'auto', `id="vm-${x.id}"`)}${sel([['draft', '草稿 480p'], ['final', '成品 768p']], 'draft', `id="vq-${x.id}"`)}
       <label class="row small"><input type="checkbox" id="vt-${x.id}" checked> 加速(Turbo)</label></div>
@@ -285,14 +324,17 @@ function viewVideo() {
       <button class="btn small ghost" data-act="plan" data-id="${x.id}">提示词</button>
       <button class="btn small ghost" data-act="face-fix" data-id="${x.id}" data-target="video" ${x.video && x.character_ids.length ? '' : 'disabled'} title="用角色脸部特写对视频换脸，修正走样的人脸">人脸修正</button>
       <button class="btn small ghost" data-act="ff-enhance" data-id="${x.id}" ${x.video ? '' : 'disabled'} title="只做面部清晰度增强，不换脸">修脸</button>
+      <button class="btn small ghost" data-act="dub" data-id="${x.id}" ${x.video && (x.dialogue || []).length ? '' : 'disabled'} title="用角色固定音色重新配音，并对口型">配音</button>
       <button class="btn small ghost" data-act="upload-shot" data-id="${x.id}">上传</button></div></div>`).join('');
   return `<div class="toolbar"><span class="title">④ 视频 <span class="muted small">MiniMax H3 · 自带对白配音与音效</span></span>
       ${sel([['draft', '草稿 480p（快）'], ['final', '成品 768p']], 'draft', 'id="bv-q"')}
       ${sel(modes, 'auto', 'id="bv-m" style="width:200px"')}
       <label class="row small"><input type="checkbox" id="bv-t" checked> Turbo</label>
       <button class="btn" data-act="batch-videos" ${s.shots.length ? '' : 'disabled'}>批量生成（仅缺失）</button>
+      <button class="btn ghost" data-act="batch-dub" ${s.shots.length && (S.meta.voice || {}).tts ? '' : 'disabled'} title="${(S.meta.voice || {}).tts ? '为有台词、还没配音的镜头配音' : '配音组件未安装'}">批量配音</button>
       <button class="btn ghost" data-go="#/p/${s.project.id}/final">下一步：成片 →</button></div>
-    <p class="muted small">建议先用「草稿 + Turbo」快速过一遍节奏，满意后再对关键镜头用「成品」重生成。台词会按②里的角色声音描述由 H3 直接配音。</p>
+    <p class="muted small">建议先用「草稿 + Turbo」快速过一遍节奏，满意后再对关键镜头用「成品」重生成。${S.meta.qa ? '每段视频生成后会<b>自动质检</b>（多余字幕、人脸不像），不合格自动换种子重抽一次，候选里带 ⚠ 的是没通过的版本。' : ''}
+      ${s.project.dub_mode ? '已开启<b>固定音色配音</b>：视频只生成环境音，生成后自动用角色音色配音并对口型。' : '台词由 H3 直接配音（每个镜头的声音可能不一样）；想要全片同一个声音，到①开启「固定音色配音」。'}</p>
     ${cards ? `<div class="vgrid">${cards}</div>` : '<div class="empty">还没有分镜</div>'}`;
 }
 
@@ -320,7 +362,7 @@ function viewFinal() {
 }
 
 /* ---------------- 字段保存 ---------------- */
-const TABLE_URL = { projects: '/api/projects/', characters: '/api/characters/', locations: '/api/locations/', shots: '/api/shots/' };
+const TABLE_URL = { projects: '/api/projects/', characters: '/api/characters/', locations: '/api/locations/', props: '/api/props/', shots: '/api/shots/' };
 function localRow(table, id) {
   if (!S.snap) return null;
   if (table === 'projects') return S.snap.project;
@@ -332,6 +374,7 @@ document.addEventListener('change', async (e) => {
     const [table, id, field] = el.dataset.save.split(':');
     let value = el.value;
     if (el.dataset.num) value = Number(value);
+    if (el.type === 'checkbox') value = el.checked ? 1 : 0;
     const row = localRow(table, id);
     if (row && row[field] === value) return;
     const saved = await api('PATCH', TABLE_URL[table] + id, { [field]: value });
@@ -355,6 +398,33 @@ async function submitted(task, msg = '已加入任务队列') { toast(msg); awai
 
 const ACTIONS = {
   'close-modal': closeModal,
+  async logout() { await api('POST', '/api/logout'); location.href = '/login'; },
+  async 'gen-voice'(el) { submitted(await api('POST', `/api/characters/${el.dataset.id}/voice`), '已提交音色样本生成（约 2 分钟）'); },
+  async 'upload-voice'(el) { const f = await pickFile('audio/*,video/*'); if (f) { await upload(`/api/characters/${el.dataset.id}/voice/upload`, f); toast('音色样本已更新'); loadSnap(true); } },
+  async 'batch-voices'() { const r = await api('POST', `/api/projects/${S.pid}/batch/voices`, { only_missing: true }); submitted(r, `已提交 ${r.submitted} 个音色样本任务`); },
+  async 'add-prop'() { await api('POST', `/api/projects/${S.pid}/props`, { name: '新道具' }); loadSnap(true); },
+  async 'del-prop'(el) { if (confirm('删除这个道具？')) { await api('DELETE', '/api/props/' + el.dataset.id); loadSnap(true); } },
+  async 'gen-prop'(el) { submitted(await api('POST', `/api/props/${el.dataset.id}/image`, { count: 2 })); },
+  async 'upload-prop'(el) { const f = await pickFile('image/*'); if (f) { await upload(`/api/props/${el.dataset.id}/upload`, f); loadSnap(true); } },
+  async 'toggle-prop'(el) {
+    const shot = localRow('shots', el.dataset.id); const pr = el.dataset.p; const cur = shot.prop_ids || [];
+    await api('PATCH', '/api/shots/' + shot.id, { prop_ids: cur.includes(pr) ? cur.filter((x) => x !== pr) : [...cur, pr] }); loadSnap(true);
+  },
+  dub(el) {
+    const shot = localRow('shots', el.dataset.id); const cm = Object.fromEntries(S.snap.characters.map((c) => [c.name, c]));
+    const v = S.meta.voice || {};
+    const rows = (shot.dialogue || []).map((d) => { const c = cm[d.speaker];
+      return `<div class="row small" style="margin:4px 0"><b style="width:70px">${esc(d.speaker)}</b><span class="grow">${esc(d.line)}</span>
+        <span class="${c && c.voice_ref ? 'ok' : 'warn'}">${c ? (c.voice_ref ? '✓ 有音色' : '⚠ 无音色样本') : '旁白（不配音）'}</span></div>`; }).join('');
+    modal(`<h3>配音 · 镜头 #${shot.sort + 1}</h3>
+      <p class="muted small">用角色的音色样本合成台词（IndexTTS2，带情绪）→ 去掉原视频里的人声保留环境音${v.separator ? '' : '（未装去人声组件：原声压低）'} → 对口型（LatentSync${v.lipsync ? '' : '，未安装'}）。台词比画面长时先加速，仍不够则定格延长。结果作为新版本，可在候选里切回。</p>
+      ${rows || '<div class="muted">本镜头没有台词</div>'}
+      <label class="f">对口型</label>${sel([['auto', '自动（单人中近景才做）'], ['on', '强制对口型'], ['off', '只换声音']], 'auto', 'id="dub-lips"')}
+      <div class="row" style="justify-content:flex-end;margin-top:14px"><button class="btn ghost" data-act="close-modal">取消</button>
+        <button class="btn" data-act="dub-go" data-id="${shot.id}" ${v.tts ? '' : 'disabled'}>${v.tts ? '开始配音' : '配音组件未安装'}</button></div>`);
+  },
+  async 'dub-go'(el) { const r = await api('POST', `/api/shots/${el.dataset.id}/dub`, { lipsync: val('dub-lips') }); closeModal(); submitted(r, '已提交配音'); },
+  async 'batch-dub'() { const r = await api('POST', `/api/projects/${S.pid}/batch/dub`, { only_missing: true }); submitted(r, `已提交 ${r.submitted} 个配音任务`); },
   'new-project': newProjectModal,
   async 'create-project'() {
     const body = { title: val('np-title') || '未命名项目', source_type: $('#np-src .chip.on').dataset.v, source_text: val('np-text'),
@@ -542,6 +612,10 @@ async function renderSystem() {
         <tr><td>文字模型（${esc(s.llm.provider)}）</td><td>${s.llm.provider === 'api' ? '<span class="ok">外部 API</span>' : yes(g.llm.running, '已加载', '按需启动')}</td></tr>
         <tr><td>llama-server</td><td>${s.llm.provider === 'api' ? '-' : yes(s.llm.server_bin, '已编译', '未编译')}</td></tr>
         <tr><td>FaceFusion</td><td>${yes(s.facefusion, '已安装', '未安装')}</td></tr>
+        <tr><td>自动质检</td><td>${yes(s.qa, '已启用', '未启用')}</td></tr>
+        <tr><td>配音 IndexTTS2</td><td>${yes(s.voice.tts, '已安装', '未安装')}</td></tr>
+        <tr><td>去人声 Demucs</td><td>${yes(s.voice.separator, '已安装', '未安装')}</td></tr>
+        <tr><td>对口型 LatentSync</td><td>${yes(s.voice.lipsync, '已安装', '未安装')}</td></tr>
         <tr><td>ffmpeg</td><td>${yes(s.ffmpeg)}</td></tr></table></div>
       <div class="panel"><h3>磁盘与队列</h3><div>数据盘剩余 <b>${s.disk.free_gb} GB</b> / ${s.disk.total_gb} GB</div>
         <div class="muted small" style="margin-top:6px">排队任务：${s.queue.waiting}${s.queue.current ? '，正在执行 1 个' : ''}</div></div></div>

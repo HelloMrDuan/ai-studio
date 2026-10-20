@@ -55,9 +55,12 @@ EXTRACT_SYSTEM = """你是影视美术指导。从剧本中提取所有出镜角
 角色 appearance 必须具体可画：性别年龄感、脸型五官、发型发色、体型、服装（款式+颜色+材质）、标志性配饰。不同角色之间外貌差异要明显。
 voice 写声音特征（如：清亮的少女声 / 低沉沙哑的中年男声），用于视频配音。
 场景 description 写清：空间类型、时代、陈设、主色调、光线。
+props 是关键道具：在两个及以上镜头出现、或推动剧情的具体物品（信物、照片、信件、武器、手机等），最多 6 个，没有就给空数组。
+道具 description 写清外观细节：材质、颜色、尺寸、新旧程度、上面的图案或内容（例如：泛黄的旧照片，白色窄边，上面是两个少年在海边的合影）。
 只输出 JSON：
 {"characters":[{"name":"","role":"主角|配角|龙套","gender":"","age":"","appearance":"","personality":"","voice":""}],
- "locations":[{"name":"","description":""}]}"""
+ "locations":[{"name":"","description":""}],
+ "props":[{"name":"","description":""}]}"""
 
 
 def extract_user(project: dict) -> str:
@@ -80,9 +83,15 @@ def validate_extract(data: Any) -> dict:
         if name and name not in seen:
             seen.add(name)
             locs.append({"name": name, "description": str(loc.get("description") or "").strip()})
+    props, seen = [], set()
+    for pr in data.get("props") or []:
+        name = str((pr or {}).get("name") or "").strip() if isinstance(pr, dict) else ""
+        if name and name not in seen:
+            seen.add(name)
+            props.append({"name": name, "description": str(pr.get("description") or "").strip()})
     if not chars and not locs:
         raise ValueError("没有提取到任何角色或场景")
-    return {"characters": chars, "locations": locs}
+    return {"characters": chars, "locations": locs, "props": props[:6]}
 
 
 def portrait_prompt(project: dict, char: dict) -> str:
@@ -117,6 +126,33 @@ def char_ref_lines(chars: list[dict], ref_map: dict[str, dict], tag: str = "imag
     return lines
 
 
+def prop_prompt(project: dict, prop: dict) -> str:
+    return (f"道具设定参考图，单个物品居中完整展示，略俯视的产品摄影角度，纯浅灰色干净背景，柔和均匀的影棚光，细节清晰。"
+            f"道具：{prop.get('name')}。{prop.get('description') or ''}。画风：{style_text(project)}。"
+            f"除了道具本身的图案外，画面中没有人物，不要额外的文字和水印。")
+
+
+def prop_ref_lines(props: list[tuple[dict, int | None]], tag: str = "image") -> list[str]:
+    lines = []
+    for prop, idx in props:
+        desc = f"（{prop['description']}）" if prop.get("description") else ""
+        if idx:
+            lines.append(f"<{tag}{idx}> 是道具「{prop['name']}」的外观参考{desc}，画面中的{prop['name']}必须与它外观一致。")
+        else:
+            lines.append(f"道具「{prop['name']}」{desc or '按剧情描述绘制'}。")
+    return lines
+
+
+def voice_sample_prompt(project: dict, char: dict) -> tuple[str, str]:
+    """用 H3 给角色「设计」一段干净的音色样本（之后 IndexTTS2 用它克隆，所有镜头同一个声音）。"""
+    line = f"你好，我是{char.get('name')}。今天发生的事情，我一定要亲口告诉你。"
+    voice = char.get("voice") or "自然的声音"
+    prompt = (f"{style_text(project)}。脸部特写，{char.get('name')}（{char.get('gender') or ''}，{char.get('age') or ''}）正对镜头，"
+              f"表情自然，嘴部清晰地开合说话。\n{char.get('name')}（{voice}）用中文清晰、平稳地说：\u201c{line}\u201d\n"
+              f"声音：安静的录音室，只有这一个人的说话声，没有背景音乐、没有环境音、没有其他人声。不要出现字幕和文字。")
+    return prompt, line
+
+
 def location_prompt(project: dict, loc: dict) -> str:
     return (f"电影场景概念图，空镜，画面中没有任何人物。场景：{loc.get('name')}。{loc.get('description')}。"
             f"画风：{style_text(project)}。不要文字和水印。")
@@ -131,16 +167,19 @@ STORYBOARD_SYSTEM = f"""你是分镜导演。把剧本拆成可以逐镜头生�
 4. description 写这一镜头首帧的静态画面：每个角色的位置（画面左/中/右、前景/背景）、姿态、表情、朝向，环境与光线。多人时必须写清每个人的站位，不能含糊。
 5. action 写镜头内发生的动作和变化（给视频模型用）。
 6. dialogue 为本镜头的台词，speaker 必须是角色表中的名字；没有台词就给空数组。
-7. location 填【场景表】里的场景名。
+7. location 填【场景表】里的场景名；props 填【道具表】里本镜头画面中能看到的道具名（没有就空数组）。
 8. 景别要有变化，重要情绪用近景/特写，交代环境用全景/远景。
 9. 严格遵守【时长预算】：所有镜头 duration 之和不超过预算的 110%；超了就合并相邻镜头或删掉次要的过场/空镜，保留关键情节和台词。
 只输出 JSON：{{"shots":[{{"scene":"场景名","location":"","shot_size":"","camera_angle":"","camera_move":"","characters":[""],
-"description":"","action":"","dialogue":[{{"speaker":"","line":"","emotion":""}}],"sound":"环境音/音效","duration":5}}]}}"""
+"props":[""],"description":"","action":"","dialogue":[{{"speaker":"","line":"","emotion":""}}],"sound":"环境音/音效","duration":5}}]}}"""
 
 
-def storyboard_user(project: dict, chars: list[dict], locs: list[dict], chunk: str, prev: str) -> str:
+def storyboard_user(project: dict, chars: list[dict], locs: list[dict], chunk: str, prev: str,
+                    props: list[dict] | None = None) -> str:
     roster = "\n".join(f"- {c['name']}（{c.get('role') or ''}）：{c.get('appearance') or ''}" for c in chars) or "（无）"
     places = "\n".join(f"- {l['name']}：{l.get('description') or ''}" for l in locs) or "（无）"
+    if props:
+        places += "\n\n【道具表】\n" + "\n".join(f"- {p['name']}：{p.get('description') or ''}" for p in props)
     tail = f"\n【上一段最后一个镜头】{prev}\n" if prev else ""
     total = int(project.get("target_seconds") or 60)
     script = project.get("script") or chunk
@@ -202,6 +241,14 @@ def match_name(name: str, names: list[str]) -> str | None:
     return None
 
 
+def visible_props(shot: dict, names: list[str]) -> list[str]:
+    """LLM 填的 props + 画面描述里提到的道具名。"""
+    out = [n for n in (match_name(x, names) for x in shot.get("props") or []) if n]
+    text = (shot.get("description") or "") + (shot.get("action") or "")
+    out += [n for n in names if n and n in text and n not in out]
+    return list(dict.fromkeys(out))
+
+
 def make_storyboard_validator(char_names: list[str]):
     def validate(data: Any) -> list[dict]:
         rows = data.get("shots") if isinstance(data, dict) else data
@@ -237,6 +284,7 @@ def make_storyboard_validator(char_names: list[str]):
                 "camera_angle": _pick(r.get("camera_angle"), CAMERA_ANGLES, "平视"),
                 "camera_move": _pick(r.get("camera_move"), CAMERA_MOVES, "固定"),
                 "characters": chars,
+                "props": [str(x).strip() for x in (r.get("props") or []) if str(x).strip()] if isinstance(r.get("props"), list) else [],
                 "description": str(r["description"]).strip(),
                 "action": str(r.get("action") or "").strip(),
                 "dialogue": lines,
@@ -249,7 +297,8 @@ def make_storyboard_validator(char_names: list[str]):
 
 # ---------------- ④ 分镜图 ----------------
 def keyframe_prompt(project: dict, shot: dict, chars: list[dict], loc: dict | None,
-                    ref_map: dict[str, dict], loc_idx: int | None) -> str:
+                    ref_map: dict[str, dict], loc_idx: int | None,
+                    props: list[tuple[dict, int | None]] = ()) -> str:
     """ref_map 见 char_ref_lines；loc_idx 为场景参考图的序号（None 表示没有）。"""
     lines = [f"生成一张电影分镜画面，{shot.get('shot_size') or '中景'}，{shot.get('camera_angle') or '平视'}。"]
     lines.append("画面内容：" + (shot.get("image_prompt") or shot.get("description") or "").strip())
@@ -259,6 +308,7 @@ def keyframe_prompt(project: dict, shot: dict, chars: list[dict], loc: dict | No
             lines.append(f"<image{loc_idx}> 是场景「{loc['name']}」的环境参考，保持空间布局、陈设和色调一致，但按本镜头的机位重新构图。")
         elif loc.get("description"):
             lines.append(f"场景：{loc['name']}，{loc['description']}。")
+    lines += prop_ref_lines(list(props))
     if chars:
         names = "、".join(f"「{c['name']}」" for c in chars)
         lines.append(f"画面中共有 {len(chars)} 个主要人物：{names}，每人只出现一次，彼此外貌明显不同，不要出现多余人物。")
@@ -283,13 +333,20 @@ def video_prompt(project: dict, shot: dict, chars_by_name: dict[str, dict], loc:
         parts.append("画面：" + (shot.get("description") or ""))
         if shot.get("action"):
             parts.append("动作：" + shot["action"])
+        dub = bool(project.get("dub_mode"))
         for d in shot.get("dialogue") or []:
             c = chars_by_name.get(d.get("speaker") or "") or {}
+            if dub:   # 配音模式：画面里只做说话的动作，声音之后用固定音色配，避免 H3 每镜换一个声音
+                if c:
+                    parts.append(f"{d['speaker']}在说话{('，' + d['emotion']) if d.get('emotion') else ''}，嘴部自然开合。")
+                continue
             voice = "，".join(x for x in (c.get("voice"), d.get("emotion")) if x)
             parts.append(f"{d['speaker']}（{voice or '自然的声音'}）用中文说：\u201c{d['line']}\u201d")
         if shot.get("sound"):
             parts.append("声音：" + shot["sound"])
-        parts.append("人物外貌、服装和场景与首帧保持一致，动作自然连贯，不要出现字幕和文字。")
+        if dub:
+            parts.append("音频只有环境音和音效，没有任何人声、对白、旁白和背景音乐。")
+        parts.append("人物外貌、服装和场景与首帧保持一致，动作自然连贯。画面干净，没有字幕、文字和水印。")
         body = "\n".join(parts)
     if ref_descs:
         head = ["<Picture 1> 是本镜头的构图与画面参考。"]

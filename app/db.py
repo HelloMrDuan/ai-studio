@@ -15,15 +15,19 @@ CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY, title TEXT NOT NULL, source_type TEXT, source_text TEXT,
   aspect_ratio TEXT DEFAULT '16:9', style TEXT DEFAULT 'cinematic', style_note TEXT DEFAULT '',
   script TEXT DEFAULT '', synopsis TEXT DEFAULT '', target_seconds INTEGER DEFAULT 60,
-  final_video TEXT DEFAULT '', created_at REAL, updated_at REAL
+  final_video TEXT DEFAULT '', dub_mode INTEGER DEFAULT 0, created_at REAL, updated_at REAL
 );
 CREATE TABLE IF NOT EXISTS characters (
   id TEXT PRIMARY KEY, project_id TEXT, name TEXT, role TEXT DEFAULT '', gender TEXT DEFAULT '',
   age TEXT DEFAULT '', appearance TEXT DEFAULT '', personality TEXT DEFAULT '', voice TEXT DEFAULT '',
-  ref_image TEXT DEFAULT '', face_image TEXT DEFAULT '', locked INTEGER DEFAULT 0, sort INTEGER DEFAULT 0,
+  ref_image TEXT DEFAULT '', face_image TEXT DEFAULT '', voice_ref TEXT DEFAULT '', locked INTEGER DEFAULT 0, sort INTEGER DEFAULT 0,
   created_at REAL
 );
 CREATE TABLE IF NOT EXISTS locations (
+  id TEXT PRIMARY KEY, project_id TEXT, name TEXT, description TEXT DEFAULT '',
+  ref_image TEXT DEFAULT '', sort INTEGER DEFAULT 0, created_at REAL
+);
+CREATE TABLE IF NOT EXISTS props (
   id TEXT PRIMARY KEY, project_id TEXT, name TEXT, description TEXT DEFAULT '',
   ref_image TEXT DEFAULT '', sort INTEGER DEFAULT 0, created_at REAL
 );
@@ -31,7 +35,7 @@ CREATE TABLE IF NOT EXISTS shots (
   id TEXT PRIMARY KEY, project_id TEXT, sort INTEGER DEFAULT 0, scene TEXT DEFAULT '',
   location_id TEXT DEFAULT '', shot_size TEXT DEFAULT '中景', camera_angle TEXT DEFAULT '平视',
   camera_move TEXT DEFAULT '固定', description TEXT DEFAULT '', action TEXT DEFAULT '',
-  character_ids TEXT DEFAULT '[]', dialogue TEXT DEFAULT '[]', sound TEXT DEFAULT '',
+  character_ids TEXT DEFAULT '[]', prop_ids TEXT DEFAULT '[]', dialogue TEXT DEFAULT '[]', sound TEXT DEFAULT '',
   duration REAL DEFAULT 5, image_prompt TEXT DEFAULT '', video_prompt TEXT DEFAULT '',
   keyframe TEXT DEFAULT '', video TEXT DEFAULT '', created_at REAL
 );
@@ -50,7 +54,8 @@ CREATE INDEX IF NOT EXISTS idx_assets_owner ON assets(owner_type, owner_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
 """
 
-JSON_FIELDS = {"character_ids", "dialogue", "meta", "params", "result"}
+JSON_FIELDS = {"character_ids", "prop_ids", "dialogue", "meta", "params", "result"}
+LIST_FIELDS = {"character_ids", "prop_ids", "dialogue"}
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
 
@@ -73,7 +78,8 @@ def conn() -> sqlite3.Connection:
         return _conn
 
 
-MIGRATIONS = [("characters", "face_image", "TEXT DEFAULT ''")]
+MIGRATIONS = [("characters", "face_image", "TEXT DEFAULT ''"), ("characters", "voice_ref", "TEXT DEFAULT ''"),
+              ("shots", "prop_ids", "TEXT DEFAULT '[]'"), ("projects", "dub_mode", "INTEGER DEFAULT 0")]
 
 
 def _migrate(c: sqlite3.Connection) -> None:
@@ -98,9 +104,9 @@ def _decode(row: sqlite3.Row | None) -> dict[str, Any] | None:
     item = dict(row)
     for key in JSON_FIELDS & item.keys():
         try:
-            item[key] = json.loads(item[key] or ("[]" if key in {"character_ids", "dialogue"} else "{}"))
+            item[key] = json.loads(item[key] or ("[]" if key in LIST_FIELDS else "{}"))
         except json.JSONDecodeError:
-            item[key] = [] if key in {"character_ids", "dialogue"} else {}
+            item[key] = [] if key in LIST_FIELDS else {}
     return item
 
 
@@ -157,6 +163,6 @@ def execute(sql: str, params: list[Any] | tuple = ()) -> None:
 
 def delete_project(project_id: str) -> None:
     with _lock:
-        for table in ("characters", "locations", "shots", "assets", "tasks"):
+        for table in ("characters", "locations", "props", "shots", "assets", "tasks"):
             conn().execute(f"DELETE FROM {table} WHERE project_id=?", [project_id])
         conn().execute("DELETE FROM projects WHERE id=?", [project_id])

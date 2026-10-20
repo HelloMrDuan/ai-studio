@@ -4,15 +4,16 @@
 """
 from __future__ import annotations
 
+import re
 import shutil
 import time
 from pathlib import Path
 from typing import Any
 
-from . import comfy, db, facefusion, llm, media, prompts
+from . import comfy, db, facefusion, llm, media, prompts, qa, voice
 from .config import get_settings
 from .gpu import gpu
-from .tasks import TaskContext, handler
+from .tasks import TaskContext, handler, queue
 from .workflows import (MAX_IMAGE_REFS, MAX_VIDEO_REFS, VIDEO_SIZES, image_workflow, video_i2v_workflow,
                         video_r2v_workflow)
 
@@ -59,6 +60,10 @@ def characters_of(project_id: str) -> list[dict]:
 
 def locations_of(project_id: str) -> list[dict]:
     return db.query("SELECT * FROM locations WHERE project_id=? ORDER BY sort, created_at", [project_id])
+
+
+def props_of(project_id: str) -> list[dict]:
+    return db.query("SELECT * FROM props WHERE project_id=? ORDER BY sort, created_at", [project_id])
 
 
 def shots_of(project_id: str) -> list[dict]:
@@ -118,7 +123,15 @@ async def task_extract(ctx: TaskContext) -> dict:
             db.insert("locations", {**l, "project_id": project["id"], "sort": len(locs) + i})
         elif l["description"]:
             db.update("locations", old["id"], {"description": l["description"]})
-    return {"characters_added": added, "characters_updated": updated, "locations": len(data["locations"])}
+    props = {pr["name"]: pr for pr in props_of(project["id"])}
+    for i, pr in enumerate(data.get("props") or []):
+        old = props.get(pr["name"])
+        if old is None:
+            db.insert("props", {**pr, "project_id": project["id"], "sort": len(props) + i})
+        elif pr["description"] and not old.get("description"):
+            db.update("props", old["id"], {"description": pr["description"]})
+    return {"characters_added": added, "characters_updated": updated, "locations": len(data["locations"]),
+            "props": len(data.get("props") or [])}
 
 
 # ---------------- ③ 分镜 ----------------
@@ -127,7 +140,7 @@ async def task_storyboard(ctx: TaskContext) -> dict:
     project = need("projects", ctx.project_id, "项目")
     if not (project.get("script") or "").strip():
         raise ValueError("请先生成或填写剧本")
-    chars, locs = characters_of(project["id"]), locations_of(project["id"])
+    chars, locs, props = characters_of(project["id"]), locations_of(project["id"]), props_of(project["id"])
     validate = prompts.make_storyboard_validator([c["name"] for c in chars])
     chunks = prompts.split_script(project["script"])
     rows: list[dict] = []
@@ -135,12 +148,13 @@ async def task_storyboard(ctx: TaskContext) -> dict:
     for i, chunk in enumerate(chunks):
         await ctx.progress(5 + 85 * i // len(chunks), f"拆分镜 {i + 1}/{len(chunks)}")
         part = await llm.chat_json(prompts.STORYBOARD_SYSTEM,
-                                   prompts.storyboard_user(project, chars, locs, chunk, prev),
+                                   prompts.storyboard_user(project, chars, locs, chunk, prev, props),
                                    validate=validate, temperature=0.5, max_tokens=12000)
         rows += part
         prev = part[-1]["description"]
 
     by_name = {c["name"]: c["id"] for c in chars}
+    prop_ids = {pr["name"]: pr["id"] for pr in props}
     loc_names = [l["name"] for l in locs]
     loc_ids = {l["name"]: l["id"] for l in locs}
     db.execute("DELETE FROM shots WHERE project_id=?", [project["id"]])
@@ -160,6 +174,7 @@ async def task_storyboard(ctx: TaskContext) -> dict:
             "camera_angle": r["camera_angle"], "camera_move": r["camera_move"],
             "description": r["description"], "action": r["action"],
             "character_ids": [by_name[n] for n in prompts.visible_characters(r, list(by_name))],
+            "prop_ids": [prop_ids[n] for n in prompts.visible_props(r, list(prop_ids))],
             "dialogue": r["dialogue"], "sound": r["sound"], "duration": r["duration"],
         })
     return {"shots": len(rows), "seconds": round(sum(r["duration"] for r in rows), 1)}
@@ -167,9 +182,9 @@ async def task_storyboard(ctx: TaskContext) -> dict:
 
 # ---------------- 生图公共 ----------------
 async def _generate_images(ctx: TaskContext, prompt: str, aspect: str, ref_paths: list[Path], count: int,
-                           out_dir: Path) -> list[Path]:
+                           out_dir: Path, random_seed: bool = False) -> list[Path]:
     count = max(1, min(int(count or 1), 8))
-    seed = ctx.params.get("seed")
+    seed = None if random_seed else ctx.params.get("seed")
     results: list[Path] = []
     span = 90 // count
     async with gpu.use("comfyui", ctx.task.get("title") or "生图"):
@@ -238,6 +253,38 @@ async def task_location_image(ctx: TaskContext) -> dict:
     return {"assets": [a["id"] for a in assets]}
 
 
+@handler("prop_image")
+async def task_prop_image(ctx: TaskContext) -> dict:
+    prop = need("props", ctx.params.get("prop_id"), "道具")
+    project = need("projects", prop["project_id"], "项目")
+    prompt = (ctx.params.get("prompt") or "").strip() or prompts.prop_prompt(project, prop)
+    files = await _generate_images(ctx, prompt, "1:1", [], ctx.params.get("count", 2), project_dir(project["id"], "props"))
+    assets = [add_asset(project["id"], "prop", f, "prop", prop["id"], {"prompt": prompt}) for f in files]
+    if not exists(prop["ref_image"]):
+        db.update("props", prop["id"], {"ref_image": assets[0]["path"]})
+    return {"assets": [a["id"] for a in assets]}
+
+
+def shot_props(shot: dict) -> list[dict]:
+    all_props = {pr["id"]: pr for pr in props_of(shot["project_id"])}
+    return [all_props[i] for i in shot.get("prop_ids") or [] if i in all_props]
+
+
+def _qa_faces(chars: list[dict]) -> list[tuple[str, Path]]:
+    out = []
+    for c in chars:
+        src = c.get("face_image") if exists(c.get("face_image")) else c.get("ref_image")
+        if exists(src):
+            out.append((c["name"], absolute(src)))
+    return out
+
+
+def _expects_text(shot: dict) -> bool:
+    """画面描述里本来就要求出现文字（招牌、信件内容等）时，分镜图不查文字。"""
+    text = (shot.get("description") or "") + (shot.get("image_prompt") or "")
+    return bool(re.search(r"[“”「」\"]|写着|字样|招牌|标语|文字|字迹|笔迹", text))
+
+
 def _shot_context(shot: dict) -> tuple[dict, dict[str, dict], list[dict], dict | None]:
     project = need("projects", shot["project_id"], "项目")
     all_chars = {c["id"]: c for c in characters_of(project["id"])}
@@ -279,17 +326,27 @@ def keyframe_plan(shot: dict) -> dict:
     """计算某镜头的出图方案：参考图顺序 + 最终提示词（预览接口也用它）。
     场景图优先级高于「第二张脸部参考」：先给每个角色一张，再放场景图，最后用剩余名额补脸部特写。"""
     project, _, chars, loc = _shot_context(shot)
+    props = shot_props(shot)
     has_loc = bool(loc and exists(loc.get("ref_image")))
     base, _, _ = char_refs(chars, MAX_IMAGE_REFS, faces=False)
-    room = MAX_IMAGE_REFS - (1 if has_loc and len(base) < MAX_IMAGE_REFS else 0)
+    reserve = (1 if has_loc else 0) + sum(1 for pr in props if exists(pr.get("ref_image")))
+    room = max(len(base), MAX_IMAGE_REFS - reserve)   # 每个角色一张优先，其次场景、道具，最后补脸部特写
     refs, labels, ref_map = char_refs(chars, room)
     loc_idx = None
     if has_loc and len(refs) < MAX_IMAGE_REFS:
         refs.append(absolute(loc["ref_image"]))
         labels.append(f"场景:{loc['name']}")
         loc_idx = len(refs)
-    return {"project": project, "chars": chars, "loc": loc, "refs": refs, "ref_labels": labels,
-            "prompt": prompts.keyframe_prompt(project, shot, chars, loc, ref_map, loc_idx)}
+    prop_refs: list[tuple[dict, int | None]] = []
+    for pr in props:
+        idx = None
+        if exists(pr.get("ref_image")) and len(refs) < MAX_IMAGE_REFS:
+            refs.append(absolute(pr["ref_image"]))
+            labels.append(f"道具:{pr['name']}")
+            idx = len(refs)
+        prop_refs.append((pr, idx))
+    return {"project": project, "chars": chars, "loc": loc, "props": props, "refs": refs, "ref_labels": labels,
+            "prompt": prompts.keyframe_prompt(project, shot, chars, loc, ref_map, loc_idx, prop_refs)}
 
 
 @handler("keyframe")
@@ -297,14 +354,28 @@ async def task_keyframe(ctx: TaskContext) -> dict:
     shot = need("shots", ctx.params.get("shot_id"), "镜头")
     plan = keyframe_plan(shot)
     prompt = (ctx.params.get("prompt") or "").strip() or plan["prompt"]
-    files = await _generate_images(ctx, prompt, plan["project"]["aspect_ratio"], plan["refs"],
-                                   ctx.params.get("count", 1), project_dir(shot["project_id"], "keyframes"))
+    out_dir = project_dir(shot["project_id"], "keyframes")
+    aspect = plan["project"]["aspect_ratio"]
+    files = await _generate_images(ctx, prompt, aspect, plan["refs"], ctx.params.get("count", 1), out_dir)
+
+    async def check(f: Path) -> dict | None:
+        return await qa.check(f, faces=_qa_faces(plan["chars"]), check_text=not _expects_text(shot),
+                              style=plan["project"].get("style") or "")
+
+    results = [(f, await check(f)) for f in files]
+    retries = get_settings().qa_keyframe_retry if qa.available() else 0
+    while retries > 0 and all(r and not r.get("ok") for _, r in results):
+        retries -= 1
+        await ctx.log("分镜图质检未通过（" + qa.summary(results[-1][1]) + "），自动重抽")
+        for f in await _generate_images(ctx, prompt, aspect, plan["refs"], 1, out_dir, random_seed=True):
+            results.append((f, await check(f)))
     assets = [add_asset(shot["project_id"], "keyframe", f, "shot", shot["id"],
-                        {"prompt": prompt, "refs": plan["ref_labels"]}) for f in files]
+                        {"prompt": prompt, "refs": plan["ref_labels"], "qa": r}) for f, r in results]
+    best = min(range(len(results)), key=lambda i: qa.rank(results[i][1]))
     current = db.get("shots", shot["id"]) or shot
     if not exists(current["keyframe"]) or ctx.params.get("auto_select"):
-        db.update("shots", shot["id"], {"keyframe": assets[0]["path"]})
-    return {"assets": [a["id"] for a in assets]}
+        db.update("shots", shot["id"], {"keyframe": assets[best]["path"]})
+    return {"assets": [a["id"] for a in assets], "qa": qa.summary(results[best][1]), "attempts": len(results)}
 
 
 @handler("keyframe_edit")
@@ -352,12 +423,19 @@ def video_plan(shot: dict, mode: str = "auto") -> dict:
         refs.append(absolute(shot["keyframe"]))
     char_paths, labels, _ = char_refs(chars, MAX_VIDEO_REFS - len(refs))
     refs += char_paths
+    for pr in shot_props(shot):
+        if exists(pr.get("ref_image")) and len(refs) < MAX_VIDEO_REFS:
+            refs.append(absolute(pr["ref_image"]))
+            labels.append(f"道具:{pr['name']}")
     if not refs:
         raise ValueError("参考生视频需要分镜图或角色参考图")
     descs = []
     for label in labels:
         kind, name = label.split(":", 1)
-        descs.append(f"角色「{name}」的{'脸部特写，保持同一张脸' if kind == '脸部' else '形象参考，保持同一张脸和服装'}")
+        if kind == "道具":
+            descs.append(f"道具「{name}」的外观参考，保持外观一致")
+        else:
+            descs.append(f"角色「{name}」的{'脸部特写，保持同一张脸' if kind == '脸部' else '形象参考，保持同一张脸和服装'}")
     prompt = prompts.video_prompt(project, shot, by_name, loc, descs if has_key else None)
     if not has_key:
         head = [f"<Picture {i}> 是{d}。" for i, d in enumerate(descs, 1)]
@@ -378,23 +456,204 @@ async def task_video(ctx: TaskContext) -> dict:
     prompt = (ctx.params.get("prompt") or "").strip() or plan["prompt"]
     seed = ctx.params.get("seed") if isinstance(ctx.params.get("seed"), int) else None
     out_dir = project_dir(project["id"], "videos")
-    async with gpu.use("comfyui", ctx.task.get("title") or "生成视频"):
+    _, _, chars, _ = _shot_context(shot)
+    reference = absolute(shot["keyframe"]) if exists(shot.get("keyframe")) else None
+    attempts = 1 + (max(0, get_settings().qa_video_retry) if qa.available() else 0)
+    results: list[tuple[dict, dict | None]] = []
+    for attempt in range(attempts):
+        tag = f"（第 {attempt + 1} 次）" if attempt else ""
+        async with gpu.use("comfyui", (ctx.task.get("title") or "生成视频") + tag):
+            await gpu.comfy_switch("video")
+            uploaded = [await comfy.upload_image(p) for p in plan["refs"]]
+            s_ = seed if attempt == 0 else None
+            if plan["mode"] == "r2v":
+                wf = video_r2v_workflow(prompt, uploaded, project["aspect_ratio"], seconds, quality, turbo, s_)
+            else:
+                wf = video_i2v_workflow(prompt, uploaded[0] if uploaded else None, project["aspect_ratio"], seconds,
+                                        quality, turbo, seed=s_)
+            span = 94 // attempts
+            files = await comfy.run(wf, out_dir, progress_slice(ctx, 3 + attempt * span, 3 + (attempt + 1) * span,
+                                                                 "生成视频" + tag))
+        videos = [f for f in files if f.suffix.lower() in VIDEO_SUFFIX]
+        if not videos:
+            raise RuntimeError("ComfyUI 没有产出视频文件")
+        await ctx.log("自动质检中…")
+        result = await qa.check(videos[0], reference=reference, faces=_qa_faces(chars), check_text=True,
+                                style=project.get("style") or "")
+        asset = add_asset(project["id"], "video", videos[0], "shot", shot["id"],
+                          {"prompt": prompt, "mode": plan["mode"], "quality": quality, "seconds": seconds,
+                           "turbo": turbo, "qa": result, "attempt": attempt + 1})
+        results.append((asset, result))
+        if not result or result.get("ok"):
+            break
+        if attempt + 1 < attempts:
+            await ctx.log(f"质检未通过（{qa.summary(result)}），自动换种子重抽")
+    best, best_qa = min(results, key=lambda x: qa.rank(x[1]))
+    db.update("shots", shot["id"], {"video": best["path"]})
+    out = {"asset": best["id"], "attempts": len(results), "qa": qa.summary(best_qa)}
+    fresh = db.get("shots", shot["id"]) or shot
+    if project.get("dub_mode") and voice.tts_available() and dub_lines(fresh)[0]:
+        t = queue.submit("dub", project_id=project["id"], title=f"配音 #{shot['sort'] + 1}", owner_type="shot",
+                         owner_id=shot["id"], params={"shot_id": shot["id"], "lipsync": "auto"})
+        out["dub_task"] = t["id"]
+    return out
+
+
+# ---------------- ⑤-2 固定音色配音 + 对口型 ----------------
+@handler("voice_sample")
+async def task_voice_sample(ctx: TaskContext) -> dict:
+    """用 H3 按角色的「声音描述」说一段话，提取成音色样本（之后所有台词都用 IndexTTS2 克隆这个声音）。"""
+    char = need("characters", ctx.params.get("character_id"), "角色")
+    project = need("projects", char["project_id"], "项目")
+    face = char.get("face_image") if exists(char.get("face_image")) else char.get("ref_image")
+    if not exists(face):
+        raise ValueError("请先生成角色的定妆照或脸部特写")
+    prompt, line = prompts.voice_sample_prompt(project, char)
+    out_dir = project_dir(project["id"], "voices")
+    aspect = "1:1" if "1:1" in VIDEO_SIZES["draft"] else project["aspect_ratio"]
+    async with gpu.use("comfyui", ctx.task.get("title") or "音色样本"):
         await gpu.comfy_switch("video")
-        uploaded = [await comfy.upload_image(p) for p in plan["refs"]]
-        if plan["mode"] == "r2v":
-            wf = video_r2v_workflow(prompt, uploaded, project["aspect_ratio"], seconds, quality, turbo, seed)
-        else:
-            wf = video_i2v_workflow(prompt, uploaded[0] if uploaded else None, project["aspect_ratio"], seconds,
-                                    quality, turbo, seed=seed)
-        files = await comfy.run(wf, out_dir, progress_slice(ctx, 3, 97, "生成视频"))
-    videos = [f for f in files if f.suffix.lower() in VIDEO_SUFFIX]
-    if not videos:
+        uploaded = await comfy.upload_image(absolute(face))
+        files = await comfy.run(video_i2v_workflow(prompt, uploaded, aspect, 6.0, "draft", True),
+                                out_dir, progress_slice(ctx, 5, 85, "生成音色样本"))
+    video = next((f for f in files if f.suffix.lower() in VIDEO_SUFFIX), None)
+    if not video:
         raise RuntimeError("ComfyUI 没有产出视频文件")
-    asset = add_asset(project["id"], "video", videos[0], "shot", shot["id"],
-                      {"prompt": prompt, "mode": plan["mode"], "quality": quality, "seconds": seconds,
-                       "turbo": turbo})
-    db.update("shots", shot["id"], {"video": asset["path"]})
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    work = out_dir / f"work_{ctx.id}"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        raw = await media.extract_audio(video, work / "raw.wav")
+        if not raw:
+            raise RuntimeError("视频模型没有生成声音，请重试")
+        src = raw
+        if voice.separator_available():
+            await ctx.progress(90, "提取人声…")
+            try:
+                src = await voice.isolate_vocals(raw, work)
+            except Exception as exc:  # noqa: BLE001
+                await ctx.log(f"人声分离失败，使用原声：{exc}"[:200])
+        final = await media.trim_silence(src, out_dir / f"voice_{char['id']}_{stamp}.wav")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    if (await media.probe(final))["duration"] < 1.0:
+        raise RuntimeError("音色样本太短（视频模型可能没有说话），请重试")
+    asset = add_asset(project["id"], "voice", final, "character", char["id"],
+                      {"line": line, "video": rel(video), "prompt": prompt})
+    current = db.get("characters", char["id"]) or char
+    if not exists(current.get("voice_ref")) or ctx.params.get("auto_select"):
+        db.update("characters", char["id"], {"voice_ref": asset["path"]})
     return {"asset": asset["id"]}
+
+
+def dub_lines(shot: dict) -> tuple[list[tuple[dict, dict]], list[str]]:
+    """返回 (可配音的 [(台词, 角色)], 缺音色样本的角色名)。旁白暂不配音（保留字幕）。"""
+    by_name = {c["name"]: c for c in characters_of(shot["project_id"])}
+    voiced, missing = [], []
+    for d in shot.get("dialogue") or []:
+        c = by_name.get(d.get("speaker") or "")
+        if not c or not str(d.get("line") or "").strip():
+            continue
+        if exists(c.get("voice_ref")):
+            voiced.append((d, c))
+        elif c["name"] not in missing:
+            missing.append(c["name"])
+    return voiced, missing
+
+
+LIPSYNC_SIZES = {"中景", "近景", "特写"}
+
+
+@handler("dub")
+async def task_dub(ctx: TaskContext) -> dict:
+    shot = need("shots", ctx.params.get("shot_id"), "镜头")
+    project, _, chars, _ = _shot_context(shot)
+    if not exists(shot.get("video")):
+        raise ValueError("这个镜头还没有视频")
+    voiced, missing = dub_lines(shot)
+    if not voiced:
+        raise ValueError("本镜头没有可配音的台词" + (f"：角色「{'、'.join(missing)}」还没有音色样本" if missing else ""))
+    src_video = absolute(shot["video"])
+    cur = db.query("SELECT * FROM assets WHERE path=? LIMIT 1", [shot["video"]])
+    if cur and (cur[0].get("meta") or {}).get("dub_source") and exists(cur[0]["meta"]["dub_source"]):
+        src_video = absolute(cur[0]["meta"]["dub_source"])      # 重新配音时从未配音的原视频开始，不叠加
+    work = project_dir(project["id"], "dub") / f"work_{ctx.id}"
+    work.mkdir(parents=True, exist_ok=True)
+    notes: list[str] = []
+    lips = False
+    factor = 1.0
+    try:
+        vdur = (await media.probe(src_video))["duration"] or float(shot.get("duration") or 5)
+        items = [{"text": d["line"], "voice": str(absolute(c["voice_ref"])), "emo": d.get("emotion") or "",
+                  "out": str(work / f"l{i}.wav")} for i, (d, c) in enumerate(voiced)]
+        await ctx.progress(5, f"合成 {len(items)} 句台词…")
+        async with gpu.use("voice", ctx.task.get("title") or "配音"):
+            await voice.synthesize(items, ctx.log)
+        wavs = [Path(it["out"]) for it in items]
+        durs = [(await media.probe(w))["duration"] for w in wavs]
+        lead, gap, tail = 0.3, 0.25, 0.3
+        need_len = lead + sum(durs) + gap * (len(durs) - 1) + tail
+        if need_len > vdur * 1.02:      # 台词比画面长：先最多加速 25%，还不够就定格最后一帧补时长
+            factor = min(1.25, need_len / vdur)
+            wavs = [await media.atempo(w, factor, work / f"t{i}.wav") for i, w in enumerate(wavs)]
+            durs = [d / factor for d in durs]
+            need_len = lead + sum(durs) + gap * (len(durs) - 1) + tail
+        video, total = src_video, vdur
+        if need_len > vdur + 0.05:
+            video = await media.extend_video(src_video, need_len - vdur, work / "ext.mp4")
+            total = need_len
+            notes.append(f"台词较长，画面定格延长 {need_len - vdur:.1f} 秒")
+        starts, t = [], lead
+        for d in durs:
+            starts.append(t)
+            t += d + gap
+        speech = await media.speech_track(list(zip(wavs, starts)), total, work / "speech.wav")
+
+        await ctx.progress(35, "处理环境音…")
+        tracks: list[tuple[Path, float]] = [(speech, 1.0)]
+        orig = await media.extract_audio(video, work / "orig.wav")
+        if orig:
+            if voice.separator_available():
+                try:
+                    tracks.append((await voice.remove_vocals(orig, work / "sep"), 0.9))
+                except Exception as exc:  # noqa: BLE001
+                    notes.append(f"去人声失败，原声已压低：{exc}"[:200])
+                    tracks.append((orig, 0.15))
+            elif project.get("dub_mode"):
+                tracks.append((orig, 0.8))
+            else:
+                tracks.append((orig, 0.15))
+                notes.append("未安装去人声组件，原声已压低音量")
+
+        mode = ctx.params.get("lipsync") or "auto"
+        speakers = {c["id"] for _, c in voiced}
+        auto_ok = len(chars) == 1 and speakers == {chars[0]["id"]} and shot.get("shot_size") in LIPSYNC_SIZES
+        if mode == "on" or (mode == "auto" and auto_ok):
+            if voice.lipsync_available():
+                await ctx.progress(50, "对口型（LatentSync）…")
+                try:
+                    async with gpu.use("voice", "对口型"):
+                        video = await voice.lipsync(video, speech, work / "lips.mp4", ctx.log)
+                    lips = True
+                except Exception as exc:  # noqa: BLE001
+                    notes.append(f"对口型失败，保留原口型：{str(exc)[-160:]}")
+            else:
+                notes.append("未安装对口型组件，只替换了声音")
+        elif mode == "auto":
+            notes.append("多人或远景镜头，未做对口型（可手动强制）")
+        final_dur = (await media.probe(video))["duration"] or total
+        await ctx.progress(92, "混音…")
+        out = project_dir(project["id"], "videos") / f"dub_{shot['id']}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+        await media.mux(video, tracks, out, min(final_dur, total))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    asset = add_asset(project["id"], "video", out, "shot", shot["id"],
+                      {"dub": True, "lipsync": lips, "dub_source": rel(src_video), "lines": len(voiced),
+                       "speed": round(factor, 2), "notes": notes, "missing_voice": missing})
+    db.update("shots", shot["id"], {"video": asset["path"]})
+    if missing:
+        notes.append(f"角色「{'、'.join(missing)}」没有音色样本，其台词未配音")
+    return {"asset": asset["id"], "lipsync": lips, "notes": notes}
 
 
 # ---------------- ⑥ 成片 ----------------

@@ -156,13 +156,15 @@ def check_faces(frames: list[np.ndarray], refs: list[dict], models_dir: Path, th
     best_any: list[float] = []
     frames_with_faces = 0
     for img in frames:
-        embs = [fx.embed(img, lm) for box, lm in fx.detect(img) if min(box[2] - box[0], box[3] - box[1]) >= 40]
-        if not embs or not ref_emb:
+        # 太小的脸（远景、480p 中景）ArcFace 不可靠，不参与判断
+        min_side = max(64, 0.12 * img.shape[0])
+        embs = [fx.embed(img, lm) for box, lm in fx.detect(img) if min(box[2] - box[0], box[3] - box[1]) >= min_side]
+        if not embs or not ref_emb or len(embs) > len(ref_emb):   # 脸比角色多（照片/海报/路人）时无法对应，跳过
             continue
         frames_with_faces += 1
         sims = {n: [float(np.dot(ref, e)) for e in embs] for n, ref in ref_emb.items()}
         best_any.append(max(max(v) for v in sims.values()))
-        if len(embs) >= len(ref_emb):          # 人都露脸了才逐个判；有人背对镜头时只做整体判断
+        if len(embs) == len(ref_emb):          # 人都露脸了才逐个判；有人背对镜头时只做整体判断
             for n, v in sims.items():
                 per_char[n].append(max(v))
     scores = {n: round(float(np.percentile(v, 75)), 3) for n, v in per_char.items() if v}

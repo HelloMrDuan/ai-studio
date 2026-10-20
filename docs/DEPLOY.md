@@ -174,3 +174,8 @@ tail -f /root/autodl-tmp/logs/studio.log /root/autodl-tmp/logs/comfyui.log
 - Qwen-Image 2.1、Qwen3.6：Apache-2.0。
 - **MiniMax H3**：使用前请阅读 MiniMax 的模型许可，商业用途需确认授权条款。
 - FaceFusion：OpenRAIL-AS，请勿用于未经授权的人脸替换。
+
+## 访问密码 / 配音组件（v3.1）
+
+- 网页访问密码：`05_app.sh` 首次运行会在 `.env` 写入随机的 `ACCESS_PASSWORD` 并打印，`start.sh` 启动时也会显示。修改后重启生效；留空表示不需要密码（不建议在开放公网端口时这样做）。
+- 配音 / 对口型 / 质检 OCR：`bash deploy/06_voice.sh`（可加 `--no-lipsync`）。约占 25GB 磁盘，可在无卡模式下安装，自检需要 GPU 模式。装完重启服务，「系统状态」里会显示各组件是否就绪。

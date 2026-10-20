@@ -21,5 +21,7 @@ if running studio; then log "AI Studio 已在运行"; else
   echo $! > "$RUN_DIR/studio.pid"
 fi
 sleep 3
-curl -sf http://127.0.0.1:6006/api/meta >/dev/null && log "AI Studio 就绪（端口 6006）：AutoDL 点「自定义服务」；算家云在实例上「开放端口」6006" \
+curl -sf http://127.0.0.1:6006/login >/dev/null && log "AI Studio 就绪（端口 6006）：AutoDL 点「自定义服务」；算家云在实例上「开放端口」6006" \
   || echo "⚠️ AI Studio 未就绪，请查看 $LOG_DIR/studio.out"
+PW=$(grep -E "^ACCESS_PASSWORD=" "$APP_DIR/.env" 2>/dev/null | cut -d= -f2- || true)
+[ -n "$PW" ] && log "访问密码：$PW（在 $APP_DIR/.env 的 ACCESS_PASSWORD 修改，改完重启）"

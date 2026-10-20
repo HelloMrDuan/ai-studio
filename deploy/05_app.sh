@@ -19,5 +19,10 @@ else
   sed -i "s#^VIDEO_I2V_UNET=.*#VIDEO_I2V_UNET=minimax_h3_fl2va_pruned_int8_convrot.safetensors#; s#^VIDEO_R2V_UNET=.*#VIDEO_R2V_UNET=minimax_h3_ref2va_pruned_int8_convrot.safetensors#; s#^LLM_GGUF=.*#LLM_GGUF=$BASE/models/llm/Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf#" .env
 fi
 grep -E "^(BASE_DIR|VIDEO_I2V_UNET|LLM_GGUF)=" .env
+if ! grep -q "^ACCESS_PASSWORD=" .env; then   # 端口开放到公网后，没有密码任何人都能用你的显卡
+  PW=$("$APP_PY" -c "import secrets; print(secrets.token_urlsafe(9))")
+  printf '\n# 网页访问密码（留空 = 不需要密码）\nACCESS_PASSWORD=%s\n' "$PW" >> .env
+  log "已生成网页访问密码：$PW（保存在 .env 的 ACCESS_PASSWORD）"
+fi
 mkdir -p "$BASE/data/studio"
 log "AI Studio 安装完成"

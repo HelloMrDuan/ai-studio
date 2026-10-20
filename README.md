@@ -21,6 +21,16 @@
 2. **多图参考出图**：分镜图 / 指令改图 / 参考生视频，都会把出镜角色的「全身 + 特写」和场景图一起作为参考，并在提示词里写明「脸型以特写为准，服装以全身为准」。名额不够时优先保证每个角色至少一张。
 3. **人脸修正**：分镜图或视频里个别镜头脸走样 / 串脸，点「人脸修正」即可用角色特写做 FaceFusion 换脸（HyperSwap + 面部增强）。单人镜头自动选最大的脸；多人镜头按从左到右的位置逐个替换。结果保存为新版本，可随时切回。
 
+### 质量与配音（v3.1）
+
+- **访问密码**：`05_app.sh` 自动生成随机密码写入 `.env` 的 `ACCESS_PASSWORD`（启动时会打印），打开网页先登录；留空则不需要密码。
+- **自动质检 + 重抽**：每张分镜图、每段视频生成后自动检查①是否冒出参考图里没有的文字/乱码字幕（RapidOCR）②人物脸和角色特写是否一致（ArcFace，仅写实画风）。不合格自动换种子重抽（`QA_VIDEO_RETRY` / `QA_KEYFRAME_RETRY` 次），挑最好的一版；结果显示在缩略图上。
+- **道具一致性**：提取角色时一并提取关键道具（信物、照片、信件…），生成道具参考图；分镜表标注每个镜头出现的道具，出图时作为参考图输入。
+- **固定音色配音 + 对口型**（`bash deploy/06_voice.sh` 安装）：
+  1. 角色卡上「生成音色样本」（H3 按声音描述说一句话并提取人声）或上传自己的录音；
+  2. 镜头视频页「配音」：IndexTTS2 用音色样本合成台词（同一角色每个镜头都是同一个声音，支持情绪）→ Demucs 去掉原视频里的人声、保留环境音 → 单人中近景自动用 LatentSync 1.6 对口型（其他镜头可手动强制）；
+  3. 剧本页勾选「配音模式」后，生成视频时 H3 只出环境音，视频生成完自动配音。
+
 ## 和旧版相比
 
 - **重写**：旧版 `main.py` 2.7 万行（34 个函数被重复定义 58 次）、分镜 1.1 万行审计逻辑，全部替换为后端约 2,500 行 + 前端约 1,000 行的清晰实现。
@@ -38,7 +48,7 @@ app/            后端（FastAPI）
   gpu.py        单卡显存调度        tasks.py     持久化任务队列
 web/            前端（原生 JS 单页）
 deploy/         AutoDL 一键部署脚本
-scripts/preflight.py  部署自检
+scripts/preflight.py  部署自检      scripts/qa_check.py  自动质检      scripts/tts_run.py  配音
 docs/DEPLOY.md  部署手册（必读）
 tests/          端到端测试（模拟模型）
 ```
@@ -49,7 +59,7 @@ tests/          端到端测试（模拟模型）
 
 ```bash
 cd /root/autodl-tmp/ai-studio
-bash deploy/install_all.sh
+bash deploy/install_all.sh          # 加 --voice 同时安装配音/对口型（也可之后单独 bash deploy/06_voice.sh）
 /root/autodl-tmp/envs/studio/bin/python scripts/preflight.py --smoke
 # AutoDL 控制台 → 自定义服务 → 打开 6006
 ```

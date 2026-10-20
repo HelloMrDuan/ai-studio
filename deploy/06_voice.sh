@@ -59,9 +59,9 @@ if [ ! -x "$TTS_PY" ]; then
 fi
 [ -d "$TTS_DIR/.git" ] || gh_clone https://github.com/index-tts/index-tts.git "$TTS_DIR" || die "克隆 index-tts 失败"
 cd "$TTS_DIR"
-if ! "$TTS_PY" -c "import indextts.infer_v2, demucs" 2>/dev/null; then
+if ! "$TTS_PY" -c "import indextts.infer_v2, demucs, pkg_resources" 2>/dev/null; then
   log "安装 IndexTTS2 依赖（torch 2.8，约 8GB，十几分钟）"
-  VIRTUAL_ENV=$ENVS/tts "$UV" pip install -p "$TTS_PY" --no-sources --index-strategy unsafe-best-match -e . demucs \
+  VIRTUAL_ENV=$ENVS/tts "$UV" pip install -p "$TTS_PY" --no-sources --index-strategy unsafe-best-match -e . demucs "setuptools<80" \
     || die "IndexTTS2 依赖安装失败"
 fi
 if [ ! -f checkpoints/gpt.pth ]; then
@@ -94,10 +94,10 @@ if [ $NO_LIPSYNC = 0 ]; then
   fi
   [ -d "$LS_DIR/.git" ] || gh_clone https://github.com/bytedance/LatentSync.git "$LS_DIR" || die "克隆 LatentSync 失败"
   cd "$LS_DIR"
-  if ! "$LS_PY" -c "import diffusers, decord, insightface" 2>/dev/null; then
+  if ! "$LS_PY" -c "import diffusers, decord, insightface, pkg_resources" 2>/dev/null; then
     log "安装 LatentSync 依赖（约 5GB）"
     grep -v "^--extra-index-url" requirements.txt > /tmp/ls_req.txt
-    VIRTUAL_ENV=$ENVS/lipsync "$UV" pip install -p "$LS_PY" --index-strategy unsafe-best-match -r /tmp/ls_req.txt \
+    VIRTUAL_ENV=$ENVS/lipsync "$UV" pip install -p "$LS_PY" --index-strategy unsafe-best-match -r /tmp/ls_req.txt "setuptools<80" \
       || die "LatentSync 依赖安装失败"
   fi
   log "下载 LatentSync 1.6 模型"

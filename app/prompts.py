@@ -133,6 +133,7 @@ STORYBOARD_SYSTEM = f"""你是分镜导演。把剧本拆成可以逐镜头生�
 6. dialogue 为本镜头的台词，speaker 必须是角色表中的名字；没有台词就给空数组。
 7. location 填【场景表】里的场景名。
 8. 景别要有变化，重要情绪用近景/特写，交代环境用全景/远景。
+9. 严格遵守【时长预算】：所有镜头 duration 之和不超过预算的 110%；超了就合并相邻镜头或删掉次要的过场/空镜，保留关键情节和台词。
 只输出 JSON：{{"shots":[{{"scene":"场景名","location":"","shot_size":"","camera_angle":"","camera_move":"","characters":[""],
 "description":"","action":"","dialogue":[{{"speaker":"","line":"","emotion":""}}],"sound":"环境音/音效","duration":5}}]}}"""
 
@@ -141,7 +142,12 @@ def storyboard_user(project: dict, chars: list[dict], locs: list[dict], chunk: s
     roster = "\n".join(f"- {c['name']}（{c.get('role') or ''}）：{c.get('appearance') or ''}" for c in chars) or "（无）"
     places = "\n".join(f"- {l['name']}：{l.get('description') or ''}" for l in locs) or "（无）"
     tail = f"\n【上一段最后一个镜头】{prev}\n" if prev else ""
-    return f"【角色表】\n{roster}\n\n【场景表】\n{places}\n{tail}\n【本段剧本】\n{chunk}"
+    total = int(project.get("target_seconds") or 60)
+    script = project.get("script") or chunk
+    budget = max(5, round(total * min(1.0, len(chunk) / max(1, len(script)))))
+    shots = max(1, round(budget / 5))
+    plan = (f"\n【时长预算】本段约 {budget} 秒（全片目标 {total} 秒），建议 {max(1, shots - 1)}~{shots + 1} 个镜头。\n")
+    return f"【角色表】\n{roster}\n\n【场景表】\n{places}\n{tail}{plan}\n【本段剧本】\n{chunk}"
 
 
 def split_script(script: str, limit: int = 5000) -> list[str]:

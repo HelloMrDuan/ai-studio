@@ -127,7 +127,7 @@ STORYBOARD_SYSTEM = f"""你是分镜导演。把剧本拆成可以逐镜头生�
 规则：
 1. 每个镜头只表达一个清晰的瞬间/动作，时长 3~10 秒；有台词的镜头按每秒约 4 个字估算并留 1 秒余量。
 2. shot_size 只能是 {SHOT_SIZES}；camera_angle 只能是 {CAMERA_ANGLES}；camera_move 只能是 {CAMERA_MOVES}。
-3. characters 只能填【角色表】里的名字，写出这个镜头画面里真正能看到的所有角色。
+3. characters 只能填【角色表】里的名字，写出这个镜头画面里真正能看到的所有角色——包括前景虚化、背影、过肩、只露半身的角色也要写。
 4. description 写这一镜头首帧的静态画面：每个角色的位置（画面左/中/右、前景/背景）、姿态、表情、朝向，环境与光线。多人时必须写清每个人的站位，不能含糊。
 5. action 写镜头内发生的动作和变化（给视频模型用）。
 6. dialogue 为本镜头的台词，speaker 必须是角色表中的名字；没有台词就给空数组。
@@ -148,6 +148,25 @@ def storyboard_user(project: dict, chars: list[dict], locs: list[dict], chunk: s
     shots = max(1, round(budget / 5))
     plan = (f"\n【时长预算】本段约 {budget} 秒（全片目标 {total} 秒），建议 {max(1, shots - 1)}~{shots + 1} 个镜头。\n")
     return f"【角色表】\n{roster}\n\n【场景表】\n{places}\n{tail}{plan}\n【本段剧本】\n{chunk}"
+
+
+_VISIBLE_CUES = ("背影", "肩", "前景", "背景", "侧脸", "身影", "侧身", "坐", "站", "走", "画面左", "画面右", "画面中",
+                 "进入", "身穿", "面部", "脸", "手")
+
+
+def visible_characters(shot: dict, names: list[str]) -> list[str]:
+    """LLM 常漏填过肩/前景背影里的角色 → 描述里以「可见」方式出现的角色名补进 characters（否则生图会把他画成别人）。"""
+    out = [n for n in shot.get("characters") or [] if n in names]
+    for clause in re.split(r"[，。；,;！!？?\n]", shot.get("description") or ""):
+        for n in names:
+            if n in out or n not in clause:
+                continue
+            rest = clause.split(n, 1)[1]
+            if rest.startswith(("的笔迹", "的字", "的照片", "的名字", "的声音")):
+                continue
+            if any(c in clause for c in _VISIBLE_CUES):
+                out.append(n)
+    return out
 
 
 def split_script(script: str, limit: int = 5000) -> list[str]:

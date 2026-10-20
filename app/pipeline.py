@@ -159,7 +159,7 @@ async def task_storyboard(ctx: TaskContext) -> dict:
             "location_id": loc_ids.get(loc_name or "", ""), "shot_size": r["shot_size"],
             "camera_angle": r["camera_angle"], "camera_move": r["camera_move"],
             "description": r["description"], "action": r["action"],
-            "character_ids": [by_name[n] for n in r["characters"] if n in by_name],
+            "character_ids": [by_name[n] for n in prompts.visible_characters(r, list(by_name))],
             "dialogue": r["dialogue"], "sound": r["sound"], "duration": r["duration"],
         })
     return {"shots": len(rows), "seconds": round(sum(r["duration"] for r in rows), 1)}

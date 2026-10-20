@@ -45,7 +45,7 @@ async def _run(cmd: list[str], cwd: Path, log_cb: Log = None, timeout: int | Non
     env["HF_HOME"] = str(s.base_dir / ".cache" / "huggingface")
     env["TORCH_HOME"] = str(s.base_dir / ".cache" / "torch")
     env["PYTHONUNBUFFERED"] = "1"
-    proc = await asyncio.create_subprocess_exec(*cmd, cwd=str(cwd), env=env, stdout=asyncio.subprocess.PIPE,
+    proc = await asyncio.create_subprocess_exec(*cmd, stdin=asyncio.subprocess.DEVNULL, cwd=str(cwd), env=env, stdout=asyncio.subprocess.PIPE,
                                                 stderr=asyncio.subprocess.STDOUT)
     lines: list[str] = []
 

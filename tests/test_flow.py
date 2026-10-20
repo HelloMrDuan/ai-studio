@@ -28,7 +28,7 @@ CALLS = {"llm": [], "comfy": []}
 
 
 def make_video(path: Path, seconds: float = 1.0) -> None:
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"testsrc=size=320x180:rate=24:d={seconds}",
+    subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"testsrc=size=320x180:rate=24:d={seconds}",
                     "-f", "lavfi", "-i", f"sine=frequency=440:duration={seconds}", "-shortest", "-c:v", "libx264",
                     "-pix_fmt", "yuv420p", "-c:a", "aac", str(path)], check=True)
 
@@ -77,7 +77,7 @@ def wait(client, task_id, timeout=60):
             assert t["status"] == "done", t["message"]
             return t
         time.sleep(0.2)
-    raise AssertionError("任务超时")
+    raise AssertionError("任务超时：" + str(t) + "\nALL:" + str([(x["id"], x["type"], x["status"], x["params"], x["message"]) for x in client.get("/api/tasks?limit=20").json()]))
 
 
 def test_full_flow(client):

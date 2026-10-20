@@ -49,7 +49,7 @@ async def check(target: Path, *, reference: Path | None = None, faces: list[tupl
         json.dump(job, fh, ensure_ascii=False)
         job_path = fh.name
     try:
-        proc = await asyncio.create_subprocess_exec(str(s.qa_python), str(SCRIPT), job_path, env=clean_env(),
+        proc = await asyncio.create_subprocess_exec(str(s.qa_python), str(SCRIPT), job_path, env=clean_env(), stdin=asyncio.subprocess.DEVNULL,
                                                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         out, err = await asyncio.wait_for(proc.communicate(), timeout=300)
         lines = [ln for ln in out.decode("utf-8", "replace").splitlines() if ln.startswith("{")]

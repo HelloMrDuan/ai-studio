@@ -55,6 +55,7 @@ class TaskQueue:
         self.current: str | None = None
 
     def start(self) -> None:
+        self.queue = asyncio.Queue()     # 绑定当前事件循环（测试里会多次启动）
         for t in db.query("SELECT * FROM tasks WHERE status IN ('running','cancelling')"):
             db.update("tasks", t["id"], {"status": "failed", "message": "服务重启，任务中断，可点击重试"})
         for t in db.query("SELECT * FROM tasks WHERE status='queued' ORDER BY created_at"):

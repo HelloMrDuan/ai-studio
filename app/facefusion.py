@@ -228,7 +228,7 @@ async def run(processor: str, target: Path, output: Path, source: Path | None = 
     nv_libs = sorted(str(p) for p in env_root.glob("lib/python3*/site-packages/nvidia/*/lib"))
     env["LD_LIBRARY_PATH"] = ":".join([*nv_libs, str(env_root / "lib"), env.get("LD_LIBRARY_PATH", "")])
     env["PATH"] = f"{env_root / 'bin'}:{env.get('PATH', '')}"
-    proc = await asyncio.create_subprocess_exec(*cmd, cwd=str(s.facefusion_dir), env=env,
+    proc = await asyncio.create_subprocess_exec(*cmd, stdin=asyncio.subprocess.DEVNULL, cwd=str(s.facefusion_dir), env=env,
                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     lines: list[str] = []
     try:

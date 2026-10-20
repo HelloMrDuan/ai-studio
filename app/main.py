@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from . import db, pipeline  # noqa: F401  (pipeline 注册任务处理器)
 from .api import router
 from .config import ROOT, get_settings
+from .gpu import gpu
 from .tasks import queue
 
 WEB = ROOT / "web"
@@ -37,6 +38,7 @@ def _setup_logging() -> None:
 async def lifespan(_: FastAPI):
     _setup_logging()
     db.conn()
+    gpu.lock = asyncio.Lock()
     queue.start()
     yield
     if queue.worker:

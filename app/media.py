@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 async def _run(*args: str) -> str:
-    proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE,
+    proc = await asyncio.create_subprocess_exec(*args, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
                                                 stderr=asyncio.subprocess.STDOUT)
     out, _ = await proc.communicate()
     text = out.decode("utf-8", "replace")
@@ -113,17 +113,18 @@ async def atempo(audio: Path, factor: float, out: Path) -> Path:
 
 
 async def speech_track(lines: list[tuple[Path, float]], total: float, out: Path) -> Path:
-    """把多句台词按开始时间排进一条音轨，补静音到 total 秒（LatentSync 输出时长取视频和音频较短者）。"""
-    args = ["ffmpeg", "-y", "-v", "error"]
+    """把多句台词按开始时间排进一条音轨，补静音到 total 秒（LatentSync 输出时长取视频和音频较短者）。
+    第 0 路是 total 秒的静音底轨，amix 以它的长度为准，输出时长确定。"""
+    args = ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-t", f"{total:.3f}", "-i", "anullsrc=r=44100:cl=stereo"]
     for wav, _ in lines:
         args += ["-i", str(wav)]
     parts = []
-    for i, (_, start) in enumerate(lines):
+    for i, (_, start) in enumerate(lines, 1):
         ms = int(start * 1000)
         parts.append(f"[{i}:a]aresample=44100,aformat=channel_layouts=stereo,adelay={ms}|{ms}[a{i}]")
-    mix = "".join(f"[a{i}]" for i in range(len(lines)))
-    parts.append(f"{mix}amix=inputs={len(lines)}:normalize=0:dropout_transition=0,apad,atrim=0:{total:.3f}[out]")
-    args += ["-filter_complex", ";".join(parts), "-map", "[out]", "-ar", "44100", "-ac", "2", str(out)]
+    mix = "[0:a]" + "".join(f"[a{i}]" for i in range(1, len(lines) + 1))
+    parts.append(f"{mix}amix=inputs={len(lines) + 1}:duration=first:normalize=0:dropout_transition=0[out]")
+    args += ["-filter_complex", ";".join(parts), "-map", "[out]", "-t", f"{total:.3f}", "-ar", "44100", "-ac", "2", str(out)]
     await _run(*args)
     return out
 
@@ -137,13 +138,14 @@ async def extend_video(video: Path, extra: float, out: Path) -> Path:
 
 
 async def mux(video: Path, tracks: list[tuple[Path, float]], out: Path, duration: float) -> Path:
-    """用 tracks=[(音频, 音量)] 混音后替换视频原声，时长对齐 duration。"""
-    args = ["ffmpeg", "-y", "-v", "error", "-i", str(video)]
+    """用 tracks=[(音频, 音量)] 混音后替换视频原声，时长对齐 duration（静音底轨定长）。"""
+    args = ["ffmpeg", "-y", "-v", "error", "-i", str(video), "-f", "lavfi", "-t", f"{duration:.3f}",
+            "-i", "anullsrc=r=44100:cl=stereo"]
     for a, _ in tracks:
         args += ["-i", str(a)]
-    parts = [f"[{i + 1}:a]aresample=44100,aformat=channel_layouts=stereo,volume={vol}[t{i}]" for i, (_, vol) in enumerate(tracks)]
-    ins = "".join(f"[t{i}]" for i in range(len(tracks)))
-    parts.append(f"{ins}amix=inputs={len(tracks)}:normalize=0:dropout_transition=0,apad,atrim=0:{duration:.3f}[a]")
+    parts = [f"[{i + 2}:a]aresample=44100,aformat=channel_layouts=stereo,volume={vol}[t{i}]" for i, (_, vol) in enumerate(tracks)]
+    ins = "[1:a]" + "".join(f"[t{i}]" for i in range(len(tracks)))
+    parts.append(f"{ins}amix=inputs={len(tracks) + 1}:duration=first:normalize=0:dropout_transition=0[a]")
     args += ["-filter_complex", ";".join(parts), "-map", "0:v", "-map", "[a]", "-t", f"{duration:.3f}",
              "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", str(out)]
     await _run(*args)

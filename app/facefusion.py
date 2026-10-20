@@ -216,6 +216,14 @@ async def run(processor: str, target: Path, output: Path, source: Path | None = 
         else:
             cmd += [flag, str(value)]
     env = dict(os.environ)
+    # FaceFusion 检测到 CONDA_PREFIX 时会把 conda 的 lib 塞进 LD_LIBRARY_PATH，
+    # 导致系统 ffmpeg/ffprobe 加载到不兼容的 libstdc++（GLIBCXX 缺失）→ 图片/视频处理失败
+    conda_prefix = env.get("CONDA_PREFIX", "")
+    for k in ("CONDA_PREFIX", "CONDA_DEFAULT_ENV", "CONDA_SHLVL", "CONDA_PYTHON_EXE", "CONDA_EXE", "CONDA_PROMPT_MODIFIER"):
+        env.pop(k, None)
+    if env.get("LD_LIBRARY_PATH"):
+        env["LD_LIBRARY_PATH"] = ":".join(p for p in env["LD_LIBRARY_PATH"].split(":")
+                                          if p and not (conda_prefix and p.startswith(conda_prefix)))
     env_root = s.facefusion_python.parent.parent
     nv_libs = sorted(str(p) for p in env_root.glob("lib/python3*/site-packages/nvidia/*/lib"))
     env["LD_LIBRARY_PATH"] = ":".join([*nv_libs, str(env_root / "lib"), env.get("LD_LIBRARY_PATH", "")])

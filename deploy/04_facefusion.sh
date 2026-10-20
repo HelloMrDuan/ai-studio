@@ -27,7 +27,7 @@ turbo_on
 "$FF_PY" "$APP_DIR/scripts/ff_prefetch.py" full "$BASE/ff_models.txt" 2>/dev/null | tail -1 || true
 [ -s "$BASE/ff_models.txt" ] && aria2c -c -j 8 -x 4 -s 4 --file-allocation=none --console-log-level=warn \
   --summary-interval=60 --auto-file-renaming=false --allow-overwrite=true -i "$BASE/ff_models.txt" || true
-"$FF_PY" facefusion.py force-download || echo "部分模型下载失败，首次使用时会自动补下"
+env -u CONDA_PREFIX "$FF_PY" facefusion.py force-download || echo "部分模型下载失败，首次使用时会自动补下"
 turbo_off
 "$FF_PY" -c "import onnxruntime as o; print('onnxruntime', o.__version__, o.get_available_providers())"
 log "FaceFusion 完成：$FF_DIR"

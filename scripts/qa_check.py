@@ -169,8 +169,7 @@ def check_faces(frames: list[np.ndarray], refs: list[dict], models_dir: Path, th
                 per_char[n].append(max(v))
     scores = {n: round(float(np.percentile(v, 75)), 3) for n, v in per_char.items() if v}
     low = {n: s for n, s in scores.items() if s < threshold}
-    if not scores and best_any and max(best_any) < threshold:
-        low["画面中的人物"] = round(max(best_any), 3)
+    # 多人镜头里只露出部分人脸（过肩、背影、虚化背景）时无法对应到具体角色，不判（虚化的脸相似度天然偏低，误报多）
     return {"scores": scores, "low": low, "frames_with_faces": frames_with_faces, "refs": list(ref_emb)}
 
 

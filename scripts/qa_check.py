@@ -194,7 +194,7 @@ def main() -> None:
             result["warnings"].append(f"文字检测不可用：{exc}")
     if job.get("check_faces") and job.get("faces"):
         try:
-            f = check_faces(frames, job["faces"], Path(job["models_dir"]), float(job.get("face_threshold") or 0.3))
+            f = check_faces(frames, job["faces"], Path(job["models_dir"]), float(job.get("face_threshold") or 0.25))
             result["faces"] = f
             for name, s in f["low"].items():
                 result["issues"].append({"type": "face", "detail": f"「{name}」的脸不像（相似度 {s:.2f}）"})

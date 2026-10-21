@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     qa_python: Path | None = None          # 默认复用 FaceFusion 的环境（有 onnxruntime + opencv）
     qa_video_retry: int = 1                # 视频不合格时额外重抽次数（每次约 2~3 分钟）
     qa_keyframe_retry: int = 1
-    qa_face_threshold: float = 0.3         # ArcFace 余弦相似度，低于它判为「不像」
+    qa_face_threshold: float = 0.25        # ArcFace 余弦相似度，低于它判为「不像」
 
     # 配音与对口型（deploy/06_voice.sh 安装）：IndexTTS2 固定音色配音 + LatentSync 1.6 对口型 + Demucs 去人声
     tts_dir: Path | None = None

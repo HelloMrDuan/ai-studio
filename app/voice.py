@@ -91,6 +91,7 @@ async def synthesize(items: list[dict], log_cb: Log = None) -> None:
 async def remove_vocals(audio: Path, out_dir: Path) -> Path:
     """Demucs 两轨分离（CPU 即可，几秒钟），返回去掉人声后的伴奏/环境音 wav。"""
     s = get_settings()
+    out_dir.mkdir(parents=True, exist_ok=True)
     await _run([str(s.tts_python), "-m", "demucs", "--two-stems", "vocals", "-n", "htdemucs", "-d", "cpu",
                 "-o", str(out_dir), str(audio)], out_dir, timeout=600)
     found = list(out_dir.glob(f"htdemucs/{audio.stem}/no_vocals.*"))
@@ -101,6 +102,7 @@ async def remove_vocals(audio: Path, out_dir: Path) -> Path:
 
 async def isolate_vocals(audio: Path, out_dir: Path) -> Path:
     s = get_settings()
+    out_dir.mkdir(parents=True, exist_ok=True)
     await _run([str(s.tts_python), "-m", "demucs", "--two-stems", "vocals", "-n", "htdemucs", "-d", "cpu",
                 "-o", str(out_dir), str(audio)], out_dir, timeout=600)
     found = list(out_dir.glob(f"htdemucs/{audio.stem}/vocals.*"))

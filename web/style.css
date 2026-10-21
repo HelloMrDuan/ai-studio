@@ -157,3 +157,9 @@ pre.prompt{white-space:pre-wrap;background:var(--panel2);padding:10px;border-rad
 .rf-img{position:relative;width:100%;background:#0b0d11 center/cover no-repeat;border-radius:6px;overflow:hidden}
 .rf-win{position:absolute;border:2px solid var(--accent);box-shadow:0 0 0 999px rgba(0,0,0,.55);box-sizing:border-box}
 .rf-tag{position:absolute;left:4px;top:4px;font-size:11px;background:rgba(0,0,0,.7);padding:1px 6px;border-radius:4px}
+/* 运行统计 */
+.ops-days{display:flex;gap:4px;align-items:flex-end;height:90px;margin-top:12px;padding-bottom:16px;position:relative}
+.ops-day{flex:1;max-width:48px;height:100%;display:flex;flex-direction:column-reverse;position:relative;min-width:10px}
+.ops-day i{display:block;background:var(--accent);border-radius:2px 2px 0 0;opacity:.8}
+.ops-day b{display:block;background:var(--err)}
+.ops-day span{position:absolute;bottom:-16px;left:0;right:0;text-align:center;font-size:9px;color:#888;white-space:nowrap;overflow:hidden}

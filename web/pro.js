@@ -684,3 +684,68 @@ function cloudNote(p) {
   const used = (p.video_engine && p.video_engine !== 'local') || S.snap.shots.some((x) => x.engine && x.engine !== 'local');
   return used ? `<p class="muted small">☁ 云端引擎（${ready.map((k) => ENGINE_NAMES[k]).join('、')}）与本地显卡并行出片，按量计费；云端视频<b>没有声音</b>${p.dub_mode ? '，生成后会自动用角色音色配音。' : '，有台词的镜头请开启「固定音色配音」或手动配音。'}「混合」时批量生成会把靠后的一部分镜头分给云端，单个镜头可在卡片里指定引擎。</p>` : '';
 }
+
+/* ---------------- 运维与统计（P4-5） ---------------- */
+const fmtB = (b) => (b >= 1e9 ? (b / 1e9).toFixed(2) + ' GB' : b >= 1e6 ? (b / 1e6).toFixed(1) + ' MB' : Math.round((b || 0) / 1e3) + ' KB');
+const fmtS = (s) => (s >= 3600 ? (s / 3600).toFixed(1) + ' 小时' : s >= 90 ? (s / 60).toFixed(1) + ' 分钟' : Math.round(s || 0) + ' 秒');
+const pctT = (r) => (r == null ? '-' : `<span class="${r >= 0.9 ? 'ok' : r >= 0.7 ? 'warn' : 'bad'}">${Math.round(r * 100)}%</span>`);
+const CLEAN_CATS = { candidates: '未选用的候选', orphans: '无记录的残留文件', temp: '中断留下的临时目录', old_finals: '旧版成片' };
+async function opsBox() {
+  const box = $('#ops-box'); if (!box) return;
+  const days = S.opsDays || 14;
+  let st, dk;
+  try { [st, dk] = await Promise.all([api('GET', `/api/ops/stats?days=${days}`), api('GET', '/api/ops/disk')]); } catch { return; }
+  const t = st.total; const maxDay = Math.max(1, ...st.daily.map((d) => d.done + d.failed));
+  const bars = st.daily.map((d) => `<div class="ops-day" title="${d.day}：完成 ${d.done} · 失败 ${d.failed} · ${fmtS(d.seconds)}"><i style="height:${(d.done / maxDay) * 100}%"></i><b style="height:${(d.failed / maxDay) * 100}%"></b><span>${d.day.slice(5)}</span></div>`).join('');
+  box.innerHTML = `<div class="panel" style="margin-top:16px"><div class="row between"><h3>运行统计</h3>${sel([['7', '近 7 天'], ['14', '近 14 天'], ['30', '近 30 天'], ['90', '近 90 天']], String(days), 'id="ops-days" style="width:120px"')}</div>
+      <div class="grid4"><div><div class="muted small">任务</div><b>${t.tasks}</b> <span class="muted small">完成 ${t.done} · 失败 ${t.failed} · 取消 ${t.cancelled}</span></div>
+        <div><div class="muted small">成功率</div><b>${pctT(t.success_rate)}</b> <span class="muted small">自动恢复 ${t.recovered} 次</span></div>
+        <div><div class="muted small">累计耗时</div><b>${fmtS(t.seconds)}</b></div>
+        <div><div class="muted small">按模型组</div><span class="small">${Object.entries(st.groups).map(([k, v]) => `${esc(k)} ${fmtS(v)}`).join(' · ') || '-'}</span></div></div>
+      ${bars ? `<div class="ops-days">${bars}</div>` : ''}
+      ${st.types.length ? `<table style="margin-top:10px"><tr><th>任务类型</th><th>完成</th><th>失败</th><th>成功率</th><th>平均</th><th>P50</th><th>P90</th><th>合计</th></tr>
+        ${st.types.map((x) => `<tr><td>${esc(x.label)}</td><td>${x.done}</td><td>${x.failed}</td><td>${pctT(x.success_rate)}</td><td>${fmtS(x.avg)}</td><td>${fmtS(x.p50)}</td><td>${fmtS(x.p90)}</td><td>${fmtS(x.total)}</td></tr>`).join('')}</table>` : '<div class="muted">这段时间没有任务</div>'}
+      ${st.engines.length ? `<div class="small" style="margin-top:8px">☁ 云端：${st.engines.map((e) => `${esc(ENGINE_NAMES[e.engine] || e.engine)} 完成 ${e.done} / 失败 ${e.failed}（${pctT(e.success_rate)}，平均 ${fmtS(e.avg)}）`).join('；')}</div>` : ''}
+      ${st.errors.length ? `<details style="margin-top:8px"><summary class="small">失败原因（${st.errors.reduce((a, e) => a + e.count, 0)}）</summary><table>${st.errors.map((e) => `<tr><td>${esc(e.kind)}</td><td>${e.count}</td><td class="small muted">${esc(e.sample)}</td></tr>`).join('')}</table></details>` : ''}</div>
+    <div class="two" style="margin-top:16px">
+      <div class="panel"><h3>项目占用空间 <span class="muted small">素材共 ${fmtB(dk.media_bytes)} · 剩余 ${fmtB(dk.free)}</span></h3>
+        <table>${dk.projects.slice(0, 30).map((p) => `<tr><td><a href="#/p/${p.id}/final">${esc(p.title)}</a></td><td>${fmtB(p.bytes)}</td></tr>`).join('')}</table>
+        <p class="muted small">到项目「⑤ 成片」页底部的「项目维护」里预览并清理未选用的候选。</p></div>
+      <div class="panel"><div class="row between"><h3>项目备份</h3><button class="btn small" data-act="restore-upload">上传备份恢复</button></div>
+        ${dk.backups.length ? `<table>${dk.backups.map((b) => `<tr><td class="small">${esc(b.name)}</td><td class="small">${fmtB(b.bytes)}</td><td class="small muted">${new Date(b.mtime * 1000).toLocaleString()}</td>
+          <td class="row"><a class="btn small ghost" href="/api/backups/${encodeURIComponent(b.name)}" download>下载</a><button class="btn small ghost" data-act="restore-backup" data-name="${esc(b.name)}">恢复</button><button class="btn small danger" data-act="del-backup" data-name="${esc(b.name)}">删除</button></td></tr>`).join('')}</table>` : '<div class="muted small">还没有备份。到项目「⑤ 成片」页的「项目维护」里一键备份。</div>'}
+        <p class="muted small">恢复会导入为一个新项目（不覆盖现有项目）。备份文件在服务器 data/backups 目录。</p></div></div>`;
+}
+document.addEventListener('change', (e) => { if (e.target.id === 'ops-days') { S.opsDays = Number(e.target.value); opsBox(); } });
+function maintPanel() {
+  const p = S.snap.project; const c = S.clean && S.clean.pid === p.id ? S.clean : null; const busy = busyOf(`${p.id}:backup`);
+  const sum = c ? Object.entries(c.summary).map(([k, v]) => `${CLEAN_CATS[k] || k} ${v.files} 个 · ${fmtB(v.bytes)}`).join('；') : '';
+  return `<div class="panel" style="margin-top:16px"><h3>项目维护 <span class="muted small">磁盘清理 · 备份</span></h3>
+    <div class="row small" style="flex-wrap:wrap;gap:12px">
+      <label class="row"><input type="checkbox" id="cl-cand" checked> 未选用的候选（分镜图/视频/定妆照等）</label>
+      <label class="row">每个对象额外保留最近 ${sel([['0', '0'], ['1', '1'], ['2', '2'], ['3', '3']], String((c && c.keep) || 0), 'id="cl-keep" style="width:64px"')} 个</label>
+      <label class="row"><input type="checkbox" id="cl-orph" checked> 残留文件与临时目录</label>
+      <label class="row"><input type="checkbox" id="cl-final"> 旧版成片（保留当前和每种画幅最新一版）</label>
+      <button class="btn small ghost" data-act="clean-preview">预览可清理</button>
+      ${c ? `<button class="btn small danger" data-act="clean-run" ${c.bytes ? '' : 'disabled'}>清理 ${fmtB(c.bytes)}</button>` : ''}</div>
+    ${c ? `<div class="small" style="margin-top:6px">项目共 ${fmtB(c.project_bytes)}，可清理 <b>${fmtB(c.bytes)}</b>${sum ? `：${sum}` : '（没有可清理的文件）'}</div>
+      ${c.items.length ? `<details style="margin-top:4px"><summary class="muted small">文件列表（${c.items.length}${c.items.length >= 300 ? '+' : ''}）</summary><div class="small muted" style="max-height:200px;overflow:auto">${c.items.map((i) => `${esc(CLEAN_CATS[i.cat] || i.cat)} · ${esc(i.path)} · ${fmtB(i.size)}`).join('<br>')}</div></details>` : ''}` : ''}
+    <div class="row" style="margin-top:10px"><button class="btn small" data-act="backup" data-slim="0" ${busy ? 'disabled' : ''}>${busy ? '备份中… ' + busy.progress + '%' : '完整备份'}</button>
+      <button class="btn small ghost" data-act="backup" data-slim="1" ${busy ? 'disabled' : ''}>精简备份（不含未选用候选）</button>
+      <a class="btn small ghost" href="#/system">查看 / 下载备份</a></div></div>`;
+}
+const cleanOpts = () => ({ candidates: val('cl-cand'), orphans: val('cl-orph'), old_finals: val('cl-final'), keep: Number(val('cl-keep')) });
+Object.assign(ACTIONS, {
+  async 'clean-preview'() { const o = cleanOpts(); S.clean = { ...(await api('POST', `/api/projects/${S.pid}/cleanup/preview`, o)), pid: S.pid, keep: o.keep }; renderProject(); },
+  async 'clean-run'() {
+    if (!confirm(`确定删除 ${fmtB(S.clean.bytes)} 的文件？删除后无法恢复（建议先备份）。`)) return;
+    const r = await api('POST', `/api/projects/${S.pid}/cleanup`, cleanOpts()); toast(`已删除 ${r.deleted} 个，释放 ${fmtB(r.freed)}`); S.clean = null; await loadSnap(true);
+  },
+  async backup(el) { submitted(await api('POST', `/api/projects/${S.pid}/backup`, { slim: el.dataset.slim === '1' }), '已开始备份，完成后在「系统状态」页下载'); },
+  async 'restore-upload'() {
+    const f = await pickFile('.zip,application/zip'); if (!f) return; toast('上传并恢复中…');
+    const r = await upload('/api/projects/restore', f); toast(`已恢复为新项目「${r.title}」`); location.hash = `#/p/${r.id}`;
+  },
+  async 'restore-backup'(el) { if (!confirm('把这个备份导入为一个新项目？')) return; const r = await api('POST', `/api/backups/${encodeURIComponent(el.dataset.name)}/restore`); toast(`已恢复为新项目「${r.title}」`); location.hash = `#/p/${r.id}`; },
+  async 'del-backup'(el) { if (!confirm('删除这个备份文件？')) return; await api('DELETE', `/api/backups/${encodeURIComponent(el.dataset.name)}`); opsBox(); },
+});

@@ -470,7 +470,7 @@ function viewFinal() {
     ${finals.length ? `<div class="panel" style="margin-top:16px"><h3>历史版本</h3><table><tr><th>时间</th><th>镜头</th><th>时长</th><th></th></tr>
       ${finals.map((a) => `<tr><td>${new Date(a.created_at * 1000).toLocaleString()}</td><td>${a.meta.shots || ''}</td><td>${a.meta.seconds || ''}s${a.meta.grade && a.meta.grade.before != null ? `<div class="muted small">色差 ΔE ${a.meta.grade.before}→${a.meta.grade.after}</div>` : ''}${soundLine(a.meta.sound)}${a.meta.size ? `<div class="muted small">${a.meta.size} · ${a.meta.fps}fps${a.meta.aspect && a.meta.aspect !== p.aspect_ratio ? ` · <b>${a.meta.aspect} 版</b>` : ''}</div>` : ''}</td>
       <td class="row"><button class="btn small ghost" data-act="select-asset" data-id="${a.id}">设为当前</button><a class="btn small ghost" href="${media(a.path)}" download>下载</a>
-      <button class="btn small danger" data-act="del-asset" data-id="${a.id}">删除</button></td></tr>`).join('')}</table></div>` : ''}`;
+      <button class="btn small danger" data-act="del-asset" data-id="${a.id}">删除</button></td></tr>`).join('')}</table></div>` : ''}${maintPanel()}`;
 }
 
 /* ---------------- 字段保存 ---------------- */
@@ -758,7 +758,8 @@ async function renderSystem() {
         <div class="muted small" style="margin-top:6px">当前显存模型：${esc({ image: '出图', video: '视频', llm: '文字模型', voice: '配音/对口型', facefusion: 'FaceFusion' }[g.group] || '无')}，启动以来切换 ${g.switches || 0} 次${g.restarts ? `，自动重启 ComfyUI ${g.restarts} 次` : ''}${(g.recent_switches || []).length ? '（最近：' + g.recent_switches.map((r) => `${esc(r.from)}→${esc(r.to)} ${r.seconds}s`).join('，') + '）' : ''}</div></div></div>
     <div class="panel" style="margin-top:16px"><h3>模型文件</h3><table><tr><th>文件</th><th>目录</th><th>大小</th><th>状态</th></tr>
       ${s.models.map((m) => `<tr><td>${esc(m.name)}</td><td>${esc(m.folder)}</td><td>${m.size_gb ? m.size_gb + ' GB' : '-'}</td><td>${m.ok ? '<span class="ok">✓</span>' : m.optional ? '<span class="muted">可选，未下载</span>' : '<span class="bad">✗ 缺失</span>'}</td></tr>`).join('')}
-    </table><p class="muted small">缺失的模型可运行 <code>bash deploy/download_models.sh</code> 补齐（参考生视频模型加 <code>--r2v</code>）。</p></div></div>`;
+    </table><p class="muted small">缺失的模型可运行 <code>bash deploy/download_models.sh</code> 补齐（参考生视频模型加 <code>--r2v</code>）。</p></div><div id="ops-box"></div></div>`;
+  opsBox();
 }
 
 /* ---------------- 任务轮询 ---------------- */

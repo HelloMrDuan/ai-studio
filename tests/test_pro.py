@@ -838,3 +838,87 @@ def test_cloud_video(client, project, monkeypatch, tmp_path):
         for x in client.get(f"/api/projects/{project}").json()["shots"]:
             if x.get("engine"):
                 client.patch(f"/api/shots/{x['id']}", json={"engine": ""})
+
+
+def test_ops_stats_cleanup_backup(client, project):
+    import os
+    import time as _t
+    from app import db, ops, pipeline
+    pid = project
+    st = client.get("/api/ops/stats?days=30").json()
+    assert st["total"]["done"] > 0 and any(t["success_rate"] is not None and t["label"] for t in st["types"])
+    assert st["daily"] and "p90" in st["types"][0]
+    assert client.get(f"/api/ops/stats?project_id={pid}").json()["total"]["tasks"] > 0
+    snap = client.get(f"/api/projects/{pid}").json()
+    shot = snap["shots"][0]
+    wait(client, client.post(f"/api/shots/{shot['id']}/keyframe", json={"count": 2}).json()["id"])
+    snap = client.get(f"/api/projects/{pid}").json()
+    shot = next(x for x in snap["shots"] if x["id"] == shot["id"])
+    kfs = [a for a in snap["assets"][shot["id"]] if a["kind"] == "keyframe"]
+    refs = ops.referenced(pid)
+    unused = [a["path"] for a in kfs if a["path"] != shot["keyframe"] and a["path"] not in refs]
+    assert unused
+    # 选中的超分版引用原版：原版不能被清理
+    if not any(x["video"] for x in snap["shots"]):
+        wait(client, client.post(f"/api/shots/{snap['shots'][1]['id']}/video", json={}).json()["id"])
+        snap = client.get(f"/api/projects/{pid}").json()
+    vs = next(x for x in snap["shots"] if x["video"])
+    up = pipeline.project_dir(pid, "videos") / "up_test.mp4"
+    import shutil as _sh
+    _sh.copy2(pipeline.absolute(vs["video"]), up)
+    orig = vs["video"]
+    a = pipeline.add_asset(pid, "video", up, "shot", vs["id"], {"source": orig})
+    db.update("shots", vs["id"], {"video": a["path"]})
+    # 孤儿文件 + 中断留下的临时目录
+    orphan = pipeline.project_dir(pid, "keyframes") / "orphan.png"
+    orphan.write_bytes(b"x" * 1000)
+    work = pipeline.project_dir(pid, "final") / "work_dead"
+    work.mkdir(exist_ok=True)
+    (work / "n0000.mp4").write_bytes(b"0" * 500)
+    old = _t.time() - 7200
+    for p in (orphan, work, work / "n0000.mp4"):
+        os.utime(p, (old, old))
+    pv = client.post(f"/api/projects/{pid}/cleanup/preview", json={}).json()
+    paths = {i["path"]: i["cat"] for i in pv["items"]}
+    assert all(paths.get(u) == "candidates" for u in unused), (unused, paths)
+    assert shot["keyframe"] not in paths and orig not in paths and a["path"] not in paths
+    assert paths.get(pipeline.rel(orphan)) == "orphans" and paths.get(pipeline.rel(work)) == "temp"
+    assert pv["summary"]["candidates"]["files"] >= 1 and pv["bytes"] > 0
+    kept = client.post(f"/api/projects/{pid}/cleanup/preview", json={"keep": 5}).json()
+    assert not any(i["cat"] == "candidates" and i["kind"] == "keyframe" and i["path"] in unused for i in kept["items"])
+    r = client.post(f"/api/projects/{pid}/cleanup", json={}).json()
+    assert r["deleted"] == len(pv["items"]) and r["freed"] > 0
+    assert not any(pipeline.exists(u) for u in unused) and not orphan.exists() and not work.exists()
+    assert pipeline.exists(shot["keyframe"]) and pipeline.exists(orig)
+    assert not db.query("SELECT id FROM assets WHERE path=?", [unused[0]])
+    # 备份 → 恢复为新项目
+    t = wait(client, client.post(f"/api/projects/{pid}/backup", json={}).json()["id"])
+    name = t["result"]["name"]
+    disk = client.get("/api/ops/disk").json()
+    assert any(b["name"] == name for b in disk["backups"]) and any(p["id"] == pid and p["bytes"] > 0 for p in disk["projects"])
+    assert client.get(f"/api/backups/{name}").status_code == 200
+    rs = client.post(f"/api/backups/{name}/restore").json()
+    nid = rs["id"]
+    src = client.get(f"/api/projects/{pid}").json()
+    dst = client.get(f"/api/projects/{nid}").json()
+    assert len(dst["shots"]) == len(src["shots"]) and dst["project"]["script"] == src["project"]["script"]
+    chars = {c["id"] for c in dst["characters"]}
+    assert chars and not chars & {c["id"] for c in src["characters"]}
+    for x in dst["shots"]:
+        assert set(x["character_ids"]) <= chars
+        for k in ("keyframe", "video"):
+            if x[k]:
+                assert x[k].startswith(nid + "/") and pipeline.exists(x[k])
+    assert all(a["path"].startswith(nid + "/") for lst in dst["assets"].values() for a in lst)
+    sv = next(x for x in dst["shots"] if x["video"])
+    va = next(a for a in dst["assets"][sv["id"]] if a["path"] == sv["video"])
+    assert va["owner_id"] == sv["id"]
+    # 上传 zip 恢复；坏文件报错
+    zp = ops.backup_dir() / name
+    with zp.open("rb") as f:
+        up2 = client.post("/api/projects/restore?name=导入副本", files={"file": (name, f, "application/zip")}).json()
+    assert up2["title"] == "导入副本" and up2["id"] not in (pid, nid)
+    assert client.post("/api/projects/restore", files={"file": ("x.zip", b"not a zip", "application/zip")}).status_code == 400
+    assert client.delete(f"/api/backups/{name}").json()["ok"]
+    for x in (nid, up2["id"]):
+        client.delete(f"/api/projects/{x}")

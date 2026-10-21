@@ -64,7 +64,7 @@ GROUP = {
     "narration": "voice", "narration_write": "llm", "bgm": "music",
     "upscale": "enhance", "interpolate": "enhance",
     "series_plan": "llm", "recap": "llm",
-    "cloud_video": "cloud",
+    "cloud_video": "cloud", "backup": "cpu",
 }
 # 并行通道：云端任务不占本机显卡，单独调度、可同时跑多个（每个引擎 cloud_concurrency 个）
 PARALLEL = {"cloud_video"}

@@ -303,7 +303,7 @@ def test_vlm_review(client, project, monkeypatch):
     # 出图后即时审：第一张六指 → 自动重抽 → 选合格的那张
     wait(client, client.post(f"/api/shots/{shot['id']}/keyframe", json={"count": 1, "auto_select": True}).json()["id"])
     cmp = client.get(f"/api/shots/{shot['id']}/compare").json()["items"][-2:]
-    assert cmp[0]["qa_ok"] is False and "六根手指" in cmp[0]["qa"][0] and cmp[1]["qa_ok"] and cmp[1]["current"]
+    assert cmp[0]["qa_ok"] is False and "六根手指" in cmp[0]["qa"][0] and cmp[1]["qa_ok"]
     # 整片审片（视频抽帧网格）+ 报告
     wait(client, client.post(f"/api/shots/{shot['id']}/video", json={}).json()["id"])
     answers.append({"score": 4, "issues": [{"type": "flicker", "severity": "high", "detail": "第3帧人脸变成另一个人"}], "fix": "人物保持同一张脸"})

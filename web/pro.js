@@ -356,3 +356,41 @@ POST_SECTIONS.push(() => {
       <div><label class="f">匹配强度 ${jget('grade', 'strength', 0.7)}</label><input type="range" min="0.2" max="1" step="0.1" value="${jget('grade', 'strength', 0.7)}" data-jsave="grade.strength" data-num="1" data-rerender="1">
         ${jchk('grade', 'deflicker', false, '时域去闪烁')}</div></div></div>`;
 });
+const jtext = (field, key, dflt, ph = '', attrs = '') => `<input type="text" data-jsave="${field}.${key}" value="${esc(jget(field, key, dflt) ?? '')}" placeholder="${esc(ph)}" ${attrs}>`;
+/* 字幕与包装：post.subtitle / post.title_card / post.end_card 是嵌套对象，用 data-jsave2="post.subtitle.preset" */
+document.addEventListener('change', async (e) => {
+  const el = e.target; if (!el.dataset.jsave2) return;
+  const [field, sub, key] = el.dataset.jsave2.split('.'); const p = S.snap.project;
+  let v = el.type === 'checkbox' ? el.checked : el.value; if (el.dataset.num) v = Number(v);
+  const obj = { ...(p[field] || {}) }; obj[sub] = { ...(obj[sub] || {}), [key]: v };
+  Object.assign(p, await api('PATCH', `/api/projects/${p.id}`, { [field]: obj })); toast('已保存');
+  if (key === 'enabled') renderProject();
+});
+const pget = (sub, key, dflt) => { const o = ((S.snap.project.post || {})[sub]) || {}; return o[key] === undefined ? dflt : o[key]; };
+const pchk = (sub, key, dflt, label) => `<label class="row small"><input type="checkbox" data-jsave2="post.${sub}.${key}" ${pget(sub, key, dflt) ? 'checked' : ''}> ${label}</label>`;
+const ptext = (sub, key, dflt, ph = '') => `<input type="text" data-jsave2="post.${sub}.${key}" value="${esc(pget(sub, key, dflt) ?? '')}" placeholder="${esc(ph)}">`;
+POST_SECTIONS.push(() => {
+  const presets = Object.entries(S.meta.sub_presets || { 经典: '白字黑边' });
+  return `<div class="post-sec"><b>字幕样式</b>
+    <div class="grid4" style="margin-top:6px">
+      <div><label class="f">样式</label>${sel(presets.map(([k, v]) => [k, `${k}（${v}）`]), pget('subtitle', 'preset', '经典'), 'data-jsave2="post.subtitle.preset"')}</div>
+      <div><label class="f">位置</label>${sel([['bottom', '底部'], ['middle', '中间'], ['top', '顶部']], pget('subtitle', 'position', 'bottom'), 'data-jsave2="post.subtitle.position"')}</div>
+      <div><label class="f">字号倍数</label><input type="number" step="0.1" min="0.5" max="2" data-num="1" data-jsave2="post.subtitle.scale" value="${pget('subtitle', 'scale', 1)}"></div>
+      <div><label class="f">文字颜色（可空）</label>${ptext('subtitle', 'color', '', '#FFE600')}</div></div>
+    <div class="row" style="margin-top:6px;gap:14px;flex-wrap:wrap">${pchk('subtitle', 'karaoke', false, '逐字高亮（卡拉 OK）')}${pchk('subtitle', 'highlight', true, '关键词花字（【】里的字和下面的关键词）')}${pchk('subtitle', 'speaker', false, '显示说话人')}</div>
+    <label class="f">关键词（逗号分隔，变色放大）</label>${ptext('subtitle', 'keywords', '', '如：离婚, 真相, 三千万')}</div>
+  <div class="post-sec"><div class="row between"><b>转场与片头片尾</b><label class="row small"><input type="checkbox" data-jsave="post.transitions" ${jget('post', 'transitions', true) ? 'checked' : ''}> 使用分镜里设置的转场（叠化/闪白/黑场）</label></div>
+    <div class="grid2" style="margin-top:6px">
+      <div>${pchk('title_card', 'enabled', false, '片头标题卡')}<div class="grid2">${ptext('title_card', 'text', '', '标题（默认项目名）')}${ptext('title_card', 'subtitle', '', '集数，如：第 1 集')}</div></div>
+      <div>${pchk('end_card', 'enabled', false, '片尾卡')}<div class="grid2">${ptext('end_card', 'text', '', '未完待续')}${ptext('end_card', 'subtitle', '', '如：关注看下一集')}</div></div></div></div>
+  <div class="post-sec"><div class="row between"><b>封面</b>${jchk('post', 'cover', true, '合成时自动生成封面')}</div>
+    <div class="row" style="margin-top:6px;align-items:flex-start;gap:14px">
+      ${S.snap.project.cover ? `<img src="${media(S.snap.project.cover)}" class="cover-thumb" data-act="zoom" data-src="${media(S.snap.project.cover)}">` : '<div class="cover-thumb empty small">暂无</div>'}
+      <div class="grow"><div class="grid2">${ptext('cover_opts', 'title', '', '封面标题（默认项目名，可用 \\n 换行）')}${ptext('cover_opts', 'subtitle', '', '副标题（默认梗概前 24 字）')}</div>
+        <div class="row" style="margin-top:6px">${sel([['', '自动选高光镜头'], ...S.snap.shots.filter((x) => x.keyframe).map((x) => [x.id, `#${x.sort + 1} ${x.shot_size}`])], '', 'id="cv-shot" style="width:160px"')}
+          ${sel([['3:4', '3:4 竖版'], ['9:16', '9:16 竖屏'], ['16:9', '16:9 横版'], ['1:1', '1:1']], pget('cover_opts', 'aspect', '3:4'), 'data-jsave2="post.cover_opts.aspect" id="cv-asp" style="width:110px"')}
+          <button class="btn small" data-act="make-cover">生成封面</button>${S.snap.project.cover ? `<a class="btn small ghost" href="${media(S.snap.project.cover)}" download>下载</a>` : ''}</div></div></div></div>`;
+});
+Object.assign(ACTIONS, {
+  async 'make-cover'() { const r = await api('POST', `/api/projects/${S.pid}/cover`, { shot_id: val('cv-shot'), aspect: val('cv-asp'), title: pget('cover_opts', 'title', '').replace(/\\n/g, '\n') }); toast('封面已生成'); loadSnap(true); },
+});

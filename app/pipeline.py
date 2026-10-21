@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import comfy, db, facefusion, llm, media, prompts, qa, videox, vlm, voice, grade
+from . import comfy, db, facefusion, llm, media, prompts, qa, videox, vlm, voice, grade, package
 from .config import get_settings
 from .gpu import gpu
 from .tasks import TaskContext, handler, queue
@@ -769,6 +769,9 @@ async def task_dub(ctx: TaskContext) -> dict:
             starts.append(t)
             t += d + gap
         speech = await media.speech_track(list(zip(wavs, starts)), total, work / "speech.wav")
+        dlg = shot.get("dialogue") or []
+        timing = [{"j": next((k for k, x in enumerate(dlg) if x is d), -1), "start": round(st, 3), "dur": round(du, 3)}
+                  for (d, _), st, du in zip(voiced, starts, durs)]
 
         await ctx.progress(35, "处理环境音…")
         tracks: list[tuple[Path, float]] = [(speech, 1.0)]
@@ -810,7 +813,8 @@ async def task_dub(ctx: TaskContext) -> dict:
         shutil.rmtree(work, ignore_errors=True)
     asset = add_asset(project["id"], "video", out, "shot", shot["id"],
                       {"dub": True, "lipsync": lips, "dub_source": rel(src_video), "lines": len(voiced),
-                       "speed": round(factor, 2), "notes": notes, "missing_voice": missing})
+                       "speed": round(factor, 2), "notes": notes, "missing_voice": missing,
+                       "timing": timing})
     db.update("shots", shot["id"], {"video": asset["path"]})
     if missing:
         notes.append(f"角色「{'、'.join(missing)}」没有音色样本，其台词未配音")
@@ -825,26 +829,22 @@ async def task_assemble(ctx: TaskContext) -> dict:
     shots = [s for s in all_shots if exists(s.get("video"))]
     if not shots:
         raise ValueError("还没有任何镜头视频")
+    post = {**(project.get("post") or {}), **(ctx.params.get("post") or {})}
     clips = [absolute(s["video"]) for s in shots]
-    timeline, t = [], 0.0
-    for s, clip in zip(shots, clips):
-        dur = (await media.probe(clip))["duration"] or float(s["duration"] or 5)
-        timeline.append((t, dur, s.get("dialogue") or []))
-        t += dur
-    srt = media.build_srt(timeline)
+    durs = [(await media.probe(c))["duration"] or float(s["duration"] or 5) for s, c in zip(shots, clips)]
     out_dir = project_dir(project["id"], "final")
-    (out_dir / "subtitles.srt").write_text(srt, encoding="utf-8")
     bgm = absolute(ctx.params["bgm"]) if ctx.params.get("bgm") else None
     quality = ctx.params.get("quality") if ctx.params.get("quality") in VIDEO_SIZES else "final"
     width, height = VIDEO_SIZES[quality].get(project["aspect_ratio"], VIDEO_SIZES[quality]["16:9"])
-    await ctx.progress(10, f"合成 {len(clips)} 个镜头…")
+    await ctx.progress(5, f"合成 {len(clips)} 个镜头…")
     safe_title = "".join(ch for ch in (project["title"] or "final") if ch not in '\\/:*?"<>|')[:40]
     output = out_dir / f"{safe_title}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
     work = out_dir / f"work_{ctx.id}"
+    work.mkdir(parents=True, exist_ok=True)
     g = {**(project.get("grade") or {}), **(ctx.params.get("grade") or {})}
     grade_info: dict = {}
     try:
-        pre = None
+        pre: list[str] = [""] * len(clips)
         if g.get("enabled") and (g.get("match", True) or g.get("lut") or g.get("deflicker")):
             await ctx.progress(6, "调色统一：分析各镜头色调…")
             gp = await grade.plan(clips, shots, work, strength=float(g.get("strength", 0.7)), lut=g.get("lut") or "",
@@ -853,16 +853,70 @@ async def task_assemble(ctx: TaskContext) -> dict:
             pre = [grade.filters(c, bool(g.get("deflicker"))) for c in gp["cubes"]]
             grade_info = {"before": gp["before"], "after": gp["after"], "bases": gp["bases"], "lut": g.get("lut") or ""}
             await ctx.log(f"调色统一：相邻镜头平均色差 ΔE {gp['before']} → {gp['after']}")
-        await media.assemble(clips, output, width, height, work,
-                             srt=srt if ctx.params.get("subtitles", True) else "",
-                             bgm=bgm, bgm_volume=float(ctx.params.get("bgm_volume", 0.25)), pre=pre)
+        # 片头 / 片尾卡（P3-4）
+        seq_shots, seq_clips, seq_durs, seq_pre = list(shots), list(clips), list(durs), list(pre)
+        cover_src = package.pick_cover_shot(shots)
+        bg = absolute(cover_src["keyframe"]) if cover_src and exists(cover_src.get("keyframe")) else None
+        tc, ec = post.get("title_card") or {}, post.get("end_card") or {}
+        n_intro = 0
+        if tc.get("enabled"):
+            d = float(tc.get("seconds") or 2.5)
+            img = package.card_image(work / "title.png", width, height, tc.get("text") or project["title"] or "",
+                                     tc.get("subtitle") or "", bg)
+            seq_clips.insert(0, await package.card_clip(img, work / "title.mp4", d, width, height))
+            seq_shots.insert(0, {"id": "_title", "transition": ""})
+            seq_durs.insert(0, d)
+            seq_pre.insert(0, "")
+            seq_shots[1] = {**seq_shots[1], "transition": "叠化"}
+            n_intro = 1
+        if ec.get("enabled"):
+            d = float(ec.get("seconds") or 2.5)
+            img = package.card_image(work / "end.png", width, height, ec.get("text") or "未完待续", ec.get("subtitle") or "")
+            seq_clips.append(await package.card_clip(img, work / "end.mp4", d, width, height))
+            seq_shots.append({"id": "_end", "transition": "黑场"})
+            seq_durs.append(d)
+            seq_pre.append("")
+        plan = package.transition_plan(seq_shots, seq_durs) if post.get("transitions", True) else [("", 0.0)] * len(seq_shots)
+        starts = package.starts_with(seq_durs, plan)
+        # 字幕：按转场后的真实起点；有配音时间就用配音时间
+        timeline = []
+        for k, s in enumerate(shots):
+            meta = (db.query("SELECT meta FROM assets WHERE path=? LIMIT 1", [s["video"]]) or [{}])[0].get("meta") or {}
+            timeline.append((starts[k + n_intro], durs[k], s.get("dialogue") or [], meta.get("timing")))
+        srt_rows = [(a, b, d["line"]) for st, du, lines, ex in timeline for a, b, d in package.line_timing(st, du, lines, ex)
+                    if (d.get("line") or "").strip()]
+        srt = "\n".join(f"{n + 1}\n{media._ts(a)} --> {media._ts(b)}\n{t}\n" for n, (a, b, t) in enumerate(srt_rows))
+        (out_dir / "subtitles.srt").write_text(srt, encoding="utf-8")
+        subs_on = ctx.params.get("subtitles", True)
+        ass = package.build_ass(timeline, width, height, post.get("subtitle") or {}) if subs_on and srt_rows else ""
+        await media.assemble(seq_clips, output, width, height, work, srt="", ass=ass,
+                             bgm=bgm, bgm_volume=float(ctx.params.get("bgm_volume", 0.25)), pre=seq_pre, plan=plan)
+        total = (await media.probe(output))["duration"]
+        cover = None
+        if post.get("cover", True) and cover_src:
+            cover = _make_cover(project, cover_src, post)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     skipped = len(all_shots) - len(shots)
     asset = add_asset(project["id"], "final", output, "project", project["id"],
-                      {"shots": len(clips), "seconds": round(t, 1), "skipped": skipped, "grade": grade_info})
+                      {"shots": len(clips), "seconds": round(total, 1), "skipped": skipped, "grade": grade_info,
+                       "transitions": sum(1 for fx, _ in plan if fx), "cards": n_intro + (1 if ec.get("enabled") else 0)})
     db.update("projects", project["id"], {"final_video": asset["path"]})
-    return {"path": asset["path"], "seconds": round(t, 1), "skipped": skipped}
+    return {"path": asset["path"], "seconds": round(total, 1), "skipped": skipped, "cover": cover}
+
+
+def _make_cover(project: dict, shot: dict, post: dict | None = None, title: str = "", subtitle: str = "",
+                aspect: str = "") -> str:
+    post = post or project.get("post") or {}
+    cv = post.get("cover_opts") or {}
+    aspect = aspect or cv.get("aspect") or ("3:4" if project["aspect_ratio"] in ("9:16", "3:4") else "16:9")
+    w, h = {"3:4": (1080, 1440), "9:16": (1080, 1920), "16:9": (1920, 1080), "1:1": (1080, 1080)}.get(aspect, (1920, 1080))
+    out = project_dir(project["id"], "final") / f"cover_{time.strftime('%Y%m%d_%H%M%S')}_{aspect.replace(':', 'x')}.jpg"
+    package.cover_image(absolute(shot["keyframe"]), out, w, h, (title or cv.get("title") or project["title"] or "").replace("\\n", "\n"),
+                        subtitle or cv.get("subtitle") or (project.get("synopsis") or "")[:24])
+    a = add_asset(project["id"], "cover", out, "project", project["id"], {"shot": shot["id"], "aspect": aspect})
+    db.update("projects", project["id"], {"cover": a["path"]})
+    return a["path"]
 
 
 # ---------------- 批量提交（批量按钮和一键成片共用） ----------------

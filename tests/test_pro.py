@@ -356,3 +356,44 @@ def test_color_grade(client, project, tmp_path):
     wait(client, client.post(f"/api/projects/{pid}/assemble", json={}).json()["id"])
     fin = [x for x in client.get(f"/api/projects/{pid}").json()["assets"][pid] if x["kind"] == "final"][0]
     assert fin["meta"]["grade"]["lut"] == "电影" and pipeline.exists(fin["path"])
+
+
+def test_packaging(client, project):
+    from app import package, pipeline
+    pid = project
+    shots = client.get(f"/api/projects/{pid}").json()["shots"][:2]
+    if not shots[0]["keyframe"]:
+        wait(client, client.post(f"/api/shots/{shots[0]['id']}/keyframe", json={"count": 1}).json()["id"])
+    for s in shots:
+        if not s["video"]:
+            wait(client, client.post(f"/api/shots/{s['id']}/video", json={}).json()["id"])
+    client.patch(f"/api/shots/{shots[1]['id']}", json={"transition": "叠化", "dialogue": [{"speaker": "陈默", "line": "【真相】只有一个"}]})
+    snap = client.get(f"/api/projects/{pid}").json()
+    vids = [s for s in snap["shots"] if s["video"]]
+    durs = [asyncio_run(pipeline.media.probe(pipeline.absolute(s["video"])))["duration"] for s in vids]
+    client.patch(f"/api/projects/{pid}", json={"grade": {}, "post": {
+        "title_card": {"enabled": True, "seconds": 2, "subtitle": "第 1 集"}, "end_card": {"enabled": True, "seconds": 2},
+        "subtitle": {"preset": "短剧", "keywords": "只有"}}})
+    wait(client, client.post(f"/api/projects/{pid}/assemble", json={}).json()["id"])
+    snap = client.get(f"/api/projects/{pid}").json()
+    fin = [x for x in snap["assets"][pid] if x["kind"] == "final"][0]
+    total = asyncio_run(pipeline.media.probe(pipeline.absolute(fin["path"])))["duration"]
+    # 片头 2s + 片尾 2s + 正片，减去转场重叠（片头→正片叠化、#2 叠化、正片→片尾黑场）
+    assert fin["meta"]["cards"] == 2 and fin["meta"]["transitions"] >= 3
+    assert sum(durs) + 4 - 2.5 < total < sum(durs) + 4, (total, durs)
+    assert snap["project"]["cover"] and pipeline.exists(snap["project"]["cover"])
+    srt = (pipeline.project_dir(pid, "final") / "subtitles.srt").read_text("utf-8")
+    assert "【真相】只有一个" in srt
+    # ASS：关键词花字 + 逐字高亮
+    tl = [(0.0, 3.0, [{"speaker": "陈默", "line": "【真相】只有一个"}], None)]
+    ass = package.build_ass(tl, 768, 1344, {"preset": "短剧", "keywords": "只有"})
+    assert "\\c&H0000D7FF" in ass and "真相" in ass and "【" not in ass
+    ass = package.build_ass(tl, 768, 1344, {"karaoke": True})
+    assert ass.count("\\kf") == 6
+    # 配音时间优先
+    lt = package.line_timing(10, 5, [{"line": "a"}, {"line": "b"}], [{"j": 1, "start": 1.0, "dur": 2.0}])
+    assert lt == [(11.0, 13.0, {"line": "b"})]
+    # 手动封面：指定镜头 + 竖版
+    r = client.post(f"/api/projects/{pid}/cover", json={"shot_id": vids[0]["id"], "title": "重生之我是\n总裁", "aspect": "9:16"}).json()
+    from PIL import Image
+    assert Image.open(pipeline.absolute(r["cover"])).size == (1080, 1920)

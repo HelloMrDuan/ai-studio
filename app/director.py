@@ -17,7 +17,7 @@ from . import db, llm, prompts, suggest
 from .tasks import TaskContext, handler, queue
 
 router = APIRouter(prefix="/api")
-TRANSITIONS = ["硬切", "叠化", "闪白", "黑场", "匹配剪辑"]
+TRANSITIONS = ["硬切", "叠化", "闪白", "黑场", "匹配剪辑", "划像", "推移"]
 SIZE_ORDER = prompts.SHOT_SIZES                         # 远景 全景 中景 近景 特写
 WIDE = {"远景", "全景"}
 CHARS_PER_SEC = 4.0

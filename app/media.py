@@ -49,7 +49,7 @@ def build_srt(items: list[tuple[float, float, list[dict]]]) -> str:
 
 async def assemble(clips: list[Path], output: Path, width: int, height: int, work: Path,
                    srt: str = "", bgm: Path | None = None, bgm_volume: float = 0.25,
-                   pre: list[str] | None = None) -> Path:
+                   pre: list[str] | None = None, ass: str = "", plan: list | None = None) -> Path:
     """pre：每个片段额外的视频滤镜（调色 LUT / 去闪烁），在缩放前执行。"""
     if not shutil.which("ffmpeg"):
         raise RuntimeError("系统没有安装 ffmpeg")
@@ -68,10 +68,10 @@ async def assemble(clips: list[Path], output: Path, width: int, height: int, wor
                  "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k", str(target)]
         await _run(*args)
         normalized.append(target)
-    lst = work / "list.txt"
-    lst.write_text("".join(f"file '{p.as_posix()}'\n" for p in normalized), encoding="utf-8")
+    from . import package
     joined = work / "joined.mp4"
-    await _run("ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(joined))
+    durs = [(await probe(p))["duration"] for p in normalized]
+    await package.join(normalized, durs, plan or [("", 0.0)] * len(normalized), joined)
     current = joined
     if bgm is not None:
         mixed = work / "bgm.mp4"
@@ -79,7 +79,14 @@ async def assemble(clips: list[Path], output: Path, width: int, height: int, wor
                    "-filter_complex", f"[1:a]volume={bgm_volume}[b];[0:a][b]amix=inputs=2:duration=first:dropout_transition=0[a]",
                    "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", str(mixed))
         current = mixed
-    if srt.strip():
+    if ass.strip():
+        ass_path = work / "subs.ass"
+        ass_path.write_text(ass, encoding="utf-8")
+        subbed = work / "subs.mp4"
+        await _run("ffmpeg", "-y", "-i", str(current), "-vf", f"subtitles={ass_path.as_posix()}",
+                   "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "copy", str(subbed))
+        current = subbed
+    elif srt.strip():
         srt_path = work / "subs.srt"
         srt_path.write_text(srt, encoding="utf-8")
         subbed = work / "subs.mp4"

@@ -1,6 +1,7 @@
 """HTTP API。前端是 web/ 下的单页应用，所有生成操作都提交为任务，前端轮询任务进度。"""
 from __future__ import annotations
 
+import asyncio
 import shutil
 from pathlib import Path
 from typing import Any
@@ -8,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from . import art, autopilot, board, db, grade, videox, vlm, director, facefusion, pipeline, prompts, qa, suggest, voice, writers
+from . import art, autopilot, board, db, grade, package, videox, vlm, director, facefusion, pipeline, prompts, qa, suggest, voice, writers
 from .config import get_settings
 from .gpu import gpu
 from .tasks import queue
@@ -58,7 +59,8 @@ async def meta() -> dict:
             "genres": {k: v["label"] for k, v in writers.GENRES.items()},
             "views": art.VIEWS, "expressions": list(art.EXPRESSIONS), "variants": list(art.VARIANT_PRESETS), "positions": list(board.POSITIONS),
             "camera_dirs": {k: list(v) for k, v in videox.DIRECTIONS.items()}, "motion": videox.motion_available(),
-            "luts": grade.STYLE_LUTS, "vlm": vlm.available(), "vlm_provider": vlm.provider(), "asr": vlm.asr_available()}
+            "luts": grade.STYLE_LUTS, "sub_presets": {k: v["label"] for k, v in package.SUB_PRESETS.items()},
+            "transition_fx": list(package.TRANSITION_FX), "vlm": vlm.available(), "vlm_provider": vlm.provider(), "asr": vlm.asr_available()}
 
 
 def _model_check() -> list[dict]:
@@ -122,7 +124,7 @@ class ProjectIn(BaseModel):
 
 PROJECT_FIELDS = {"title", "source_type", "source_text", "aspect_ratio", "style", "style_note", "target_seconds",
                   "script", "synopsis", "dub_mode", "genre", "style_ref", "style_lora", "style_lora_strength",
-                  "grade", "post"}
+                  "grade", "post", "cover"}
 
 
 def _check_project(values: dict) -> None:
@@ -273,6 +275,26 @@ class AnimaticIn(BaseModel):
 async def gen_animatic(project_id: str, body: AnimaticIn) -> dict:
     _get("projects", project_id, "项目")
     return _submit("animatic", "动态分镜预览", project_id, "project", project_id + ":animatic", body.model_dump())
+
+
+class CoverIn(BaseModel):
+    shot_id: str = ""
+    title: str = ""
+    subtitle: str = ""
+    aspect: str = ""
+
+
+@router.post("/projects/{project_id}/cover")
+async def make_cover(project_id: str, body: CoverIn) -> dict:
+    """封面图：选高光帧（或指定镜头）+ 标题字。纯 CPU，几百毫秒。"""
+    from . import package
+    project = _get("projects", project_id, "项目")
+    shots = pipeline.shots_of(project_id)
+    shot = next((s for s in shots if s["id"] == body.shot_id), None) or package.pick_cover_shot(shots)
+    if not shot or not pipeline.exists(shot.get("keyframe")):
+        raise HTTPException(400, "没有可用的分镜图做封面")
+    path = await asyncio.to_thread(pipeline._make_cover, project, shot, None, body.title, body.subtitle, body.aspect)
+    return {"cover": path, "shot_id": shot["id"]}
 
 
 @router.post("/projects/{project_id}/assemble")
@@ -694,6 +716,8 @@ async def select_asset(body: SelectIn) -> dict:
         if asset["kind"] in ("end_frame", "pose", "motion"):
             field = {"end_frame": "end_frame", "pose": "pose_ref", "motion": "motion_ref"}[asset["kind"]]
         return db.update("shots", asset["owner_id"], {field: asset["path"]})
+    if asset["owner_type"] == "project" and asset["kind"] == "cover":
+        return db.update("projects", asset["owner_id"], {"cover": asset["path"]})
     if asset["owner_type"] == "project" and asset["kind"] == "final":
         return db.update("projects", asset["owner_id"], {"final_video": asset["path"]})
     raise HTTPException(400, "该素材不能设为当前使用")

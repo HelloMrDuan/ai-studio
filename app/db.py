@@ -116,7 +116,8 @@ MIGRATIONS = [("characters", "face_image", "TEXT DEFAULT ''"), ("characters", "v
               # P2-6 视觉审片
               ("shots", "review", "TEXT DEFAULT '{}'"), ("projects", "review_report", "TEXT DEFAULT '{}'"),
               # 阶段 3 后期
-              ("projects", "grade", "TEXT DEFAULT '{}'"), ("projects", "post", "TEXT DEFAULT '{}'")]
+              ("projects", "grade", "TEXT DEFAULT '{}'"), ("projects", "post", "TEXT DEFAULT '{}'"),
+              ("projects", "cover", "TEXT DEFAULT ''")]
 
 
 def _migrate(c: sqlite3.Connection) -> None:

@@ -150,3 +150,5 @@ pre.prompt{white-space:pre-wrap;background:var(--panel2);padding:10px;border-rad
 .post-sec{border-top:1px solid var(--line);padding:10px 0}
 .post-sec:first-of-type{border-top:0}
 .dim{opacity:.5}
+.cover-thumb{width:120px;border-radius:6px;cursor:zoom-in;flex:none}
+.cover-thumb.empty{height:160px;display:flex;align-items:center;justify-content:center;border:1px dashed var(--line)}

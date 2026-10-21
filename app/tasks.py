@@ -57,14 +57,14 @@ def handler(name: str):
 GROUP = {
     "script": "llm", "extract": "llm", "storyboard": "llm",
     "portrait": "image", "face_ref": "image", "location_image": "image", "prop_image": "image",
-    "keyframe": "image", "keyframe_edit": "image",
+    "keyframe": "image", "keyframe_edit": "image", "end_frame": "image",
     "video": "video", "voice_sample": "video",
     "dub": "voice", "face_fix": "facefusion", "facefusion": "facefusion",
     "assemble": "cpu", "animatic": "cpu",
 }
 # 依赖阶段：同一项目里，先提交的低阶段任务没做完，后提交的高阶段任务不会抢跑（如分镜图 → 视频 → 配音 → 合成）。
 STAGE = {"portrait": 1, "face_ref": 1, "location_image": 1, "prop_image": 1,
-         "keyframe": 2, "keyframe_edit": 2, "video": 3, "voice_sample": 3,
+         "keyframe": 2, "keyframe_edit": 2, "end_frame": 2, "video": 3, "voice_sample": 3,
          "animatic": 3, "dub": 4, "face_fix": 4, "facefusion": 4, "assemble": 5}
 BARRIER = {"script", "extract", "storyboard"}      # 改动项目结构的文字任务：与同项目其它任务严格按提交顺序
 
@@ -85,6 +85,9 @@ def blocked(task: dict, earlier: list[dict]) -> bool:
     for u in earlier:
         if task["owner_id"] and u["owner_id"] == task["owner_id"]:
             return True                                 # 同一对象（同一镜头/角色）严格按顺序
+        after = (task.get("params") or {}).get("_after")
+        if after and u["owner_id"] == after and u["type"] == task["type"]:
+            return True                                 # 连续镜头：等上一镜的视频先做完
         if u["status"] == "paused" or not task["project_id"] or u["project_id"] != task["project_id"]:
             continue
         if u["type"] in BARRIER or task["type"] in BARRIER:

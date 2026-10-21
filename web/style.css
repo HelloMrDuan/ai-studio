@@ -109,3 +109,4 @@ pre.prompt{white-space:pre-wrap;background:var(--panel2);padding:10px;border-rad
 .ap.running{border-color:#4b5bd6}.ap.waiting{border-color:var(--warn)}.ap.failed{border-color:#7a2f38}.ap.done{border-color:#2f6b45}
 .ap-head{font-weight:600;margin-bottom:6px}.ap-dots{display:flex;gap:3px;margin-bottom:6px;font-size:11px}
 .ap-dot{color:#3a3f4a}.ap-dot.done{color:var(--ok)}.ap-dot.current{color:var(--warn)}.ap-dot.skip{color:#262a31}
+.endf{max-width:320px}.shot .frame.small-frame{width:160px;margin-top:4px}.shot .frame.small-frame.portrait{width:100px}

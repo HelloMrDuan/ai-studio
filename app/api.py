@@ -458,7 +458,8 @@ async def upload_location(loc_id: str, file: UploadFile = File(...)) -> dict:
 
 # ================= 分镜 =================
 SHOT_FIELDS = {"scene", "location_id", "shot_size", "camera_angle", "camera_move", "description", "action",
-               "character_ids", "prop_ids", "dialogue", "sound", "duration", "image_prompt", "video_prompt", "keyframe", "video"}
+               "character_ids", "prop_ids", "dialogue", "sound", "duration", "image_prompt", "video_prompt", "keyframe", "video",
+               "continuous", "end_frame"}
 
 
 def _renumber(project_id: str, ids: list[str]) -> None:
@@ -556,6 +557,18 @@ class VideoIn(BaseModel):
 async def gen_video(shot_id: str, body: VideoIn) -> dict:
     shot = _get("shots", shot_id, "镜头")
     return _submit("video", f"镜头视频 #{shot['sort'] + 1}", shot["project_id"], "shot", shot_id,
+                   {"shot_id": shot_id, **body.model_dump(), **pipeline.video_after(shot)})
+
+
+class EndFrameIn(BaseModel):
+    instruction: str = ""      # 结束时的画面；留空用镜头内动作
+    count: int = Field(1, ge=1, le=4)
+
+
+@router.post("/shots/{shot_id}/end_frame")
+async def gen_end_frame(shot_id: str, body: EndFrameIn) -> dict:
+    shot = _get("shots", shot_id, "镜头")
+    return _submit("end_frame", f"尾帧图 #{shot['sort'] + 1}", shot["project_id"], "shot", shot_id,
                    {"shot_id": shot_id, **body.model_dump()})
 
 
@@ -607,10 +620,16 @@ async def dub_shot(shot_id: str, body: DubIn) -> dict:
 
 
 @router.post("/shots/{shot_id}/upload")
-async def upload_shot_media(shot_id: str, file: UploadFile = File(...)) -> dict:
+async def upload_shot_media(shot_id: str, file: UploadFile = File(...), target_field: str = "") -> dict:
+    """上传分镜图/视频；target_field=end_frame 时作为尾帧图。"""
     shot = _get("shots", shot_id, "镜头")
     target = await _save_upload(file, shot["project_id"], "uploads")
     is_img = facefusion.is_image(target)
+    if target_field == "end_frame":
+        if not is_img:
+            raise HTTPException(400, "尾帧需要上传图片")
+        asset = pipeline.add_asset(shot["project_id"], "end_frame", target, "shot", shot_id, {"uploaded": True})
+        return db.update("shots", shot_id, {"end_frame": asset["path"]})
     asset = pipeline.add_asset(shot["project_id"], "keyframe" if is_img else "video", target, "shot", shot_id,
                                {"uploaded": True})
     return db.update("shots", shot_id, {"keyframe" if is_img else "video": asset["path"]})
@@ -652,6 +671,8 @@ async def select_asset(body: SelectIn) -> dict:
         return db.update("locations", asset["owner_id"], {"ref_image": asset["path"]})
     if asset["owner_type"] == "shot":
         field = "keyframe" if facefusion.is_image(Path(asset["path"])) else "video"
+        if asset["kind"] == "end_frame":
+            field = "end_frame"
         return db.update("shots", asset["owner_id"], {field: asset["path"]})
     if asset["owner_type"] == "project" and asset["kind"] == "final":
         return db.update("projects", asset["owner_id"], {"final_video": asset["path"]})
@@ -664,7 +685,7 @@ async def delete_asset(asset_id: str) -> dict:
     db.execute("DELETE FROM assets WHERE id=?", [asset_id])
     for table, field in (("characters", "ref_image"), ("characters", "face_image"), ("characters", "voice_ref"),
                          ("locations", "ref_image"), ("props", "ref_image"), ("shots", "keyframe"),
-                         ("shots", "video"), ("projects", "final_video")):
+                         ("shots", "video"), ("shots", "end_frame"), ("projects", "final_video")):
         db.execute(f"UPDATE {table} SET {field}='' WHERE {field}=?", [asset["path"]])
     try:
         pipeline.absolute(asset["path"]).unlink(missing_ok=True)

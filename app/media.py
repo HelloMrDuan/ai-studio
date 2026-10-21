@@ -246,3 +246,17 @@ async def animatic(segments: list[Path], output: Path, work: Path, total: float,
     output.parent.mkdir(parents=True, exist_ok=True)
     await _run(*args)
     return output
+
+
+async def last_frame(video: Path, out: Path) -> Path:
+    """抽取视频最后一帧（镜头衔接：下一镜的首帧）。"""
+    try:
+        await _run("ffmpeg", "-y", "-v", "error", "-sseof", "-0.25", "-i", str(video), "-update", "1", "-q:v", "2",
+                   str(out))
+    except RuntimeError:
+        dur = (await probe(video))["duration"]
+        await _run("ffmpeg", "-y", "-v", "error", "-ss", f"{max(0.0, dur - 0.1):.3f}", "-i", str(video),
+                   "-frames:v", "1", "-q:v", "2", str(out))
+    if not out.is_file():
+        raise RuntimeError("抽取上一镜头最后一帧失败")
+    return out

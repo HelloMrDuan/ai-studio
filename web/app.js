@@ -301,6 +301,27 @@ function viewCast() {
 
 function frameClass() { const a = S.snap.project.aspect_ratio; return a === '9:16' ? 'portrait' : (a === '1:1' || a === '3:4') ? 'square' : ''; }
 
+/* 尾帧：视频首尾帧模式让动作落到这张图；连续镜头的下一镜在上一镜没视频时也会用它做首帧 */
+function endFrameBox(x) {
+  const busy = busyOf(x.id); const has = !!x.end_frame;
+  return `<details class="endf" style="margin-top:8px" ${has ? 'open' : ''}><summary class="muted small">尾帧（可选）${has ? ' · <span class="ok">已设置</span>' : ''}</summary>
+    <p class="muted small" style="margin:4px 0">指定镜头结束时的画面，视频会从分镜图自然过渡到这里；适合动作必须到位的镜头（如转身、坐下、递东西）。</p>
+    ${has ? `<div class="frame ${frameClass()} small-frame" data-act="zoom" data-src="${media(x.end_frame)}" style="background-image:url('${media(x.end_frame)}')"></div>` : ''}
+    ${thumbs(x.id, 'end_frame', x.end_frame)}
+    <div class="row" style="margin-top:6px"><button class="btn small" data-act="gen-endframe" data-id="${x.id}" ${x.keyframe && !busy ? '' : 'disabled'} title="以分镜图为基础，画出动作完成后的画面">生成尾帧</button>
+      <button class="btn small ghost" data-act="upload-endframe" data-id="${x.id}">上传</button>
+      ${has ? `<button class="btn small ghost" data-act="clear-endframe" data-id="${x.id}" title="不用尾帧（候选图保留）">不用尾帧</button>` : ''}</div></details>`;
+}
+function chainInfo(x, i) {
+  const s = S.snap; const prev = i > 0 ? s.shots[i - 1] : null;
+  if (!x.continuous || !prev) return '';
+  const cur = assetsOf(x.id, 'video').find((a) => a.path === x.video); const m = (cur && cur.meta) || {};
+  if (!x.video) return `<div class="small muted" style="margin-top:4px">🔗 连续镜头：${prev.video ? '首帧将取自上一镜最后一帧' : (prev.end_frame ? '上一镜出视频后取其最后一帧做首帧（批量时自动排在后面）' : '等上一镜出视频后再生成（批量时自动排在后面）')}</div>`;
+  if (!m.chain_from) return '<div class="small bad" style="margin-top:4px">🔗 连续镜头，但当前视频没用上一镜尾帧做首帧，建议重新生成</div>';
+  if (m.chain_from !== prev.video) return '<div class="small bad" style="margin-top:4px">🔗 上一镜视频已更换，衔接可能对不上，建议重新生成本镜</div>';
+  return `<div class="small ok" style="margin-top:4px">🔗 首帧取自上一镜最后一帧${(m.notes || []).some((n) => n.includes('修正')) ? ' · 人脸已自动修正' : ''}</div>`;
+}
+
 function viewBoard() {
   const s = S.snap; const busy = busyOf(`${s.project.id}:storyboard`); const cm = charMap();
   const total = s.shots.reduce((a, x) => a + (x.duration || 0), 0);
@@ -315,7 +336,8 @@ function viewBoard() {
         <button class="btn small ghost" data-act="edit-keyframe" data-id="${x.id}" ${x.keyframe ? '' : 'disabled'}>改图</button>
         <button class="btn small ghost" data-act="upload-shot" data-id="${x.id}">上传</button>
         <button class="btn small ghost" data-act="plan" data-id="${x.id}">提示词</button>
-        <button class="btn small ghost" data-act="face-fix" data-id="${x.id}" data-target="keyframe" ${x.keyframe && x.character_ids.length ? '' : 'disabled'} title="用角色脸部特写修正分镜图里的人脸">人脸修正</button></div></div>
+        <button class="btn small ghost" data-act="face-fix" data-id="${x.id}" data-target="keyframe" ${x.keyframe && x.character_ids.length ? '' : 'disabled'} title="用角色脸部特写修正分镜图里的人脸">人脸修正</button></div>
+      ${endFrameBox(x)}</div>
     <div>
       <div class="grid4">
         <div><label class="f">景别</label>${sel(S.meta.shot_sizes, x.shot_size, `data-save="shots:${x.id}:shot_size"`)}</div>
@@ -325,6 +347,7 @@ function viewBoard() {
       <div class="row" style="margin-top:8px"><div style="width:200px"><label class="f">场景</label>${sel([['', '（未指定）'], ...s.locations.map((l) => [l.id, l.name])], x.location_id, `data-save="shots:${x.id}:location_id"`)}</div>
         <div class="grow"><label class="f">出镜角色（点击切换，顺序即参考图顺序）</label><div class="chips">${s.characters.map((c) => `<span class="chip ${x.character_ids.includes(c.id) ? 'on' : ''}" data-act="toggle-char" data-id="${x.id}" data-c="${c.id}">${esc(c.name)}${c.ref_image ? '' : ' ⚠'}</span>`).join('') || '<span class="muted small">先在②添加角色</span>'}</div></div></div>
       ${(s.props || []).length ? `<label class="f">画面中的道具</label><div class="chips">${s.props.map((pr) => `<span class="chip ${(x.prop_ids || []).includes(pr.id) ? 'on' : ''}" data-act="toggle-prop" data-id="${x.id}" data-p="${pr.id}">${esc(pr.name)}${pr.ref_image ? '' : ' ⚠'}</span>`).join('')}</div>` : ''}
+      ${i ? `<label class="row small" style="margin-top:8px" title="同一场景、动作直接接着上一镜时勾选：视频首帧取上一镜视频的最后一帧，动作不跳变"><input type="checkbox" data-save="shots:${x.id}:continuous" data-rerender="1" ${x.continuous ? 'checked' : ''}> 与上一镜连续动作（首帧取上一镜最后一帧）</label>` : ''}
       <label class="f">画面描述（首帧：站位、姿态、表情、环境、光线）</label><textarea rows="3" data-save="shots:${x.id}:description">${esc(x.description)}</textarea>
       <label class="f">镜头内动作（给视频模型）</label><textarea rows="2" data-save="shots:${x.id}:action">${esc(x.action)}</textarea>
       <label class="f">台词</label>${(x.dialogue || []).map((d, j) => `<div class="dlg-row">${sel(speakers.some((sp) => sp[0] === d.speaker) ? speakers : [[d.speaker, d.speaker], ...speakers], d.speaker, `data-dlg="${x.id}:${j}:speaker"`)}
@@ -391,7 +414,7 @@ function viewVideo() {
       <span class="small ${x.video ? 'ok' : 'muted'}">${x.video ? '✓ 已生成' : '未生成'}</span></div>
     <div class="frame ${frameClass()}" style="margin-top:8px;${!x.video && x.keyframe ? `background-image:url('${media(x.keyframe)}')` : ''}">
       ${x.video ? `<video src="${media(x.video)}" controls preload="metadata"></video>` : (x.keyframe ? '' : '<span>无分镜图（将纯文生视频）</span>')}${busyBox(x.id)}</div>
-    ${thumbs(x.id, 'video', x.video)}${qaLine(x.id, x.video)}
+    ${thumbs(x.id, 'video', x.video)}${qaLine(x.id, x.video)}${chainInfo(x, i)}${x.end_frame ? '<div class="small muted">🎯 已设尾帧（首尾帧模式）</div>' : ''}
     <div class="muted small" style="margin-top:6px;max-height:42px;overflow:hidden">${esc(x.description)}</div>
     <div class="grid3" style="margin-top:8px">${sel(modes, 'auto', `id="vm-${x.id}"`)}${sel([['draft', '草稿 480p'], ['final', '成品 768p']], 'draft', `id="vq-${x.id}"`)}
       <label class="row small"><input type="checkbox" id="vt-${x.id}" checked> 加速(Turbo)</label></div>
@@ -600,6 +623,20 @@ const ACTIONS = {
     const shot = localRow('shots', el.dataset.id);
     await api('PATCH', '/api/shots/' + shot.id, { dialogue: shot.dialogue.filter((_, k) => k !== Number(el.dataset.j)) }); loadSnap(true);
   },
+  'gen-endframe'(el) {
+    const x = localRow('shots', el.dataset.id);
+    modal(`<h3>生成尾帧</h3><p class="muted small">以当前分镜图为基础，画出这个镜头结束时的画面（人物、服装、场景保持不变）。留空则按「镜头内动作」来画。</p>
+      <textarea id="ef-ins" rows="3" placeholder="${esc(x.action || '例如：她转过身背对镜头，手里举着那张照片')}"></textarea>
+      <div class="row" style="justify-content:flex-end;margin-top:12px"><select id="ef-n" style="width:70px"><option value="1">1张</option><option value="2">2张</option></select>
+      <button class="btn ghost" data-act="close-modal">取消</button><button class="btn" data-act="do-endframe" data-id="${x.id}">开始生成</button></div>`);
+  },
+  async 'do-endframe'(el) {
+    const x = localRow('shots', el.dataset.id); const ins = val('ef-ins');
+    if (!ins.trim() && !(x.action || '').trim()) return toast('请写明结束时的画面，或先填写镜头内动作', true);
+    closeModal(); submitted(await api('POST', `/api/shots/${el.dataset.id}/end_frame`, { instruction: ins, count: Number(val('ef-n')) || 1 }));
+  },
+  async 'upload-endframe'(el) { const f = await pickFile('image/*'); if (f) { await upload(`/api/shots/${el.dataset.id}/upload?target_field=end_frame`, f); loadSnap(true); } },
+  async 'clear-endframe'(el) { await api('PATCH', '/api/shots/' + el.dataset.id, { end_frame: '' }); loadSnap(true); },
   async 'gen-keyframe'(el) { submitted(await api('POST', `/api/shots/${el.dataset.id}/keyframe`, { count: Number(val('kc-' + el.dataset.id)) || 1 })); },
   'edit-keyframe'(el) {
     modal(`<h3>指令改图</h3><p class="muted small">以当前分镜图为底图，只改你描述的部分（人物身份、构图会尽量保持）。</p>

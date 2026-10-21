@@ -176,6 +176,7 @@ async def task_storyboard(ctx: TaskContext) -> dict:
             "character_ids": [by_name[n] for n in prompts.visible_characters(r, list(by_name))],
             "prop_ids": [prop_ids[n] for n in prompts.visible_props(r, list(prop_ids))],
             "dialogue": r["dialogue"], "sound": r["sound"], "duration": r["duration"],
+            "continuous": 1 if r.get("continuous") and i > 0 else 0,
         })
     return {"shots": len(rows), "seconds": round(sum(r["duration"] for r in rows), 1)}
 
@@ -401,6 +402,109 @@ async def task_keyframe_edit(ctx: TaskContext) -> dict:
 
 
 # ---------------- ⑤ 视频 ----------------
+# ---------------- 镜头衔接：连续动作用上一镜尾帧做首帧；可指定尾帧 ----------------
+def prev_shot(shot: dict) -> dict | None:
+    shots = shots_of(shot["project_id"])
+    ids = [s["id"] for s in shots]
+    i = ids.index(shot["id"]) if shot["id"] in ids else -1
+    return shots[i - 1] if i > 0 else None
+
+
+def chain_source(shot: dict) -> dict | None:
+    """连续镜头的首帧来源：上一镜有视频 → 用它的最后一帧；只有尾帧图 → 用尾帧图；都没有 → None（退回本镜分镜图）。"""
+    if not shot.get("continuous"):
+        return None
+    prev = prev_shot(shot)
+    if not prev:
+        return None
+    if exists(prev.get("video")):
+        return {"prev": prev, "kind": "video", "path": prev["video"]}
+    if exists(prev.get("end_frame")):
+        return {"prev": prev, "kind": "end_frame", "path": prev["end_frame"]}
+    return None
+
+
+async def chain_first_frame(ctx: TaskContext, shot: dict, src: dict) -> tuple[Path, list[str]]:
+    """准备连续镜头的首帧；抽出的尾帧人脸不像时自动用 FaceFusion 修脸（需要已安装，且只修一次）。"""
+    notes: list[str] = []
+    if src["kind"] == "end_frame":
+        return absolute(src["path"]), [f"首帧取自上一镜（#{src['prev']['sort'] + 1}）的尾帧图"]
+    out_dir = project_dir(shot["project_id"], "keyframes")
+    frame = await media.last_frame(absolute(src["path"]), out_dir / f"chain_{shot['id']}_{time.strftime('%Y%m%d_%H%M%S')}.png")
+    notes.append(f"首帧取自上一镜（#{src['prev']['sort'] + 1}）视频的最后一帧")
+    _, _, chars, _ = _shot_context(shot)
+    faces = _qa_faces(chars)
+    if faces and qa.available() and facefusion_available():
+        r = await qa.check(frame, faces=faces, check_text=False, style=need("projects", shot["project_id"], "项目").get("style") or "")
+        if r and any(i.get("type") == "face" for i in r.get("issues") or []):
+            await ctx.log("上一镜尾帧的人脸不像，自动修脸…")
+            try:
+                frame = await _fix_faces(ctx, shot, frame, out_dir)
+                notes.append("尾帧人脸已自动修正")
+            except Exception as exc:  # noqa: BLE001
+                notes.append(f"尾帧修脸失败，直接使用：{str(exc)[:120]}")
+    return frame, notes
+
+
+def facefusion_available() -> bool:
+    s = get_settings()
+    return s.facefusion_python.is_file() and (s.facefusion_dir / "facefusion.py").is_file()
+
+
+async def _fix_faces(ctx: TaskContext, shot: dict, image: Path, out_dir: Path) -> Path:
+    plan = face_fix_plan(shot)
+    current = image
+    async with gpu.use("facefusion", "修正衔接帧人脸"):
+        for i, step in enumerate(plan):
+            params: dict[str, Any] = {"face_swapper_model": "hyperswap_1a_256", "face_swapper_pixel_boost": "512x512",
+                                      "face_mask_types": ["box", "occlusion"]}
+            if step["position"] == "auto":
+                params.update(face_selector_mode="one", face_selector_order="large-small")
+            else:
+                params.update(face_selector_mode="reference", face_selector_order="left-right",
+                              reference_face_position=int(step["position"]))
+            output = out_dir / f"{image.stem}_ff{i}{image.suffix}"
+            await facefusion.run("face_swapper", current, output, step["source"], params, log=ctx.log)
+            current = output
+    return current
+
+
+def video_after(shot: dict) -> dict:
+    """连续镜头的视频任务要等上一镜视频先做完（调度器据此排序）。"""
+    if shot.get("continuous"):
+        prev = prev_shot(shot)
+        if prev:
+            return {"_after": prev["id"]}
+    return {}
+
+
+END_FRAME_HINT = "保持人物身份、服装、场景、光线、机位和画风不变，画面变为这个镜头结束时的状态："
+
+
+@handler("end_frame")
+async def task_end_frame(ctx: TaskContext) -> dict:
+    """尾帧图：以分镜图为基础，按镜头内动作画出「结束姿态」，视频首尾帧模式会让动作落到这里。"""
+    shot = need("shots", ctx.params.get("shot_id"), "镜头")
+    if not exists(shot["keyframe"]):
+        raise ValueError("请先生成这个镜头的分镜图")
+    target = (ctx.params.get("instruction") or "").strip() or (shot.get("action") or "").strip()
+    if not target:
+        raise ValueError("请填写镜头内动作，或写明结束时的画面")
+    plan = keyframe_plan(shot)
+    char_paths, _, ref_map = char_refs(plan["chars"], MAX_IMAGE_REFS - 1, start=2)
+    refs = [absolute(shot["keyframe"]), *char_paths]
+    lines = ["以 <image1> 为这个镜头的开头画面。" + END_FRAME_HINT + target + "。只画动作完成后的那一瞬间。"]
+    lines += [ln for ln in prompts.char_ref_lines(plan["chars"], ref_map) if ln.startswith("<image")]
+    lines.append("不要出现任何文字、字幕或水印。")
+    prompt = "\n".join(lines)
+    files = await _generate_images(ctx, prompt, plan["project"]["aspect_ratio"], refs, ctx.params.get("count", 1),
+                                   project_dir(shot["project_id"], "keyframes"))
+    assets = [add_asset(shot["project_id"], "end_frame", f, "shot", shot["id"], {"prompt": prompt, "end": target})
+              for f in files]
+    db.update("shots", shot["id"], {"end_frame": assets[0]["path"]})
+    return {"assets": [a["id"] for a in assets]}
+
+
 def r2v_available() -> bool:
     s = get_settings()
     return (s.comfyui_dir / "models" / "diffusion_models" / s.video_r2v_unet).is_file()
@@ -458,6 +562,19 @@ async def task_video(ctx: TaskContext) -> dict:
     out_dir = project_dir(project["id"], "videos")
     _, _, chars, _ = _shot_context(shot)
     reference = absolute(shot["keyframe"]) if exists(shot.get("keyframe")) else None
+    chain_notes: list[str] = []
+    src = chain_source(shot) if ctx.params.get("chain", True) else None
+    if src:                                   # 连续镜头：首帧 = 上一镜最后一帧（强制图生视频）
+        frame, chain_notes = await chain_first_frame(ctx, shot, src)
+        plan = {**plan, "mode": "i2v", "refs": [frame]}
+        reference = frame
+        if not (ctx.params.get("prompt") or "").strip():
+            prompt = video_plan({**shot, "_chain": True, "_end_frame": exists(shot.get("end_frame"))}, "i2v")["prompt"]
+    elif shot.get("continuous"):
+        chain_notes.append("上一镜还没有视频，暂用本镜分镜图做首帧（上一镜出视频后建议重生成本镜）")
+    end_frame = absolute(shot["end_frame"]) if exists(shot.get("end_frame")) and plan["mode"] == "i2v" else None
+    if end_frame and not src and not (ctx.params.get("prompt") or "").strip():
+        prompt = video_plan({**shot, "_end_frame": True}, "i2v")["prompt"]
     attempts = 1 + (max(0, get_settings().qa_video_retry) if qa.available() else 0)
     results: list[tuple[dict, dict | None]] = []
     for attempt in range(attempts):
@@ -465,12 +582,13 @@ async def task_video(ctx: TaskContext) -> dict:
         async with gpu.use("comfyui", (ctx.task.get("title") or "生成视频") + tag):
             await gpu.comfy_switch("video")
             uploaded = [await comfy.upload_image(p) for p in plan["refs"]]
+            up_end = await comfy.upload_image(end_frame) if end_frame else None
             s_ = seed if attempt == 0 else None
             if plan["mode"] == "r2v":
                 wf = video_r2v_workflow(prompt, uploaded, project["aspect_ratio"], seconds, quality, turbo, s_)
             else:
                 wf = video_i2v_workflow(prompt, uploaded[0] if uploaded else None, project["aspect_ratio"], seconds,
-                                        quality, turbo, seed=s_)
+                                        quality, turbo, last_frame=up_end, seed=s_)
             span = 94 // attempts
             files = await comfy.run(wf, out_dir, progress_slice(ctx, 3 + attempt * span, 3 + (attempt + 1) * span,
                                                                  "生成视频" + tag))
@@ -482,7 +600,9 @@ async def task_video(ctx: TaskContext) -> dict:
                                 style=project.get("style") or "")
         asset = add_asset(project["id"], "video", videos[0], "shot", shot["id"],
                           {"prompt": prompt, "mode": plan["mode"], "quality": quality, "seconds": seconds,
-                           "turbo": turbo, "qa": result, "attempt": attempt + 1})
+                           "turbo": turbo, "qa": result, "attempt": attempt + 1,
+                           "chain_from": src["path"] if src else "", "end_frame": rel(end_frame) if end_frame else "",
+                           "notes": chain_notes})
         results.append((asset, result))
         if not result or result.get("ok"):
             break
@@ -490,7 +610,7 @@ async def task_video(ctx: TaskContext) -> dict:
             await ctx.log(f"质检未通过（{qa.summary(result)}），自动换种子重抽")
     best, best_qa = min(results, key=lambda x: qa.rank(x[1]))
     db.update("shots", shot["id"], {"video": best["path"]})
-    out = {"asset": best["id"], "attempts": len(results), "qa": qa.summary(best_qa)}
+    out = {"asset": best["id"], "attempts": len(results), "qa": qa.summary(best_qa), "notes": chain_notes}
     fresh = db.get("shots", shot["id"]) or shot
     if project.get("dub_mode") and voice.tts_available() and dub_lines(fresh)[0]:
         t = queue.submit("dub", project_id=project["id"], title=f"配音 #{shot['sort'] + 1}", owner_type="shot",
@@ -750,7 +870,7 @@ def submit_batch(project_id: str, kind: str, only_missing: bool = True, count: i
             else:
                 submitted.append(_submit("video", f"镜头视频 #{s['sort'] + 1}", project_id, "shot", s["id"],
                                          {"shot_id": s["id"], "quality": quality, "turbo": turbo,
-                                          "mode": mode}))
+                                          "mode": mode, **video_after(s)}))
     else:
         raise ValueError("未知批量类型")
     return submitted, bid

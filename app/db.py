@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS shots (
   camera_move TEXT DEFAULT '固定', description TEXT DEFAULT '', action TEXT DEFAULT '',
   character_ids TEXT DEFAULT '[]', prop_ids TEXT DEFAULT '[]', dialogue TEXT DEFAULT '[]', sound TEXT DEFAULT '',
   duration REAL DEFAULT 5, image_prompt TEXT DEFAULT '', video_prompt TEXT DEFAULT '',
-  keyframe TEXT DEFAULT '', video TEXT DEFAULT '', created_at REAL
+  keyframe TEXT DEFAULT '', video TEXT DEFAULT '', continuous INTEGER DEFAULT 0, end_frame TEXT DEFAULT '', created_at REAL
 );
 CREATE TABLE IF NOT EXISTS assets (
   id TEXT PRIMARY KEY, project_id TEXT, kind TEXT, path TEXT, owner_type TEXT DEFAULT '',
@@ -80,7 +80,8 @@ def conn() -> sqlite3.Connection:
 
 MIGRATIONS = [("characters", "face_image", "TEXT DEFAULT ''"), ("characters", "voice_ref", "TEXT DEFAULT ''"),
               ("shots", "prop_ids", "TEXT DEFAULT '[]'"), ("projects", "dub_mode", "INTEGER DEFAULT 0"),
-              ("projects", "autopilot", "TEXT DEFAULT '{}'")]
+              ("projects", "autopilot", "TEXT DEFAULT '{}'"), ("shots", "continuous", "INTEGER DEFAULT 0"),
+              ("shots", "end_frame", "TEXT DEFAULT ''")]
 
 
 def _migrate(c: sqlite3.Connection) -> None:

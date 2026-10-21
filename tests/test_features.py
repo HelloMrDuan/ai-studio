@@ -519,3 +519,63 @@ def test_service_restart_requeues():
     db.update("tasks", t["id"], {"status": "running", "params": {"_restarts": 2}})
     queue.recover_interrupted()
     assert db.get("tasks", t["id"])["status"] == "failed"
+
+
+def test_continuity(client, monkeypatch):
+    """P1-6：连续镜头用上一镜最后一帧做首帧、等上一镜先出视频；尾帧图进入首尾帧模式；上一镜重做后提示需重生成。"""
+    from app import pipeline, tasks
+    board = json.loads(json.dumps(BOARD))
+    board["shots"][1]["continuous"] = True
+    board["shots"][0]["continuous"] = True                       # 第一镜即使写 true 也不算连续
+    monkeypatch.setitem(BOARD, "shots", board["shots"])
+    pid = client.post("/api/projects", json={"title": "衔接", "source_text": "雨夜车站重逢"}).json()["id"]
+    wait(client, client.post(f"/api/projects/{pid}/script/generate").json()["id"])
+    wait(client, client.post(f"/api/projects/{pid}/extract").json()["id"])
+    wait(client, client.post(f"/api/projects/{pid}/storyboard/generate").json()["id"])
+    shots = client.get(f"/api/projects/{pid}").json()["shots"]
+    assert [s["continuous"] for s in shots] == [0, 1]
+    a, b = shots
+    assert pipeline.video_after(b) == {"_after": a["id"]} and pipeline.video_after(a) == {}
+    # 调度：后一镜视频等前一镜视频
+    t_a = {"id": "1", "type": "video", "owner_id": a["id"], "project_id": pid, "status": "queued", "params": {}}
+    t_b = {"id": "2", "type": "video", "owner_id": b["id"], "project_id": pid, "status": "queued",
+           "params": {"_after": a["id"]}}
+    assert tasks.blocked(t_b, [t_a]) and not tasks.blocked({**t_b, "params": {}}, [t_a])
+
+    client.post(f"/api/projects/{pid}/batch/keyframes", json={"only_missing": True, "count": 1})
+    drain(client, pid)
+    # 尾帧图：以分镜图为基础画结束姿态
+    r = client.post(f"/api/shots/{a['id']}/end_frame", json={"instruction": ""})
+    assert r.status_code == 200
+    wait(client, r.json()["id"])
+    a = client.get(f"/api/projects/{pid}").json()["shots"][0]
+    assert pipeline.exists(a["end_frame"])
+
+    CALLS.clear()
+    client.post(f"/api/projects/{pid}/batch/videos", json={"only_missing": True, "quality": "draft"})
+    drain(client, pid)
+    vids = [w for w in CALLS if any(n["class_type"] == "SaveVideo" for n in w.values())]
+    assert len(vids) == 2
+    first = vids[0]["10"]["inputs"]
+    assert "last_frame" in first and vids[0]["12"]["inputs"]["image"] == Path(a["end_frame"]).name   # 第一镜：首尾帧
+    second = vids[1]["10"]["inputs"]
+    chained = vids[1]["11"]["inputs"]["image"]
+    assert chained.startswith(f"chain_{b['id']}") and "紧接上一个镜头" in second["prompt"]
+    snap = client.get(f"/api/projects/{pid}").json()
+    vb = next(x for x in snap["assets"][b["id"]] if x["kind"] == "video")
+    assert vb["meta"]["chain_from"] == snap["shots"][0]["video"] and vb["meta"]["notes"]
+    # 关掉连续 → 用本镜分镜图
+    client.patch(f"/api/shots/{b['id']}", json={"continuous": 0})
+    CALLS.clear()
+    wait(client, client.post(f"/api/shots/{b['id']}/video", json={"quality": "draft"}).json()["id"])
+    assert CALLS[-1]["11"]["inputs"]["image"] == Path(snap["shots"][1]["keyframe"]).name
+    # 上传尾帧 / 选用 / 删除
+    from PIL import Image
+    img = Path(get_settings().data_dir) / "ef.png"
+    Image.new("RGB", (32, 18), (9, 9, 9)).save(img)
+    with img.open("rb") as f:
+        up = client.post(f"/api/shots/{b['id']}/upload?target_field=end_frame", files={"file": ("ef.png", f, "image/png")})
+    assert up.status_code == 200 and up.json()["end_frame"]
+    ef = next(x for x in client.get(f"/api/projects/{pid}").json()["assets"][b["id"]] if x["kind"] == "end_frame")
+    client.delete(f"/api/assets/{ef['id']}")
+    assert client.get(f"/api/projects/{pid}").json()["shots"][1]["end_frame"] == ""

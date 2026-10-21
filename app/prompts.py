@@ -169,9 +169,10 @@ STORYBOARD_SYSTEM = f"""你是分镜导演。把剧本拆成可以逐镜头生�
 6. dialogue 为本镜头的台词，speaker 必须是角色表中的名字；没有台词就给空数组。
 7. location 填【场景表】里的场景名；props 填【道具表】里本镜头画面中能看到的道具名（没有就空数组）。
 8. 景别要有变化，重要情绪用近景/特写，交代环境用全景/远景。
-9. 严格遵守【时长预算】：所有镜头 duration 之和不超过预算的 110%；超了就合并相邻镜头或删掉次要的过场/空镜，保留关键情节和台词。
+9. continuous：本镜头是否与上一个镜头「动作连续」——同一场景、同一时刻、人物动作直接接着上一镜继续（例如上一镜伸手、这一镜接过东西），中间没有时间跳跃和场景切换时为 true；换场景、跳时间、切到别的人物或景别跳变很大时为 false。第一个镜头为 false。
+10. 严格遵守【时长预算】：所有镜头 duration 之和不超过预算的 110%；超了就合并相邻镜头或删掉次要的过场/空镜，保留关键情节和台词。
 只输出 JSON：{{"shots":[{{"scene":"场景名","location":"","shot_size":"","camera_angle":"","camera_move":"","characters":[""],
-"props":[""],"description":"","action":"","dialogue":[{{"speaker":"","line":"","emotion":""}}],"sound":"环境音/音效","duration":5}}]}}"""
+"props":[""],"description":"","action":"","dialogue":[{{"speaker":"","line":"","emotion":""}}],"sound":"环境音/音效","duration":5,"continuous":false}}]}}"""
 
 
 def storyboard_user(project: dict, chars: list[dict], locs: list[dict], chunk: str, prev: str,
@@ -290,6 +291,7 @@ def make_storyboard_validator(char_names: list[str]):
                 "dialogue": lines,
                 "sound": str(r.get("sound") or "").strip(),
                 "duration": round(min(max(duration, 2.0), 15.0), 1),
+                "continuous": r.get("continuous") in (True, 1, "true", "True", "是") and bool(out),
             })
         return out
     return validate
@@ -346,6 +348,10 @@ def video_prompt(project: dict, shot: dict, chars_by_name: dict[str, dict], loc:
             parts.append("声音：" + shot["sound"])
         if dub:
             parts.append("音频只有环境音和音效，没有任何人声、对白、旁白和背景音乐。")
+        if shot.get("_chain"):
+            parts.append("本镜头紧接上一个镜头：开头画面就是上一镜头的最后一帧，人物位置、姿态和动作从那里自然延续，不要跳变。")
+        if shot.get("_end_frame"):
+            parts.append("镜头结束时画面到达指定的尾帧状态。")
         parts.append("人物外貌、服装和场景与首帧保持一致，动作自然连贯。画面干净，没有字幕、文字和水印。")
         body = "\n".join(parts)
     if ref_descs:

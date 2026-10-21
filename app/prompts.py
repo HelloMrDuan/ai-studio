@@ -310,6 +310,8 @@ def keyframe_prompt(project: dict, shot: dict, chars: list[dict], loc: dict | No
     """ref_map 见 char_ref_lines；loc_idx 为场景参考图的序号（None 表示没有）。"""
     lines = [f"生成一张电影分镜画面，{shot.get('shot_size') or '中景'}，{shot.get('camera_angle') or '平视'}。"]
     lines.append("画面内容：" + (shot.get("image_prompt") or shot.get("description") or "").strip())
+    if (shot.get("performance") or "").strip():
+        lines.append("人物表演（表情与视线）：" + shot["performance"].strip())
     lines += char_ref_lines(chars, ref_map)
     if loc:
         if loc_idx:
@@ -341,6 +343,8 @@ def video_prompt(project: dict, shot: dict, chars_by_name: dict[str, dict], loc:
         parts.append("画面：" + (shot.get("description") or ""))
         if shot.get("action"):
             parts.append("动作：" + shot["action"])
+        if (shot.get("performance") or "").strip():
+            parts.append("表演：" + shot["performance"].strip())
         dub = bool(project.get("dub_mode"))
         for d in shot.get("dialogue") or []:
             c = chars_by_name.get(d.get("speaker") or "") or {}

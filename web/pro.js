@@ -104,3 +104,27 @@ Object.assign(ACTIONS, {
   async 'sug-reject'(el) { await api('POST', `/api/suggestions/${el.dataset.id}/reject`); loadSnap(true); },
   async 'sug-all'(el) { const r = await api('POST', `/api/projects/${S.pid}/suggestions/bulk`, { action: el.dataset.a }); toast(`已处理 ${r.done} 条`); loadSnap(true); },
 });
+
+/* ---------------- ③ 导演审校 ---------------- */
+function directorPanel() {
+  const d = S.snap.director || {}; const issues = d.issues || []; const last = d.last; const pid = S.snap.project.id;
+  if (!S.snap.shots.length) return '';
+  const busy = busyOf(`${pid}:director`);
+  const warn = issues.filter((x) => x.level === 'warn').length;
+  const list = issues.map((x) => `<li class="${x.level === 'warn' ? 'warn' : 'muted'}"><b>【${esc(x.label)}】</b>#${x.shots.join('、#')} ${esc(x.message)}${x.fix ? ' <span class="ok small">可自动修</span>' : ''}</li>`).join('');
+  const curve = last && (last.curve || []).length ? `<div class="curve" title="情绪曲线（导演判断的每镜情绪强度）">${last.curve.map((c) => `<i style="height:${c.intensity * 10}%" title="#${c.index}：${c.intensity}"></i>`).join('')}</div>` : '';
+  return `<div class="panel" style="margin-bottom:16px"><div class="row between"><h3>导演审校 <span class="small ${warn ? 'warn' : 'ok'}">${issues.length ? `规则检查 ${warn} 个问题${issues.length - warn ? `、${issues.length - warn} 个提示` : ''}` : '✓ 规则检查通过'}</span></h3>
+      <span class="row"><button class="btn small ghost" data-act="rules-fix" ${issues.some((x) => x.fix) ? '' : 'disabled'}>把可修复的问题转成修改建议</button>
+      <button class="btn small" data-act="director" ${busy ? 'disabled' : ''} title="逐镜表演指导、转场、节奏，并按镜头语言规则给出修改建议">${busy ? '导演审校中…' : 'AI 导演审校'}</button></span></div>
+    <p class="muted small">规则：轴线（180°）、景别交替、对话正反打、场景开头建立镜头、动作接剪、台词时长。AI 导演会给每个镜头写表演指导（表情、动作节拍、视线）、按情绪曲线调节奏、选转场，所有修改都先作为建议，逐条确认。</p>
+    ${list ? `<details ${warn ? 'open' : ''}><summary class="small">问题列表</summary><ul class="issues">${list}</ul></details>` : ''}
+    ${last ? `<div class="small" style="margin-top:6px">上次审校：${esc(last.summary || '')}</div>${curve}` : ''}</div>`;
+}
+function shotDirectorFields(x, i) {
+  return `<div class="grid2" style="margin-top:4px"><div><label class="f">表演指导（表情 / 动作节拍 / 视线）</label><input type="text" data-save="shots:${x.id}:performance" value="${esc(x.performance || '')}" placeholder="先低头沉默，再抬眼直视对方"></div>
+    <div><label class="f">与上一镜的转场</label>${sel(S.meta.transitions || ['硬切'], x.transition || '硬切', `data-save="shots:${x.id}:transition" ${i ? '' : 'disabled'}`)}</div></div>`;
+}
+Object.assign(ACTIONS, {
+  async director() { submitted(await api('POST', `/api/projects/${S.pid}/director`), '已提交导演审校，结果会作为修改建议出现'); },
+  async 'rules-fix'() { const r = await api('POST', `/api/projects/${S.pid}/director/fix`); toast(`生成 ${r.suggestions} 条修改建议`); loadSnap(true); },
+});

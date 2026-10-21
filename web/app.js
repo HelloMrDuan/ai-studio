@@ -351,6 +351,7 @@ function viewBoard() {
       ${i ? `<label class="row small" style="margin-top:8px" title="同一场景、动作直接接着上一镜时勾选：视频首帧取上一镜视频的最后一帧，动作不跳变"><input type="checkbox" data-save="shots:${x.id}:continuous" data-rerender="1" ${x.continuous ? 'checked' : ''}> 与上一镜连续动作（首帧取上一镜最后一帧）</label>` : ''}
       <label class="f">画面描述（首帧：站位、姿态、表情、环境、光线）</label><textarea rows="3" data-save="shots:${x.id}:description">${esc(x.description)}</textarea>
       <label class="f">镜头内动作（给视频模型）</label><textarea rows="2" data-save="shots:${x.id}:action">${esc(x.action)}</textarea>
+      ${shotDirectorFields(x, i)}
       <label class="f">台词 ${overlongTag(x)}</label>${(x.dialogue || []).map((d, j) => `<div class="dlg-row">${sel(speakers.some((sp) => sp[0] === d.speaker) ? speakers : [[d.speaker, d.speaker], ...speakers], d.speaker, `data-dlg="${x.id}:${j}:speaker"`)}
         <input type="text" data-dlg="${x.id}:${j}:line" value="${esc(d.line)}" placeholder="台词"><input type="text" data-dlg="${x.id}:${j}:emotion" value="${esc(d.emotion)}" placeholder="情绪">
         <button class="btn small ghost" data-act="del-line" data-id="${x.id}" data-j="${j}">✕</button></div>`).join('')}
@@ -368,7 +369,7 @@ function viewBoard() {
       <button class="btn ghost" data-act="add-shot">＋ 镜头</button>
       <button class="btn ghost" data-act="polish" ${s.shots.some((x) => (x.dialogue || []).length) && !busyOf(`${s.project.id}:polish`) ? '' : 'disabled'} title="口语化、贴合人设、按镜头时长控制字数，结果逐条确认">${busyOf(`${s.project.id}:polish`) ? '打磨中…' : '台词打磨'}</button>
       <button class="btn ghost" data-go="#/p/${s.project.id}/video">下一步：视频 →</button></div>
-    ${suggestPanel()}${animaticPanel()}
+    ${directorPanel()}${suggestPanel()}${animaticPanel()}
     ${shots || '<div class="empty">还没有分镜。先完成①剧本和②角色，再点击「AI 生成分镜表」</div>'}`;
 }
 

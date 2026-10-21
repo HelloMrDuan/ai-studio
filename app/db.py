@@ -93,7 +93,9 @@ MIGRATIONS = [("characters", "face_image", "TEXT DEFAULT ''"), ("characters", "v
               ("projects", "genre", "TEXT DEFAULT 'general'"), ("projects", "beats", "TEXT DEFAULT '[]'"),
               ("projects", "writer", "TEXT DEFAULT '{}'"), ("characters", "motivation", "TEXT DEFAULT ''"),
               ("characters", "relations", "TEXT DEFAULT ''"), ("characters", "catchphrase", "TEXT DEFAULT ''"),
-              ("characters", "speech", "TEXT DEFAULT ''")]
+              ("characters", "speech", "TEXT DEFAULT ''"),
+              # P2-3 导演审校
+              ("shots", "performance", "TEXT DEFAULT ''"), ("shots", "transition", "TEXT DEFAULT '硬切'")]
 
 
 def _migrate(c: sqlite3.Connection) -> None:

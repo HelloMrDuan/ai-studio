@@ -77,3 +77,49 @@ def test_polish_suggestions(client, project, monkeypatch):
     # 再打磨一次 → 拒绝
     wait(client, client.post(f"/api/projects/{pid}/polish", json={}).json()["id"])
     assert client.get(f"/api/projects/{pid}/suggestions").json() == []          # 结果与当前一致，不产生建议
+
+
+def test_director_rules_and_notes(client, monkeypatch):
+    from app import director
+    pid = client.post("/api/projects", json={"title": "导演", "source_text": "x"}).json()["id"]
+    c1 = client.post(f"/api/projects/{pid}/characters", json={"name": "甲"}).json()["id"]
+    c2 = client.post(f"/api/projects/{pid}/characters", json={"name": "乙"}).json()["id"]
+    loc = client.post(f"/api/projects/{pid}/locations", json={"name": "客厅"}).json()["id"]
+    base = {"location_id": loc, "scene": "客厅", "character_ids": [c1, c2], "camera_angle": "平视", "camera_move": "固定"}
+    rows = [
+        {**base, "shot_size": "中景", "description": "甲在画面左侧，乙在画面右侧", "duration": 2,
+         "dialogue": [{"speaker": "甲", "line": "你今天为什么这么晚才回来，我等了你一个晚上", "emotion": ""}]},
+        {**base, "shot_size": "中景", "description": "甲在画面右侧，乙在画面左侧", "duration": 4,
+         "dialogue": [{"speaker": "乙", "line": "加班", "emotion": ""}]},
+        {**base, "shot_size": "全景", "description": "两人对视", "duration": 4, "dialogue": [{"speaker": "甲", "line": "真的？", "emotion": ""}]},
+        {**base, "shot_size": "近景", "description": "乙低头", "duration": 3, "character_ids": [c2]},
+    ]
+    ids = [client.post(f"/api/projects/{pid}/shots", json=r).json()["id"] for r in rows]
+    issues = client.get(f"/api/projects/{pid}/director/check").json()["issues"]
+    rules = {x["rule"] for x in issues}
+    assert {"establish", "size", "axis", "duration", "reverse"} <= rules, issues
+    # LLM 导演：表演 + 转场 + 参数修改
+    def director_cb(messages):
+        assert "【规则检查】" in messages[1]["content"] and "越轴" in messages[1]["content"]
+        return json.dumps({"summary": "节奏偏平", "shots": [
+            {"index": 1, "performance": "甲双手抱胸，先瞪乙再别过脸", "transition": "硬切", "intensity": 6,
+             "changes": {"shot_size": "全景"}, "reason": "先交代空间"},
+            {"index": 2, "performance": "乙避开视线看向地面", "transition": "叠化", "intensity": 4,
+             "changes": {"camera_angle": "过肩", "shot_size": "近景"}, "reason": "正反打"},
+            {"index": 9, "performance": "越界"}]}, ensure_ascii=False)
+    monkeypatch.setitem(LLM_EXTRA, director.DIRECTOR_SYSTEM, director_cb)
+    r = wait(client, client.post(f"/api/projects/{pid}/director").json()["id"])["result"]
+    assert r["suggestions"] >= 6 and r["issues"] == len(issues)
+    sug = client.get(f"/api/projects/{pid}/suggestions").json()
+    fields = {(s["target_id"], s["field"]) for s in sug}
+    assert (ids[0], "performance") in fields and (ids[1], "transition") in fields and (ids[1], "camera_angle") in fields
+    assert any(s["source"] == "rules" for s in sug)            # LLM 没处理的规则问题补成规则建议
+    assert client.post(f"/api/projects/{pid}/suggestions/bulk", json={"action": "accept"}).json()["done"] == len(sug)
+    shots = client.get(f"/api/projects/{pid}").json()["shots"]
+    assert shots[0]["shot_size"] == "全景" and shots[1]["transition"] == "叠化" and shots[0]["performance"].startswith("甲双手")
+    left = {x["rule"] for x in client.get(f"/api/projects/{pid}/director/check").json()["issues"] if x["level"] == "warn"}
+    assert not left - {"axis"}, left                          # 可自动修的规则问题已清零（轴线需人工改描述）
+    from app import pipeline
+    snap = client.get(f"/api/projects/{pid}").json()
+    plan = client.get(f"/api/shots/{ids[0]}/plan").json()
+    assert "甲双手抱胸" in json.dumps(plan, ensure_ascii=False)

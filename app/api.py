@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from . import autopilot, db, facefusion, pipeline, prompts, qa, suggest, voice, writers
+from . import autopilot, db, director, facefusion, pipeline, prompts, qa, suggest, voice, writers
 from .config import get_settings
 from .gpu import gpu
 from .tasks import queue
@@ -53,7 +53,7 @@ def _submit(type_: str, title: str, project_id: str, owner_type: str = "", owner
 async def meta() -> dict:
     return {"styles": {k: v["label"] for k, v in prompts.STYLES.items()}, "aspects": ASPECTS,
             "shot_sizes": prompts.SHOT_SIZES, "camera_angles": prompts.CAMERA_ANGLES,
-            "camera_moves": prompts.CAMERA_MOVES, "r2v": pipeline.r2v_available(), "qa": qa.available(),
+            "camera_moves": prompts.CAMERA_MOVES, "transitions": director.TRANSITIONS, "r2v": pipeline.r2v_available(), "qa": qa.available(),
             "voice": voice.status(), "auth": bool(get_settings().access_password),
             "genres": {k: v["label"] for k, v in writers.GENRES.items()}}
 
@@ -166,7 +166,9 @@ async def project_snapshot(project_id: str) -> dict:
             "locations": pipeline.locations_of(project_id), "props": pipeline.props_of(project_id),
             "shots": pipeline.shots_of(project_id),
             "assets": assets, "tasks": tasks, "autopilot": autopilot.status(project_id),
-            "writer": writers.status(project), "suggestions": suggest.pending(project_id)}
+            "writer": writers.status(project), "suggestions": suggest.pending(project_id),
+            "director": {"issues": director.check(pipeline.shots_of(project_id), pipeline.characters_of(project_id)),
+                         "last": writers.writer_state(project).get("director")}}
 
 
 @router.patch("/projects/{project_id}")
@@ -466,7 +468,7 @@ async def upload_location(loc_id: str, file: UploadFile = File(...)) -> dict:
 # ================= 分镜 =================
 SHOT_FIELDS = {"scene", "location_id", "shot_size", "camera_angle", "camera_move", "description", "action",
                "character_ids", "prop_ids", "dialogue", "sound", "duration", "image_prompt", "video_prompt", "keyframe", "video",
-               "continuous", "end_frame"}
+               "continuous", "end_frame", "performance", "transition"}
 
 
 def _renumber(project_id: str, ids: list[str]) -> None:

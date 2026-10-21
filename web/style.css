@@ -125,3 +125,6 @@ pre.prompt{white-space:pre-wrap;background:var(--panel2);padding:10px;border-rad
 .sug-cmp{display:grid;grid-template-columns:1fr 20px 1fr;gap:6px;margin:6px 0;font-size:12px;white-space:pre-wrap}
 .sug-cmp .old{color:var(--muted);text-decoration:line-through}.sug-cmp .new{color:var(--ok)}.sug-cmp .arrow{color:var(--muted);align-self:center}
 .bio summary{margin-top:8px;cursor:pointer}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}
+.curve{display:flex;align-items:flex-end;gap:2px;height:40px;margin-top:6px;border-bottom:1px solid var(--line)}
+.curve i{flex:1;background:linear-gradient(var(--accent2),var(--accent));border-radius:2px 2px 0 0;min-height:2px}
+.issues li.warn{color:var(--text)}.issues li.warn b{color:var(--warn)}

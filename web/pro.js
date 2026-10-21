@@ -223,3 +223,62 @@ Object.assign(ACTIONS, {
     const r = await api('POST', `/api/projects/${S.pid}/library/import`, { ids }); closeModal(); toast(`已导入 ${r.imported} 项（已锁定）`); loadSnap(true);
   },
 });
+
+/* ---------------- ③ 分镜增强：站位、姿势参考、局部重绘、多版本对比 ---------------- */
+function shotLayoutFields(x) {
+  const s = S.snap; const chars = x.character_ids.map((cid) => s.characters.find((c) => c.id === cid)).filter(Boolean);
+  const pos = x.positions || {};
+  return `<div class="row" style="margin-top:6px;flex-wrap:wrap;gap:10px">${chars.map((c) => `<span class="small">${esc(c.name)} 站位 ${sel([['', '自动'], ...(S.meta.positions || []).map((p) => [p, p])], pos[c.id] || '', `data-pos="${x.id}:${c.id}" style="width:80px"`)}</span>`).join('')}
+    <span class="small">姿势参考 ${x.pose_ref ? `<span class="pose-thumb" data-act="zoom" data-src="${media(x.pose_ref)}" style="background-image:url('${media(x.pose_ref)}')"></span><button class="btn small ghost" data-act="pose-clear" data-id="${x.id}">不用</button>` : ''}
+      <button class="btn small ghost" data-act="pose-upload" data-id="${x.id}" title="上传一张姿势/构图参考（真人照片、火柴人、其他画面都行），只学姿势不学长相">${x.pose_ref ? '换' : '上传'}</button></span></div>`;
+}
+document.addEventListener('change', async (e) => {
+  const el = e.target; if (!el.dataset.pos) return;
+  const [sid, cid] = el.dataset.pos.split(':'); const shot = S.snap.shots.find((x) => x.id === sid);
+  const positions = { ...(shot.positions || {}) }; if (el.value) positions[cid] = el.value; else delete positions[cid];
+  Object.assign(shot, await api('PATCH', `/api/shots/${sid}`, { positions })); toast('已保存');
+});
+async function compareModal(sid, kind) {
+  const r = await api('GET', `/api/shots/${sid}/compare?kind=${kind}`); const vid = kind === 'video';
+  const card = (it) => `<div class="cmp ${it.current ? 'sel' : ''}">
+    ${vid ? `<video src="${media(it.path)}" muted loop preload="metadata" controls></video>` : `<img src="${media(it.path)}" data-act="zoom" data-src="${media(it.path)}">`}
+    <div class="small"><b>#${it.n}</b>${it.current ? ' <span class="ok">当前使用</span>' : ''}${it.qa_ok === true ? ' <span class="ok">✓质检</span>' : it.qa_ok === false ? ` <span class="warn" title="${esc(it.qa.join('；'))}">⚠ ${esc(it.qa[0] || '质检未过')}</span>` : ''}
+      ${it.edit ? `<div class="muted">${it.region ? '局部重绘' : '改图'}：${esc(it.edit)}</div>` : ''}${it.mode ? `<div class="muted">${esc(it.mode)}</div>` : ''}</div>
+    <div class="row">${it.current ? '' : `<button class="btn small" data-act="cmp-pick" data-id="${it.id}" data-s="${sid}" data-k="${kind}">用这个</button>`}
+      ${vid ? '' : `<button class="btn small ghost" data-act="cmp-pose" data-id="${it.id}" data-s="${sid}" title="用这张图的姿势做参考重新出图">设为姿势参考</button>`}</div></div>`;
+  modal(`<div class="row between"><h3>多版本对比 · ${vid ? '视频' : '分镜图'}（${r.items.length}）</h3>${vid ? '<button class="btn small ghost" data-act="cmp-play">同步播放</button>' : ''}</div>
+    <div class="cmp-grid">${r.items.map(card).join('') || '<div class="empty">还没有候选</div>'}</div>
+    <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost" data-act="close-modal">关闭</button></div>`);
+  $('#modal-box').classList.add('wide');
+}
+function regionModal(sid) {
+  const x = S.snap.shots.find((s) => s.id === sid); const chars = x.character_ids.map((cid) => S.snap.characters.find((c) => c.id === cid)).filter(Boolean);
+  modal(`<h3>局部重绘 <span class="muted small">在图上拖出要改的区域，只重画这一块，其余像素不变</span></h3>
+    <div class="region-wrap"><img id="rg-img" src="${media(x.keyframe)}" draggable="false"><div id="rg-box" class="hidden"></div></div>
+    <label class="f">这一块改成什么</label><input type="text" id="rg-ins" placeholder="例如：手里的杯子换成红色保温杯 / 表情改成微笑 / 去掉背景里的路人">
+    ${chars.length ? `<label class="f">区域里有这些角色（带上其参考图，重画脸/手时选上）</label><div class="chips" id="rg-chars">${chars.map((c) => `<span class="chip" data-c="${c.id}">${esc(c.name)}</span>`).join('')}</div>` : ''}
+    <div class="row" style="justify-content:flex-end;margin-top:12px"><select id="rg-n" style="width:70px"><option value="1">1张</option><option value="2">2张</option></select>
+      <button class="btn ghost" data-act="close-modal">取消</button><button class="btn" data-act="rg-go" data-id="${sid}">重绘</button></div>`);
+  $('#modal-box').classList.add('wide');
+  const img = $('#rg-img'); const box = $('#rg-box'); let st = null; S.rgBox = null;
+  const pt = (e) => { const r = img.getBoundingClientRect(); return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))]; };
+  img.onmousedown = (e) => { st = pt(e); e.preventDefault(); };
+  window.onmousemove = (e) => { if (!st) return; const p = pt(e); const b = [Math.min(st[0], p[0]), Math.min(st[1], p[1]), Math.abs(p[0] - st[0]), Math.abs(p[1] - st[1])];
+    S.rgBox = b; box.classList.remove('hidden'); Object.assign(box.style, { left: b[0] * 100 + '%', top: b[1] * 100 + '%', width: b[2] * 100 + '%', height: b[3] * 100 + '%' }); };
+  window.onmouseup = () => { st = null; };
+  const ch = $('#rg-chars'); if (ch) ch.onclick = (e) => { const c = e.target.closest('.chip'); if (c) c.classList.toggle('on'); };
+}
+Object.assign(ACTIONS, {
+  async 'pose-upload'(el) { const f = await pickFile('image/*'); if (f) { await upload(`/api/shots/${el.dataset.id}/pose`, f); loadSnap(true); } },
+  async 'pose-clear'(el) { await api('PATCH', `/api/shots/${el.dataset.id}`, { pose_ref: '' }); loadSnap(true); },
+  compare(el) { compareModal(el.dataset.id, el.dataset.k || 'keyframe'); },
+  async 'cmp-pick'(el) { await api('POST', '/api/assets/select', { asset_id: el.dataset.id }); await loadSnap(true); compareModal(el.dataset.s, el.dataset.k); },
+  async 'cmp-pose'(el) { await api('POST', `/api/shots/${el.dataset.s}/pose/from_keyframe`, { asset_id: el.dataset.id }); toast('已设为姿势参考，重新出图时生效'); loadSnap(true); },
+  'cmp-play'() { document.querySelectorAll('.cmp video').forEach((v) => { v.currentTime = 0; v.play(); }); },
+  region(el) { regionModal(el.dataset.id); },
+  async 'rg-go'(el) {
+    const ins = val('rg-ins').trim(); if (!S.rgBox || S.rgBox[2] < 0.02 || S.rgBox[3] < 0.02) return toast('先在图上拖出要改的区域'); if (!ins) return toast('写一下要改成什么');
+    const ids = [...document.querySelectorAll('#rg-chars .chip.on')].map((c) => c.dataset.c);
+    closeModal(); submitted(await api('POST', `/api/shots/${el.dataset.id}/keyframe/region`, { instruction: ins, box: S.rgBox, character_ids: ids, count: Number(val('rg-n')) }));
+  },
+});

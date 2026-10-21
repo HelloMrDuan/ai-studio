@@ -193,7 +193,7 @@ async def task_storyboard(ctx: TaskContext) -> dict:
 
 # ---------------- 生图公共 ----------------
 async def _generate_images(ctx: TaskContext, prompt: str, aspect: str, ref_paths: list[Path], count: int,
-                           out_dir: Path, random_seed: bool = False) -> list[Path]:
+                           out_dir: Path, random_seed: bool = False, size: tuple[int, int] | None = None) -> list[Path]:
     count = max(1, min(int(count or 1), 8))
     seed = None if random_seed else ctx.params.get("seed")
     results: list[Path] = []
@@ -206,7 +206,7 @@ async def _generate_images(ctx: TaskContext, prompt: str, aspect: str, ref_paths
         refs = [await comfy.upload_image(p) for p in ref_paths]
         for i in range(count):
             s = seed + i if isinstance(seed, int) and seed >= 0 else None
-            files = await comfy.run(image_workflow(prompt, aspect, refs, seed=s, lora=lora), out_dir,
+            files = await comfy.run(image_workflow(prompt, aspect, refs, seed=s, lora=lora, size=size), out_dir,
                                     progress_slice(ctx, 5 + i * span, 5 + (i + 1) * span, f"第 {i + 1}/{count} 张"))
             results += [f for f in files if f.suffix.lower() in IMAGE_SUFFIX]
     if not results:
@@ -340,15 +340,16 @@ def char_refs(chars: list[dict], limit: int, start: int = 1, faces: bool = True)
 def keyframe_plan(shot: dict) -> dict:
     """计算某镜头的出图方案：参考图顺序 + 最终提示词（预览接口也用它）。
     场景图优先级高于「第二张脸部参考」：先给每个角色一张，再放场景图，最后用剩余名额补脸部特写。"""
-    from . import art
+    from . import art, board
     project, _, chars, loc = _shot_context(shot)
     chars = [art.dress(shot, c) for c in chars]          # 造型 / 侧面背面 / 表情
     loc = art.place(shot, loc)                           # 场景变体（夜 / 雨 / 反打…）
     props = shot_props(shot)
     has_loc = bool(loc and exists(loc.get("ref_image")))
     has_style = exists(project.get("style_ref"))
+    has_pose = exists(shot.get("pose_ref"))
     base, _, _ = char_refs(chars, MAX_IMAGE_REFS, faces=False)
-    reserve = (1 if has_loc else 0) + (1 if has_style else 0) + sum(1 for pr in props if exists(pr.get("ref_image")))
+    reserve = (1 if has_loc else 0) + (1 if has_style else 0) + (1 if has_pose else 0) + sum(1 for pr in props if exists(pr.get("ref_image")))
     room = max(len(base), MAX_IMAGE_REFS - reserve)   # 每个角色一张优先，其次场景、道具，最后补脸部特写
     refs, labels, ref_map = char_refs(chars, room)
     loc_idx = None
@@ -369,7 +370,15 @@ def keyframe_plan(shot: dict) -> dict:
         refs.append(absolute(project["style_ref"]))
         labels.append("画风参考")
         style_idx = len(refs)
+    pose_idx = None
+    if has_pose and len(refs) < MAX_IMAGE_REFS:
+        refs.append(absolute(shot["pose_ref"]))
+        labels.append("姿势参考")
+        pose_idx = len(refs)
     prompt = prompts.keyframe_prompt(project, shot, chars, loc, ref_map, loc_idx, prop_refs)
+    extra = board.position_lines(shot, chars) + ([board.pose_line(pose_idx)] if pose_idx else [])
+    if extra:
+        prompt = prompt.replace(f"画风：{prompts.style_text(project)}。", "\n".join(extra) + f"\n画风：{prompts.style_text(project)}。")
     if style_idx:
         prompt = prompt.replace(f"画风：{prompts.style_text(project)}。", "\n".join(art.style_lines(project, style_idx))
                                 + f"\n画风：{prompts.style_text(project)}。")

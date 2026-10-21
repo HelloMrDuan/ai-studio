@@ -37,7 +37,7 @@ function toast(msg, err = false) {
   const t = $('#toast'); t.textContent = msg; t.className = 'toast' + (err ? ' err' : '');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.add('hidden'), err ? 6000 : 2500);
 }
-function modal(html) { $('#modal-box').innerHTML = html; $('#modal').classList.remove('hidden'); }
+function modal(html) { $('#modal-box').classList.remove('wide'); $('#modal-box').innerHTML = html; $('#modal').classList.remove('hidden'); }
 function closeModal() { $('#modal').classList.add('hidden'); $('#modal-box').innerHTML = ''; }
 function lightbox(src) {
   const lb = $('#lightbox');
@@ -336,6 +336,8 @@ function viewBoard() {
       <div class="row" style="margin-top:8px"><select id="kc-${x.id}" style="width:60px">${[1, 2, 4].map((n) => `<option value="${n}">${n}张</option>`).join('')}</select>
         <button class="btn small" data-act="gen-keyframe" data-id="${x.id}">出图</button>
         <button class="btn small ghost" data-act="edit-keyframe" data-id="${x.id}" ${x.keyframe ? '' : 'disabled'}>改图</button>
+        <button class="btn small ghost" data-act="region" data-id="${x.id}" ${x.keyframe ? '' : 'disabled'} title="框选一块区域只重画这里">局部重绘</button>
+        ${assetsOf(x.id, 'keyframe').length > 1 ? `<button class="btn small ghost" data-act="compare" data-id="${x.id}">对比</button>` : ''}
         <button class="btn small ghost" data-act="upload-shot" data-id="${x.id}">上传</button>
         <button class="btn small ghost" data-act="plan" data-id="${x.id}">提示词</button>
         <button class="btn small ghost" data-act="face-fix" data-id="${x.id}" data-target="keyframe" ${x.keyframe && x.character_ids.length ? '' : 'disabled'} title="用角色脸部特写修正分镜图里的人脸">人脸修正</button></div>
@@ -349,7 +351,7 @@ function viewBoard() {
       <div class="row" style="margin-top:8px"><div style="width:200px"><label class="f">场景</label>${sel([['', '（未指定）'], ...s.locations.map((l) => [l.id, l.name])], x.location_id, `data-save="shots:${x.id}:location_id"`)}</div>
         <div class="grow"><label class="f">出镜角色（点击切换，顺序即参考图顺序）</label><div class="chips">${s.characters.map((c) => `<span class="chip ${x.character_ids.includes(c.id) ? 'on' : ''}" data-act="toggle-char" data-id="${x.id}" data-c="${c.id}">${esc(c.name)}${c.ref_image ? '' : ' ⚠'}</span>`).join('') || '<span class="muted small">先在②添加角色</span>'}</div></div></div>
       ${(s.props || []).length ? `<label class="f">画面中的道具</label><div class="chips">${s.props.map((pr) => `<span class="chip ${(x.prop_ids || []).includes(pr.id) ? 'on' : ''}" data-act="toggle-prop" data-id="${x.id}" data-p="${pr.id}">${esc(pr.name)}${pr.ref_image ? '' : ' ⚠'}</span>`).join('')}</div>` : ''}
-      ${shotArtFields(x)}
+      ${shotArtFields(x)}${shotLayoutFields(x)}
       ${i ? `<label class="row small" style="margin-top:8px" title="同一场景、动作直接接着上一镜时勾选：视频首帧取上一镜视频的最后一帧，动作不跳变"><input type="checkbox" data-save="shots:${x.id}:continuous" data-rerender="1" ${x.continuous ? 'checked' : ''}> 与上一镜连续动作（首帧取上一镜最后一帧）</label>` : ''}
       <label class="f">画面描述（首帧：站位、姿态、表情、环境、光线）</label><textarea rows="3" data-save="shots:${x.id}:description">${esc(x.description)}</textarea>
       <label class="f">镜头内动作（给视频模型）</label><textarea rows="2" data-save="shots:${x.id}:action">${esc(x.action)}</textarea>
@@ -419,7 +421,7 @@ function viewVideo() {
       <span class="small ${x.video ? 'ok' : 'muted'}">${x.video ? '✓ 已生成' : '未生成'}</span></div>
     <div class="frame ${frameClass()}" style="margin-top:8px;${!x.video && x.keyframe ? `background-image:url('${media(x.keyframe)}')` : ''}">
       ${x.video ? `<video src="${media(x.video)}" controls preload="metadata"></video>` : (x.keyframe ? '' : '<span>无分镜图（将纯文生视频）</span>')}${busyBox(x.id)}</div>
-    ${thumbs(x.id, 'video', x.video)}${qaLine(x.id, x.video)}${chainInfo(x, i)}${x.end_frame ? '<div class="small muted">🎯 已设尾帧（首尾帧模式）</div>' : ''}
+    ${thumbs(x.id, 'video', x.video)}${assetsOf(x.id, 'video').length > 1 ? `<button class="btn small ghost" data-act="compare" data-id="${x.id}" data-k="video">并排对比 ${assetsOf(x.id, 'video').length} 个版本</button>` : ''}${qaLine(x.id, x.video)}${chainInfo(x, i)}${x.end_frame ? '<div class="small muted">🎯 已设尾帧（首尾帧模式）</div>' : ''}
     <div class="muted small" style="margin-top:6px;max-height:42px;overflow:hidden">${esc(x.description)}</div>
     <div class="grid3" style="margin-top:8px">${sel(modes, 'auto', `id="vm-${x.id}"`)}${sel([['draft', '草稿 480p'], ['final', '成品 768p']], 'draft', `id="vq-${x.id}"`)}
       <label class="row small"><input type="checkbox" id="vt-${x.id}" checked> 加速(Turbo)</label></div>

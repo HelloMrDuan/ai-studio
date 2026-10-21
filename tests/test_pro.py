@@ -181,3 +181,43 @@ def test_art_department(client, project, monkeypatch):
     assert c2["name"] == "陈默" and c2["locked"] and pipeline.exists(c2["ref_image"]) and c2["sheet"]["back"]
     assert s2["outfits"][0]["name"] == "西装"
     assert any(x["id"] == lib["id"] for x in client.get("/api/library?kind=character").json())
+
+
+def test_board_tools(client, project):
+    from PIL import Image
+    from test_features import CALLS
+    from app import board, pipeline
+    from app.config import get_settings
+    pid = project
+    snap = client.get(f"/api/projects/{pid}").json()
+    chen = next(c for c in snap["characters"] if c["name"] == "陈默")
+    shot = snap["shots"][0]
+    # 站位 + 姿势参考
+    client.patch(f"/api/shots/{shot['id']}", json={"character_ids": [chen["id"]], "positions": {chen["id"]: "左"}})
+    img = get_settings().data_dir / "pose.png"
+    Image.new("RGB", (40, 60), (10, 10, 10)).save(img)
+    with img.open("rb") as f:
+        assert client.post(f"/api/shots/{shot['id']}/pose", files={"file": ("pose.png", f, "image/png")}).json()["pose_ref"]
+    plan = client.get(f"/api/shots/{shot['id']}/plan").json()["keyframe"]
+    assert "「陈默」位于画面左侧三分之一处" in plan["prompt"] and "姿势参考" in plan["prompt"] and plan["refs"][-1].endswith(".png")
+    # 局部重绘：只替换框选区域，其余像素不变
+    k = get_settings().data_dir / "kf.png"
+    Image.new("RGB", (400, 200), (255, 255, 255)).save(k)
+    with k.open("rb") as f:
+        client.post(f"/api/shots/{shot['id']}/upload", files={"file": ("kf.png", f, "image/png")})
+    CALLS.clear()
+    wait(client, client.post(f"/api/shots/{shot['id']}/keyframe/region",
+                             json={"instruction": "把杯子换成红色", "box": [0.5, 0.5, 0.25, 0.25]}).json()["id"])
+    wf = CALLS[0]
+    lat = next(n for n in wf.values() if n["class_type"] == "EmptyLatentImage")["inputs"]
+    assert lat["width"] % 16 == 0 and lat["width"] > 400   # 裁切区放大生成
+    cur = client.get(f"/api/projects/{pid}").json()["shots"][0]
+    out = Image.open(pipeline.absolute(cur["keyframe"])).convert("RGB")
+    assert out.size == (400, 200)
+    assert out.getpixel((10, 10)) == (255, 255, 255)          # 框外不动
+    assert out.getpixel((250, 125)) != (255, 255, 255)       # 框内已替换
+    # 多版本对比
+    cmp = client.get(f"/api/shots/{shot['id']}/compare").json()["items"]
+    assert len(cmp) >= 2 and any(x["current"] and x["edit"] == "把杯子换成红色" and x["region"] for x in cmp)
+    inner, outer = board.crop_box(1000, 500, [0.9, 0.9, 0.5, 0.5])
+    assert outer[2] <= 1000 and outer[3] <= 500 and inner[0] == 900

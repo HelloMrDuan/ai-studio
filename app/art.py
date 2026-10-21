@@ -217,6 +217,7 @@ def forget(path: str) -> None:
         db.update("locations", l["id"], {"variants": {k: v for k, v in (l.get("variants") or {}).items() if v != path}})
     db.execute("UPDATE outfits SET ref_image='' WHERE ref_image=?", [path])
     db.execute("UPDATE projects SET style_ref='' WHERE style_ref=?", [path])
+    db.execute("UPDATE shots SET pose_ref='' WHERE pose_ref=?", [path])
 
 
 # ---------------- 素材库（跨项目复用） ----------------

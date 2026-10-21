@@ -67,7 +67,7 @@ CREATE INDEX IF NOT EXISTS idx_assets_owner ON assets(owner_type, owner_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
 """
 
-JSON_FIELDS = {"character_ids", "prop_ids", "dialogue", "meta", "params", "result", "autopilot", "old_value", "new_value",
+JSON_FIELDS = {"positions", "character_ids", "prop_ids", "dialogue", "meta", "params", "result", "autopilot", "old_value", "new_value",
                "beats", "writer", "sheet", "variants", "outfits", "data", "images"}
 LIST_FIELDS = {"character_ids", "prop_ids", "dialogue", "beats"}
 _lock = threading.RLock()
@@ -107,7 +107,9 @@ MIGRATIONS = [("characters", "face_image", "TEXT DEFAULT ''"), ("characters", "v
               ("characters", "sheet", "TEXT DEFAULT '{}'"), ("characters", "library_id", "TEXT DEFAULT ''"),
               ("locations", "variants", "TEXT DEFAULT '{}'"), ("shots", "outfits", "TEXT DEFAULT '{}'"),
               ("shots", "location_variant", "TEXT DEFAULT ''"), ("projects", "style_ref", "TEXT DEFAULT ''"),
-              ("projects", "style_lora", "TEXT DEFAULT ''"), ("projects", "style_lora_strength", "REAL DEFAULT 0.8")]
+              ("projects", "style_lora", "TEXT DEFAULT ''"), ("projects", "style_lora_strength", "REAL DEFAULT 0.8"),
+              # P2-4 分镜增强
+              ("shots", "positions", "TEXT DEFAULT '{}'"), ("shots", "pose_ref", "TEXT DEFAULT ''")]
 
 
 def _migrate(c: sqlite3.Connection) -> None:

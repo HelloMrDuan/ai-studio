@@ -152,3 +152,8 @@ pre.prompt{white-space:pre-wrap;background:var(--panel2);padding:10px;border-rad
 .dim{opacity:.5}
 .cover-thumb{width:120px;border-radius:6px;cursor:zoom-in;flex:none}
 .cover-thumb.empty{height:160px;display:flex;align-items:center;justify-content:center;border:1px dashed var(--line)}
+/* 多比例导出 */
+.rf-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.rf-img{position:relative;width:100%;background:#0b0d11 center/cover no-repeat;border-radius:6px;overflow:hidden}
+.rf-win{position:absolute;border:2px solid var(--accent);box-shadow:0 0 0 999px rgba(0,0,0,.55);box-sizing:border-box}
+.rf-tag{position:absolute;left:4px;top:4px;font-size:11px;background:rgba(0,0,0,.7);padding:1px 6px;border-radius:4px}

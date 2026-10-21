@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import comfy, db, facefusion, llm, media, prompts, qa, videox, vlm, voice, grade, package, sound, enhance
+from . import comfy, db, facefusion, llm, media, prompts, qa, videox, vlm, voice, grade, package, sound, enhance, reframe
 from .config import get_settings
 from .gpu import gpu
 from .tasks import TaskContext, handler, queue
@@ -853,11 +853,15 @@ async def task_assemble(ctx: TaskContext) -> dict:
     bgm = absolute(ctx.params["bgm"]) if ctx.params.get("bgm") else None
     sizes = {**VIDEO_SIZES, **enhance.EXPORT_SIZES}
     quality = ctx.params.get("quality") if ctx.params.get("quality") in sizes else "final"
-    width, height = sizes[quality].get(project["aspect_ratio"], sizes[quality]["16:9"])
+    aspect = ctx.params.get("aspect") or project["aspect_ratio"]
+    if aspect not in reframe.ASPECTS:
+        raise ValueError(f"不支持的画幅：{aspect}")
+    alt = aspect != project["aspect_ratio"]          # P4-3 换画幅导出
+    width, height = sizes[quality].get(aspect, sizes[quality]["16:9"])
     out_fps = int(post.get("fps") or 24) if int(post.get("fps") or 24) in (24, 25, 30, 48, 50, 60) else 24
     await ctx.progress(5, f"合成 {len(clips)} 个镜头（{width}x{height} · {out_fps}fps）…")
     safe_title = "".join(ch for ch in (project["title"] or "final") if ch not in '\\/:*?"<>|')[:40]
-    output = out_dir / f"{safe_title}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+    output = out_dir / f"{safe_title}_{time.strftime('%Y%m%d_%H%M%S')}{'_' + aspect.replace(':', 'x') if alt else ''}.mp4"
     work = out_dir / f"work_{ctx.id}"
     work.mkdir(parents=True, exist_ok=True)
     g = {**(project.get("grade") or {}), **(ctx.params.get("grade") or {})}
@@ -872,6 +876,16 @@ async def task_assemble(ctx: TaskContext) -> dict:
             pre = [grade.filters(c, bool(g.get("deflicker"))) for c in gp["cubes"]]
             grade_info = {"before": gp["before"], "after": gp["after"], "bases": gp["bases"], "lut": g.get("lut") or ""}
             await ctx.log(f"调色统一：相邻镜头平均色差 ΔE {gp['before']} → {gp['after']}")
+        reframe_info: dict = {}
+        if alt:
+            opts = reframe.options(project)
+            opts.update({k: v for k, v in (ctx.params.get("reframe") or {}).items() if k in ("mode", "shots")})
+            await ctx.progress(8, f"重构图 {project['aspect_ratio']} → {aspect}：分析各镜头主体位置…")
+            plans = await reframe.plan_shots(shots, clips, aspect, opts)
+            pre = [",".join(f for f in (pre[i], reframe.filter_for(p, width, height)) if f) for i, p in enumerate(plans)]
+            reframe_info = {"from": project["aspect_ratio"], "mode": opts["mode"], **reframe.summary(plans)}
+            await ctx.log(f"重构图：裁切 {reframe_info['crop']} 个（其中跟随摇镜 {reframe_info['pan']}），"
+                          f"模糊垫底 {reframe_info['pad']} 个")
         # 片头 / 片尾卡（P3-4）
         seq_shots, seq_clips, seq_durs, seq_pre = list(shots), list(clips), list(durs), list(pre)
         cover_src = package.pick_cover_shot(shots)
@@ -934,7 +948,7 @@ async def task_assemble(ctx: TaskContext) -> dict:
                       "bgm": bgm_src}
         total = (await media.probe(output))["duration"]
         cover = None
-        if post.get("cover", True) and cover_src:
+        if post.get("cover", True) and cover_src and not alt:
             cover = _make_cover(project, cover_src, post)
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -942,9 +956,11 @@ async def task_assemble(ctx: TaskContext) -> dict:
     asset = add_asset(project["id"], "final", output, "project", project["id"],
                       {"shots": len(clips), "seconds": round(total, 1), "skipped": skipped, "grade": grade_info,
                        "transitions": sum(1 for fx, _ in plan if fx), "cards": n_intro + (1 if ec.get("enabled") else 0),
-                       "sound": sound_info, "size": f"{width}x{height}", "fps": out_fps})
-    db.update("projects", project["id"], {"final_video": asset["path"]})
-    return {"path": asset["path"], "seconds": round(total, 1), "skipped": skipped, "cover": cover}
+                       "sound": sound_info, "size": f"{width}x{height}", "fps": out_fps, "aspect": aspect,
+                       "reframe": reframe_info})
+    if not alt:
+        db.update("projects", project["id"], {"final_video": asset["path"]})
+    return {"path": asset["path"], "seconds": round(total, 1), "skipped": skipped, "cover": cover, "aspect": aspect}
 
 
 def _make_cover(project: dict, shot: dict, post: dict | None = None, title: str = "", subtitle: str = "",

@@ -265,6 +265,8 @@ class AssembleIn(BaseModel):
     bgm: str = ""
     bgm_volume: float = Field(0.25, ge=0, le=2)
     quality: str = "final"
+    aspect: str = ""               # P4-3：留空 = 项目画幅；其它画幅走智能重构图
+    reframe: dict | None = None    # {"mode": smart/crop/pad, "shots": {shot_id: {"mode", "center"}}}
 
 
 class AnimaticIn(BaseModel):

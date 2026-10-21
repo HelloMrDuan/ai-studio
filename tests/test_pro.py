@@ -631,3 +631,88 @@ def test_series(client, monkeypatch):
     # 删除系列：各集保留为独立项目
     client.delete(f"/api/series/{sid}")
     assert client.get(f"/api/projects/{ep2}").json()["project"]["series_id"] == ""
+
+
+def _boxes_clip(path, xs, seconds=2.0, move=0):
+    import subprocess
+    args = ["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"color=c=0x101010:s=320x180:r=24:d={seconds}"]
+    chain, last = [], "[0]"
+    for i, x in enumerate(xs):
+        args += ["-f", "lavfi", "-i", f"color=c=white:s=36x70:r=24:d={seconds}"]
+        xe = f"{x}+{move}*t" if move else str(x)
+        chain.append(f"{last}[{i + 1}]overlay=x='{xe}':y=55:shortest=1[v{i}]")
+        last = f"[v{i}]"
+    args += ["-filter_complex", ";".join(chain), "-map", last, "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)]
+    subprocess.run(args, check=True)
+
+
+def test_reframe_analyze(tmp_path):
+    from app import reframe
+    one = tmp_path / "one.mp4"
+    _boxes_clip(one, [240])
+    p = asyncio_run(reframe.analyze(one, {}, "9:16"))
+    assert p["mode"] == "crop" and p["horizontal"] and p["center"] > 0.65 and not p["centers"], p
+    f = reframe.crop_filter(p, 320, 180)
+    w, h, x, _ = f[5:].split(":")
+    assert int(w) == int(320 * p["frac"]) // 2 * 2 and int(h) == 180 and 240 + 36 <= int(x) + int(w) and int(x) <= 240
+    three = tmp_path / "three.mp4"
+    _boxes_clip(three, [8, 142, 276])
+    assert asyncio_run(reframe.analyze(three, {}, "9:16"))["mode"] == "pad"
+    moving = tmp_path / "move.mp4"
+    _boxes_clip(moving, [20], seconds=3.0, move=80)
+    pm = asyncio_run(reframe.analyze(moving, {}, "9:16"))
+    assert pm["mode"] == "crop" and len(pm["centers"]) >= 3 and pm["centers"][-1][1] > pm["centers"][0][1] + 0.3, pm
+    assert "if(lt(t," in reframe.crop_filter(pm, 320, 180)
+    # 同画幅不处理；横 → 1:1 裁左右；手动位置优先
+    assert asyncio_run(reframe.analyze(one, {}, "16:9"))["mode"] == "none"
+    d = reframe.decide(p, {"center": 0.1}, "smart")
+    assert d["mode"] == "crop" and reframe.crop_filter(d, 320, 180).endswith(":0:0")
+    assert reframe.decide(p, {"mode": "pad"}, "smart")["mode"] == "pad"
+    assert reframe.decide(p, None, "pad")["mode"] == "pad"
+    # 所有滤镜都能被 ffmpeg 执行
+    import subprocess
+    for plan in (p, pm, {**p, "mode": "pad"}):
+        vf = reframe.filter_for(plan, 480, 864) + ",scale=480:864:force_original_aspect_ratio=decrease,pad=480:864:(ow-iw)/2:(oh-ih)/2"
+        out = tmp_path / "o.mp4"
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(moving), "-vf", vf, "-t", "1", str(out)], check=True)
+        assert asyncio_run(reframe.media.probe(out))["width"] == 480
+
+
+def test_reframe_assemble_and_clone(client, project):
+    from app import pipeline
+    pid = project
+    snap = client.get(f"/api/projects/{pid}").json()
+    for s in snap["shots"][:2]:
+        if not s["video"]:
+            wait(client, client.post(f"/api/shots/{s['id']}/video", json={}).json()["id"])
+    snap = client.get(f"/api/projects/{pid}").json()
+    before = snap["project"]["final_video"]
+    target = "9:16" if snap["project"]["aspect_ratio"] != "9:16" else "16:9"
+    plan = client.post(f"/api/projects/{pid}/reframe/plan", json={"aspect": target}).json()
+    assert plan["shots"] and all(x["mode"] in ("crop", "pad") for x in plan["shots"]), plan
+    sid = plan["shots"][0]["shot_id"]
+    client.patch(f"/api/projects/{pid}", json={"post": {**(snap["project"].get("post") or {}),
+                                                         "reframe": {"mode": "smart", "shots": {sid: {"mode": "pad"}}}}})
+    plan2 = client.post(f"/api/projects/{pid}/reframe/plan", json={"aspect": target}).json()
+    assert plan2["shots"][0]["mode"] == "pad"
+    assert client.post(f"/api/projects/{pid}/reframe/plan", json={"aspect": "2:1"}).status_code == 400
+    r = wait(client, client.post(f"/api/projects/{pid}/assemble", json={"aspect": target, "quality": "draft"}).json()["id"])
+    assert r["status"] == "done", r
+    assert r["result"]["aspect"] == target
+    info = asyncio_run(pipeline.media.probe(pipeline.absolute(r["result"]["path"])))
+    w, h = pipeline.VIDEO_SIZES["draft"][target]
+    assert (info["width"], info["height"]) == (w, h)
+    p2 = client.get(f"/api/projects/{pid}").json()
+    assert p2["project"]["final_video"] == before                    # 换画幅版本不替换当前成片
+    fin = next(a for a in p2["assets"][pid] if a["path"] == r["result"]["path"])
+    assert fin["meta"]["aspect"] == target and fin["meta"]["reframe"]["pad"] >= 1
+    # 重新出图：复制成新画幅项目
+    c = client.post(f"/api/projects/{pid}/clone", json={"aspect": target}).json()
+    assert c["aspect_ratio"] == target and c["copied"]["shots"] == len(snap["shots"])
+    cs = client.get(f"/api/projects/{c['id']}").json()
+    new_chars = {x["id"] for x in cs["characters"]}
+    new_locs = {x["id"] for x in cs["locations"]}
+    assert all(not s["keyframe"] and not s["video"] for s in cs["shots"])
+    assert all(set(s["character_ids"]) <= new_chars for s in cs["shots"]) and any(s["character_ids"] for s in cs["shots"])
+    assert all(not s["location_id"] or s["location_id"] in new_locs for s in cs["shots"])
+    assert cs["project"]["script"] == snap["project"]["script"]

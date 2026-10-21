@@ -21,8 +21,10 @@ async def probe(path: Path) -> dict:
     text = await _run("ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path))
     data = json.loads(text)
     streams = data.get("streams") or []
+    v = next((s for s in streams if s.get("codec_type") == "video"), {})
     return {"duration": float((data.get("format") or {}).get("duration") or 0),
-            "has_audio": any(s.get("codec_type") == "audio" for s in streams)}
+            "has_audio": any(s.get("codec_type") == "audio" for s in streams),
+            "width": int(v.get("width") or 0), "height": int(v.get("height") or 0)}
 
 
 def _ts(sec: float) -> str:

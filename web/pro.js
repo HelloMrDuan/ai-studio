@@ -585,3 +585,75 @@ Object.assign(ACTIONS, {
     Object.assign(S.snap.project, await api('POST', `/api/projects/${S.pid}/series`, { series_id: sid, copy_cast: !!val('js-copy') })); toast('已加入系列'); loadSnap(true);
   },
 });
+
+/* ---------------- 多比例导出（P4-3） ---------------- */
+const RF_ASPECTS = [['9:16', '9:16 竖屏'], ['16:9', '16:9 横屏'], ['1:1', '1:1 方形'], ['3:4', '3:4'], ['4:3', '4:3']];
+const rfOpts = () => ((S.snap.project.post || {}).reframe) || {};
+function rfBox(x) {
+  if (x.mode === 'none') return '';
+  if (x.mode === 'pad') return '<span class="rf-tag">完整 + 垫底</span>';
+  const c = x.manual != null ? x.manual : x.center; const f = x.frac;
+  const a = Math.max(0, Math.min(1 - f, c - f / 2)) * 100;
+  const st = x.horizontal ? `left:${a}%;width:${f * 100}%;top:0;height:100%` : `top:${a}%;height:${f * 100}%;left:0;width:100%`;
+  return `<div class="rf-win" style="${st}"></div>${x.centers && x.centers.length && x.manual == null ? '<span class="rf-tag">跟随主体</span>' : ''}`;
+}
+function reframePanel() {
+  const p = S.snap.project; const o = rfOpts(); const others = RF_ASPECTS.filter(([k]) => k !== p.aspect_ratio);
+  const asp = S.rfAspect && S.rfAspect !== p.aspect_ratio ? S.rfAspect : others[0][0];
+  const busy = busyOf(`${p.id}:assemble`); const ok = S.snap.shots.some((x) => x.video);
+  const plan = S.rf && S.rf.pid === p.id && S.rf.aspect === asp ? S.rf : null;
+  const ov = o.shots || {};
+  const cells = plan ? plan.shots.map((x) => {
+    const s = S.snap.shots.find((y) => y.id === x.shot_id) || {}; const i = S.snap.shots.indexOf(s); const [w, h] = x.src.split('x').map(Number);
+    const m = (ov[x.shot_id] || {}).mode || 'smart'; const c = x.manual != null ? x.manual : x.center;
+    return `<div class="rf-cell"><div class="rf-img" style="aspect-ratio:${w}/${h};${s.keyframe ? `background-image:url('${media(s.keyframe)}')` : ''}">${rfBox(x)}</div>
+      <div class="row small" style="margin-top:4px"><b>#${i + 1}</b>${sel([['smart', `智能（${x.auto_mode === 'pad' ? '垫底' : '裁切'}）`], ['crop', '裁切'], ['pad', '垫底']], m, `data-rf-mode="${x.shot_id}" class="grow"`)}</div>
+      ${x.mode === 'crop' ? `<input type="range" min="0" max="1" step="0.01" value="${c}" data-rf-center="${x.shot_id}" title="裁切位置" style="width:100%">` : ''}
+      <div class="muted small">主体覆盖 ${Math.round(x.coverage * 100)}%</div></div>`;
+  }).join('') : '';
+  return `<div class="panel" style="margin-top:16px"><div class="row between"><h3>多比例导出 <span class="muted small">同一项目再出一个其它画幅的版本（${p.aspect_ratio} → 其它）</span></h3></div>
+    <div class="grid4">
+      <div><label class="f">目标画幅</label>${sel(others, asp, 'id="rf-asp"')}</div>
+      <div><label class="f">默认方式</label>${sel([['smart', '智能（主体集中裁切，分散垫底）'], ['crop', '全部裁切跟随主体'], ['pad', '全部完整画面 + 模糊垫底']], o.mode || 'smart', 'data-jsave2="post.reframe.mode"')}</div>
+      <div class="row" style="align-items:flex-end"><button class="btn small ghost" data-act="rf-plan" ${ok ? '' : 'disabled'}>${S.rfBusy ? '分析中…' : '分析构图 / 预览裁切'}</button></div>
+      <div class="row" style="align-items:flex-end"><button class="btn small" data-act="rf-export" ${ok && !busy ? '' : 'disabled'}>${busy ? '合成中… ' + busy.progress + '%' : `合成 ${asp} 版成片`}</button></div></div>
+    ${plan ? `<div class="muted small" style="margin:8px 0">裁切 ${plan.shots.filter((x) => x.mode === 'crop').length} 个（跟随摇镜 ${plan.shots.filter((x) => x.mode === 'crop' && x.manual == null && (x.centers || []).length).length}）· 垫底 ${plan.shots.filter((x) => x.mode === 'pad').length} 个。框内是保留的画面，可逐镜头改方式、拖动滑块调裁切位置（自动保存）。</div><div class="rf-grid">${cells}</div>` : ''}
+    <div class="muted small" style="margin-top:8px">裁切会放大画面，画质会下降；想要最好效果可以「复制为 ${asp} 新项目」，剧本、角色、分镜设定全部保留，按新画幅重新出分镜图和视频（需要显卡）。
+      <button class="btn small ghost" data-act="rf-clone">复制为 ${asp} 新项目（重新出图）</button></div></div>`;
+}
+async function rfSave(id, patch) {
+  const p = S.snap.project; const post = { ...(p.post || {}) }; const r = { ...(post.reframe || {}) }; const shots = { ...(r.shots || {}) };
+  shots[id] = { ...(shots[id] || {}), ...patch }; Object.keys(shots[id]).forEach((k) => shots[id][k] == null && delete shots[id][k]);
+  r.shots = shots; post.reframe = r; Object.assign(p, await api('PATCH', `/api/projects/${p.id}`, { post })); toast('已保存');
+}
+document.addEventListener('change', async (e) => {
+  const el = e.target;
+  if (el.id === 'rf-asp') { S.rfAspect = el.value; renderProject(); return; }
+  const id = el.dataset.rfMode || el.dataset.rfCenter; if (!id) return;
+  const x = S.rf && S.rf.shots.find((y) => y.shot_id === id);
+  if (el.dataset.rfMode) {
+    const m = el.value; await rfSave(id, m === 'smart' ? { mode: null, center: null } : { mode: m });
+    if (x) { x.mode = m === 'smart' ? x.auto_mode : m; if (m === 'smart' || m === 'pad') x.manual = null; }
+  } else {
+    const v = Number(el.value); await rfSave(id, { center: v });
+    if (x) { x.manual = v; x.mode = 'crop'; }
+  }
+  renderProject();
+});
+document.addEventListener('input', (e) => {           // 拖动滑块时实时移动裁切框
+  const id = e.target.dataset && e.target.dataset.rfCenter; const x = id && S.rf && S.rf.shots.find((y) => y.shot_id === id);
+  if (!x) return; x.manual = Number(e.target.value); const box = e.target.closest('.rf-cell').querySelector('.rf-img'); box.innerHTML = rfBox(x);
+});
+Object.assign(ACTIONS, {
+  async 'rf-plan'() {
+    const asp = val('rf-asp'); S.rfBusy = true; renderProject();
+    try { S.rf = { ...(await api('POST', `/api/projects/${S.pid}/reframe/plan`, { aspect: asp })), pid: S.pid }; } finally { S.rfBusy = false; renderProject(); }
+  },
+  async 'rf-export'() {
+    submitted(await api('POST', `/api/projects/${S.pid}/assemble`, { aspect: val('rf-asp'), subtitles: val('as-sub'), bgm: S.bgm || '', bgm_volume: Number(val('as-vol')), quality: val('as-q') }));
+  },
+  async 'rf-clone'() {
+    const asp = val('rf-asp'); if (!confirm(`复制成 ${asp} 画幅的新项目？剧本、角色、分镜设定全部保留，分镜图和视频需要按新画幅重新生成。`)) return;
+    const r = await api('POST', `/api/projects/${S.pid}/clone`, { aspect: asp }); toast(`已创建「${r.title}」`); location.hash = `#/p/${r.id}/board`;
+  },
+});

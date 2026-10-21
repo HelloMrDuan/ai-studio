@@ -67,10 +67,12 @@ def _copy_media(value: Any, src_pid: str, dst_pid: str) -> Any:
     return value
 
 
-def copy_cast(src_pid: str, dst_pid: str) -> dict:
+def copy_cast(src_pid: str, dst_pid: str, maps: dict | None = None) -> dict:
+    """复制角色/场景/道具/服装（连同图片、音色文件）；maps 传入时写回 旧 id → 新 id 的映射。"""
     from .pipeline import characters_of, locations_of, props_of
     skip = {"id", "project_id", "created_at"}
-    cmap: dict[str, str] = {}
+    maps = {} if maps is None else maps
+    cmap: dict[str, str] = maps.setdefault("characters", {})
     n = {"characters": 0, "locations": 0, "props": 0, "outfits": 0}
     have = {c["name"] for c in characters_of(dst_pid)}
     for c in characters_of(src_pid):
@@ -84,13 +86,15 @@ def copy_cast(src_pid: str, dst_pid: str) -> dict:
         names = {r["name"] for r in db.query(f"SELECT name FROM {table} WHERE project_id=?", [dst_pid])}
         for r in rows:
             if r["name"] not in names:
-                db.insert(table, {**{k: _copy_media(v, src_pid, dst_pid) for k, v in r.items() if k not in skip},
-                                  "project_id": dst_pid})
+                new = db.insert(table, {**{k: _copy_media(v, src_pid, dst_pid) for k, v in r.items() if k not in skip},
+                                        "project_id": dst_pid})
+                maps.setdefault(table, {})[r["id"]] = new["id"]
                 n[table] += 1
     for o in db.query("SELECT * FROM outfits WHERE project_id=?", [src_pid]):
         if o["character_id"] in cmap:
-            db.insert("outfits", {**{k: _copy_media(v, src_pid, dst_pid) for k, v in o.items() if k not in skip},
-                                  "project_id": dst_pid, "character_id": cmap[o["character_id"]]})
+            new = db.insert("outfits", {**{k: _copy_media(v, src_pid, dst_pid) for k, v in o.items() if k not in skip},
+                                        "project_id": dst_pid, "character_id": cmap[o["character_id"]]})
+            maps.setdefault("outfits", {})[o["id"]] = new["id"]
             n["outfits"] += 1
     return n
 

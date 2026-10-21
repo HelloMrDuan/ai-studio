@@ -464,11 +464,11 @@ function viewFinal() {
         <div class="row small">BGM 音量 <input type="range" id="as-vol" min="0" max="1" step="0.05" value="${pget('sound', 'bgm_volume', 0.25)}" data-num="1" data-jsave2="post.sound.bgm_volume" class="grow"></div></div>
       <div class="row" style="margin-top:12px"><button class="btn" data-act="assemble" ${ok && !busy ? '' : 'disabled'}>${busy ? '合成中… ' + busy.progress + '%' : '合成成片'}</button>
         <a class="btn ghost" href="${media(p.id + '/final/subtitles.srt')}" download>下载字幕 SRT</a></div></div>
-    ${postPanel()}${exportPanel()}
+    ${postPanel()}${reframePanel()}${exportPanel()}
     ${p.final_video ? `<div class="panel final" style="margin-top:16px"><div class="row between"><h3>当前成片</h3><a class="btn small" href="${media(p.final_video)}" download>下载 MP4</a></div>
       <video src="${media(p.final_video)}" controls></video></div>` : ''}
     ${finals.length ? `<div class="panel" style="margin-top:16px"><h3>历史版本</h3><table><tr><th>时间</th><th>镜头</th><th>时长</th><th></th></tr>
-      ${finals.map((a) => `<tr><td>${new Date(a.created_at * 1000).toLocaleString()}</td><td>${a.meta.shots || ''}</td><td>${a.meta.seconds || ''}s${a.meta.grade && a.meta.grade.before != null ? `<div class="muted small">色差 ΔE ${a.meta.grade.before}→${a.meta.grade.after}</div>` : ''}${soundLine(a.meta.sound)}${a.meta.size ? `<div class="muted small">${a.meta.size} · ${a.meta.fps}fps</div>` : ''}</td>
+      ${finals.map((a) => `<tr><td>${new Date(a.created_at * 1000).toLocaleString()}</td><td>${a.meta.shots || ''}</td><td>${a.meta.seconds || ''}s${a.meta.grade && a.meta.grade.before != null ? `<div class="muted small">色差 ΔE ${a.meta.grade.before}→${a.meta.grade.after}</div>` : ''}${soundLine(a.meta.sound)}${a.meta.size ? `<div class="muted small">${a.meta.size} · ${a.meta.fps}fps${a.meta.aspect && a.meta.aspect !== p.aspect_ratio ? ` · <b>${a.meta.aspect} 版</b>` : ''}</div>` : ''}</td>
       <td class="row"><button class="btn small ghost" data-act="select-asset" data-id="${a.id}">设为当前</button><a class="btn small ghost" href="${media(a.path)}" download>下载</a>
       <button class="btn small danger" data-act="del-asset" data-id="${a.id}">删除</button></td></tr>`).join('')}</table></div>` : ''}`;
 }

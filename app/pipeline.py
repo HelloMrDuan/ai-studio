@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import comfy, db, facefusion, llm, media, prompts, qa, videox, vlm, voice, grade, package
+from . import comfy, db, facefusion, llm, media, prompts, qa, videox, vlm, voice, grade, package, sound
 from .config import get_settings
 from .gpu import gpu
 from .tasks import TaskContext, handler, queue
@@ -879,18 +879,38 @@ async def task_assemble(ctx: TaskContext) -> dict:
         plan = package.transition_plan(seq_shots, seq_durs) if post.get("transitions", True) else [("", 0.0)] * len(seq_shots)
         starts = package.starts_with(seq_durs, plan)
         # 字幕：按转场后的真实起点；有配音时间就用配音时间
-        timeline = []
+        so = sound.sound_opts(project)
+        timeline, layer_shots = [], []
         for k, s in enumerate(shots):
             meta = (db.query("SELECT meta FROM assets WHERE path=? LIMIT 1", [s["video"]]) or [{}])[0].get("meta") or {}
-            timeline.append((starts[k + n_intro], durs[k], s.get("dialogue") or [], meta.get("timing")))
+            lines, exact = list(s.get("dialogue") or []), list(meta.get("timing") or [])
+            if so["narration"] and exists(s.get("narration_audio")):      # 旁白配音：字幕按旁白实际时间
+                nm = (db.query("SELECT meta FROM assets WHERE path=? LIMIT 1", [s["narration_audio"]]) or [{}])[0].get("meta") or {}
+                off = sound.narration_offset(meta.get("timing"))
+                if (s.get("narration") or "").strip():
+                    lines.append({"speaker": "旁白", "line": s["narration"].strip()})
+                exact += [{**t, "start": t["start"] + off} for t in nm.get("timing") or [] if t.get("j", -1) < len(lines)]
+            timeline.append((starts[k + n_intro], durs[k], lines, exact or None))
+            layer_shots.append({**s, "_dur": durs[k], "_dub_timing": meta.get("timing")})
         srt_rows = [(a, b, d["line"]) for st, du, lines, ex in timeline for a, b, d in package.line_timing(st, du, lines, ex)
                     if (d.get("line") or "").strip()]
         srt = "\n".join(f"{n + 1}\n{media._ts(a)} --> {media._ts(b)}\n{t}\n" for n, (a, b, t) in enumerate(srt_rows))
         (out_dir / "subtitles.srt").write_text(srt, encoding="utf-8")
         subs_on = ctx.params.get("subtitles", True)
         ass = package.build_ass(timeline, width, height, post.get("subtitle") or {}) if subs_on and srt_rows else ""
-        await media.assemble(seq_clips, output, width, height, work, srt="", ass=ass,
-                             bgm=bgm, bgm_volume=float(ctx.params.get("bgm_volume", 0.25)), pre=seq_pre, plan=plan)
+        # 声音后期（P3-5）：旁白 + 音效整轨、BGM（上传的优先，否则用生成的配乐）、人声闪避、响度标准化
+        timeline_total = starts[-1] + seq_durs[-1]
+        layers = await sound.build_layers(project, layer_shots, starts[n_intro:n_intro + len(shots)], timeline_total, work)
+        bgm_volume = float(ctx.params.get("bgm_volume", so["bgm_volume"]))
+        bgm_src = "上传" if bgm is not None else ""
+        if bgm is None and so["bgm_auto"] and exists(project.get("bgm")):
+            bgm, bgm_src = absolute(project["bgm"]), "生成"
+        mix = {"narration": layers["narration"], "sfx": layers["sfx"], "bgm": bgm, "bgm_volume": bgm_volume,
+               "duck": bool(so["duck"]), "loudnorm": bool(so["loudnorm"]), "lufs": so["lufs"], "duration": timeline_total}
+        await ctx.progress(60, "合成画面、混音…")
+        await media.assemble(seq_clips, output, width, height, work, srt="", ass=ass, pre=seq_pre, plan=plan, mix=mix)
+        sound_info = {**(mix.get("info") or {}), "narration": layers["narr_count"], "sfx": layers["sfx_count"],
+                      "bgm": bgm_src}
         total = (await media.probe(output))["duration"]
         cover = None
         if post.get("cover", True) and cover_src:
@@ -900,7 +920,8 @@ async def task_assemble(ctx: TaskContext) -> dict:
     skipped = len(all_shots) - len(shots)
     asset = add_asset(project["id"], "final", output, "project", project["id"],
                       {"shots": len(clips), "seconds": round(total, 1), "skipped": skipped, "grade": grade_info,
-                       "transitions": sum(1 for fx, _ in plan if fx), "cards": n_intro + (1 if ec.get("enabled") else 0)})
+                       "transitions": sum(1 for fx, _ in plan if fx), "cards": n_intro + (1 if ec.get("enabled") else 0),
+                       "sound": sound_info})
     db.update("projects", project["id"], {"final_video": asset["path"]})
     return {"path": asset["path"], "seconds": round(total, 1), "skipped": skipped, "cover": cover}
 

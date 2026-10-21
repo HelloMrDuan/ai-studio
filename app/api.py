@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from . import art, autopilot, board, db, grade, package, videox, vlm, director, facefusion, pipeline, prompts, qa, suggest, voice, writers
+from . import art, autopilot, board, db, grade, package, videox, vlm, director, facefusion, pipeline, prompts, qa, sound, suggest, voice, writers
 from .config import get_settings
 from .gpu import gpu
 from .tasks import queue
@@ -60,7 +60,8 @@ async def meta() -> dict:
             "views": art.VIEWS, "expressions": list(art.EXPRESSIONS), "variants": list(art.VARIANT_PRESETS), "positions": list(board.POSITIONS),
             "camera_dirs": {k: list(v) for k, v in videox.DIRECTIONS.items()}, "motion": videox.motion_available(),
             "luts": grade.STYLE_LUTS, "sub_presets": {k: v["label"] for k, v in package.SUB_PRESETS.items()},
-            "transition_fx": list(package.TRANSITION_FX), "vlm": vlm.available(), "vlm_provider": vlm.provider(), "asr": vlm.asr_available()}
+            "transition_fx": list(package.TRANSITION_FX), "vlm": vlm.available(), "vlm_provider": vlm.provider(), "asr": vlm.asr_available(),
+            "moods": {k: v[0] for k, v in sound.MOODS.items()}, "narr_styles": sound.NARR_STYLES, "music": sound.music_available()}
 
 
 def _model_check() -> list[dict]:
@@ -124,7 +125,7 @@ class ProjectIn(BaseModel):
 
 PROJECT_FIELDS = {"title", "source_type", "source_text", "aspect_ratio", "style", "style_note", "target_seconds",
                   "script", "synopsis", "dub_mode", "genre", "style_ref", "style_lora", "style_lora_strength",
-                  "grade", "post", "cover"}
+                  "grade", "post", "cover", "bgm"}
 
 
 def _check_project(values: dict) -> None:
@@ -495,7 +496,8 @@ async def upload_location(loc_id: str, file: UploadFile = File(...)) -> dict:
 # ================= 分镜 =================
 SHOT_FIELDS = {"scene", "location_id", "shot_size", "camera_angle", "camera_move", "description", "action",
                "character_ids", "prop_ids", "dialogue", "sound", "duration", "image_prompt", "video_prompt", "keyframe", "video",
-               "continuous", "end_frame", "performance", "transition", "outfits", "location_variant", "positions", "pose_ref", "camera_dir", "camera_speed", "motion_ref"}
+               "continuous", "end_frame", "performance", "transition", "outfits", "location_variant", "positions", "pose_ref", "camera_dir", "camera_speed", "motion_ref",
+               "narration", "narration_audio", "sfx"}
 
 
 def _renumber(project_id: str, ids: list[str]) -> None:

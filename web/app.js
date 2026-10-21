@@ -361,6 +361,7 @@ function viewBoard() {
         <button class="btn small ghost" data-act="del-line" data-id="${x.id}" data-j="${j}">✕</button></div>`).join('')}
       <div class="row"><button class="btn small ghost" data-act="add-line" data-id="${x.id}">＋ 台词</button>
         <input type="text" class="grow" data-save="shots:${x.id}:sound" value="${esc(x.sound)}" placeholder="环境音 / 音效"></div>
+      ${shotSoundFields(x)}
       <details style="margin-top:8px"><summary class="muted small">高级：自定义出图画面描述（留空则用上面的画面描述）</summary>
         <textarea rows="3" data-save="shots:${x.id}:image_prompt">${esc(x.image_prompt)}</textarea></details>
       <div class="row" style="justify-content:flex-end;margin-top:8px"><button class="btn small ghost" data-act="add-shot" data-id="${x.id}">在后面插入镜头</button>
@@ -455,15 +456,15 @@ function viewFinal() {
       <div class="grid4" style="margin-top:10px">
         <label class="row"><input type="checkbox" id="as-sub" checked> 烧录中文字幕</label>
         <div>${sel([['final', '输出 768p'], ['draft', '输出 480p']], 'final', 'id="as-q"')}</div>
-        <div class="row"><button class="btn small ghost" data-act="upload-bgm">${S.bgm ? '✓ 已选 BGM（更换）' : '上传背景音乐'}</button>${S.bgm ? '<button class="btn small ghost" data-act="clear-bgm">✕</button>' : ''}</div>
-        <div class="row small">BGM 音量 <input type="range" id="as-vol" min="0" max="1" step="0.05" value="0.25" class="grow"></div></div>
+        <div class="row"><button class="btn small ghost" data-act="upload-bgm">${S.bgm ? '✓ 已选 BGM（更换）' : p.bgm ? '上传 BGM（替换生成的配乐）' : '上传背景音乐'}</button>${S.bgm ? '<button class="btn small ghost" data-act="clear-bgm">✕</button>' : ''}</div>
+        <div class="row small">BGM 音量 <input type="range" id="as-vol" min="0" max="1" step="0.05" value="${pget('sound', 'bgm_volume', 0.25)}" data-num="1" data-jsave2="post.sound.bgm_volume" class="grow"></div></div>
       <div class="row" style="margin-top:12px"><button class="btn" data-act="assemble" ${ok && !busy ? '' : 'disabled'}>${busy ? '合成中… ' + busy.progress + '%' : '合成成片'}</button>
         <a class="btn ghost" href="${media(p.id + '/final/subtitles.srt')}" download>下载字幕 SRT</a></div></div>
     ${postPanel()}
     ${p.final_video ? `<div class="panel final" style="margin-top:16px"><div class="row between"><h3>当前成片</h3><a class="btn small" href="${media(p.final_video)}" download>下载 MP4</a></div>
       <video src="${media(p.final_video)}" controls></video></div>` : ''}
     ${finals.length ? `<div class="panel" style="margin-top:16px"><h3>历史版本</h3><table><tr><th>时间</th><th>镜头</th><th>时长</th><th></th></tr>
-      ${finals.map((a) => `<tr><td>${new Date(a.created_at * 1000).toLocaleString()}</td><td>${a.meta.shots || ''}</td><td>${a.meta.seconds || ''}s${a.meta.grade && a.meta.grade.before != null ? `<div class="muted small">色差 ΔE ${a.meta.grade.before}→${a.meta.grade.after}</div>` : ''}</td>
+      ${finals.map((a) => `<tr><td>${new Date(a.created_at * 1000).toLocaleString()}</td><td>${a.meta.shots || ''}</td><td>${a.meta.seconds || ''}s${a.meta.grade && a.meta.grade.before != null ? `<div class="muted small">色差 ΔE ${a.meta.grade.before}→${a.meta.grade.after}</div>` : ''}${soundLine(a.meta.sound)}</td>
       <td class="row"><button class="btn small ghost" data-act="select-asset" data-id="${a.id}">设为当前</button><a class="btn small ghost" href="${media(a.path)}" download>下载</a>
       <button class="btn small danger" data-act="del-asset" data-id="${a.id}">删除</button></td></tr>`).join('')}</table></div>` : ''}`;
 }

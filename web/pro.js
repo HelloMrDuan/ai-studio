@@ -394,3 +394,56 @@ POST_SECTIONS.push(() => {
 Object.assign(ACTIONS, {
   async 'make-cover'() { const r = await api('POST', `/api/projects/${S.pid}/cover`, { shot_id: val('cv-shot'), aspect: val('cv-asp'), title: pget('cover_opts', 'title', '').replace(/\\n/g, '\n') }); toast('封面已生成'); loadSnap(true); },
 });
+
+/* ---------------- 声音后期：旁白/解说、音效库、AI 配乐、闪避混音、响度 ---------------- */
+function shotSoundFields(x) {
+  const narr = (S.snap.assets[x.id] || []).some((a) => a.kind === 'narration');
+  const sfx = (x.sfx || []).map((f) => f.name);
+  return `<div class="row small" style="margin-top:6px;gap:8px;align-items:flex-start"><span style="white-space:nowrap;padding-top:6px">解说词</span>
+    <textarea rows="1" class="grow" data-save="shots:${x.id}:narration" placeholder="旁白读出的解说（可空；台词说话人选「旁白」也会配音）">${esc(x.narration || '')}</textarea>
+    ${x.narration_audio ? `<audio src="${media(x.narration_audio)}" controls preload="none" style="height:30px;width:170px"></audio>` : narr ? '' : ''}</div>
+    ${sfx.length ? `<div class="muted small">手动音效：${sfx.map(esc).join('、')} <a href="#" data-act="sfx-clear" data-id="${x.id}">改回自动匹配</a></div>` : ''}`;
+}
+const soundLine = (m) => (m && m.layers ? `<div class="muted small">声音：${[m.narration ? `旁白×${m.narration}` : '', m.sfx ? `音效×${m.sfx}` : '', m.bgm ? `BGM(${m.bgm})` : ''].filter(Boolean).join(' · ') || '原声'}${m.target ? ` · ${m.target} LUFS` : ''}</div>` : '');
+POST_SECTIONS.push(() => {
+  const s = S.snap; const p = s.project; const voices = s.characters.filter((c) => c.voice_ref);
+  const vcur = pget('sound', 'voice', '');
+  const vopts = [['', '（未选，用 data/voices/narrator.wav）'], ...voices.map((c) => [`char:${c.id}`, `角色音色：${c.name}`])];
+  if (vcur && !vcur.startsWith('char:')) vopts.push([vcur, '上传的旁白样本']);
+  const nCount = s.shots.filter((x) => (x.narration || '').trim() || (x.dialogue || []).some((d) => ['旁白', '解说', '画外音'].includes(d.speaker))).length;
+  const styles = Object.keys(S.meta.narr_styles || { 解说: '' });
+  const bgmA = assetsOf(p.id, 'bgm')[0];
+  const segs = bgmA ? (bgmA.meta.segments || []).map((g) => `${g.mood} ${Math.round(g.seconds)}s`).join(' → ') : '';
+  if (!S.sfxLib) { S.sfxLib = []; api('GET', '/api/sfx').then((r) => { S.sfxLib = r; if (S.step === 'final') renderProject(); }).catch(() => {}); }
+  return `<div class="post-sec"><div class="row between"><b>旁白 / 解说</b>${pchk('sound', 'narration', true, '成片里混入旁白配音')}</div>
+    <div class="grid3" style="margin-top:6px">
+      <div><label class="f">旁白音色</label>${sel(vopts, vcur, 'data-jsave2="post.sound.voice"')}<button class="btn small ghost" style="margin-top:4px" data-act="narr-voice">上传旁白样本</button></div>
+      <div><label class="f">语气</label>${ptext('sound', 'emo', '平静、娓娓道来', '如：低沉、悬疑')}</div>
+      <div><label class="f">AI 写解说词</label><div class="row">${sel(styles.map((k) => [k, k]), '解说', 'id="nw-style" style="width:100px"')}<label class="row small"><input type="checkbox" id="nw-over"> 覆盖已有</label>
+        <button class="btn small ghost" data-act="narr-write" title="${esc((S.meta.narr_styles || {})[styles[0]] || '')}">写解说词</button></div></div></div>
+    <div class="row" style="margin-top:6px"><button class="btn small" data-act="narr-make" ${nCount && S.meta.voice && S.meta.voice.tts !== false ? '' : 'disabled'}>为 ${nCount} 个镜头配旁白</button>
+      <span class="muted small">解说词写在④分镜每个镜头里；有对白配音的镜头，旁白排在对白之后</span></div></div>
+  <div class="post-sec"><div class="row between"><b>音效</b>${pchk('sound', 'sfx_auto', true, '按镜头「环境音/音效」自动匹配音效库')}</div>
+    <div class="row small" style="margin-top:6px;gap:10px">音量 <input type="range" min="0" max="1.5" step="0.05" value="${pget('sound', 'sfx_volume', 0.6)}" data-num="1" data-jsave2="post.sound.sfx_volume" style="width:120px">
+      <button class="btn small ghost" data-act="sfx-upload">上传音效</button><span class="muted">文件名即标签，如「雨声_环境.wav」「关门声.mp3」；带 雨/风/人群/环境 等字样的会循环铺满镜头</span></div>
+    <div class="chips" style="margin-top:6px">${(S.sfxLib || []).map((f) => `<span class="chip" title="${esc(f.tags.join(' '))}">${esc(f.name)}${f.loop ? ' ↻' : ''} <a href="#" data-act="sfx-del" data-name="${esc(f.name)}">✕</a></span>`).join('') || '<span class="muted small">音效库为空（服务器 data/sfx 目录）</span>'}</div></div>
+  <div class="post-sec"><div class="row between"><b>AI 配乐（ACE-Step）</b>${pchk('sound', 'bgm_auto', true, '没上传 BGM 时使用生成的配乐')}</div>
+    <div class="row" style="margin-top:6px;align-items:center;gap:10px">${p.bgm ? `<audio src="${media(p.bgm)}" controls preload="none" style="height:32px"></audio>` : '<span class="muted small">暂无配乐</span>'}
+      ${segs ? `<span class="muted small">情绪段落：${esc(segs)}</span>` : ''}</div>
+    <div class="row" style="margin-top:6px">${ptext('sound', 'style', '', '风格标签（英文更准，可空），如：chinese traditional, guzheng')}
+      <label class="row small"><input type="checkbox" id="bgm-single"> 全片一首</label>
+      <button class="btn small" data-act="bgm-gen" ${S.meta.music ? '' : 'disabled'} title="${S.meta.music ? '按场次情绪曲线分段生成，段间交叉淡化' : '未安装 ACE-Step：在服务器运行 bash deploy/09_music.sh'}">生成配乐</button>
+      <button class="btn small ghost" data-act="bgm-plan">预览情绪分段</button></div></div>
+  <div class="post-sec"><b>混音</b><div class="row" style="margin-top:6px;gap:14px;flex-wrap:wrap">${pchk('sound', 'duck', true, '人声闪避（说话时 BGM 自动压低）')}${pchk('sound', 'loudnorm', true, '响度标准化')}
+    <span class="small">目标 ${sel([[-14, '-14 LUFS（抖音/快手/B站）'], [-16, '-16 LUFS（播客/YouTube 偏安静）'], [-23, '-23 LUFS（广电）']], pget('sound', 'lufs', -14), 'data-num="1" data-jsave2="post.sound.lufs" style="width:220px"')}</span></div></div>`;
+});
+Object.assign(ACTIONS, {
+  async 'narr-voice'() { const f = await pickFile('audio/*'); if (f) { Object.assign(S.snap.project, await upload(`/api/projects/${S.pid}/narration/voice`, f)); toast('旁白音色已设置'); renderProject(); } },
+  async 'narr-write'() { submitted(await api('POST', `/api/projects/${S.pid}/narration/write`, { style: val('nw-style'), overwrite: !!val('nw-over') })); },
+  async 'narr-make'() { submitted(await api('POST', `/api/projects/${S.pid}/narration`, {})); },
+  async 'sfx-upload'() { const f = await pickFile('audio/*'); if (f) { await upload('/api/sfx', f); S.sfxLib = null; renderProject(); } },
+  async 'sfx-del'(el) { if (!confirm(`删除音效 ${el.dataset.name}？`)) return; await api('DELETE', `/api/sfx/${encodeURIComponent(el.dataset.name)}`); S.sfxLib = null; renderProject(); },
+  async 'sfx-clear'(el) { await api('PATCH', `/api/shots/${el.dataset.id}`, { sfx: [] }); loadSnap(true); },
+  async 'bgm-gen'() { submitted(await api('POST', `/api/projects/${S.pid}/bgm`, { single: !!val('bgm-single') })); },
+  async 'bgm-plan'() { const r = await api('GET', `/api/projects/${S.pid}/bgm/plan`); alert(r.segments.map((g, i) => `${i + 1}. ${g.mood}  ${Math.round(g.seconds)} 秒（${g.shots.length} 个镜头）\n   ${g.tags}`).join('\n') || '还没有分镜'); },
+});

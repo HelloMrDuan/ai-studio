@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     vlm_pass_score: int = 6                # 低于此分判为不合格
     asr_python: str = ""                   # 装了 faster-whisper 的 Python（音画核对）；空 = 不做
     asr_model: str = "small"
+    music_ckpt: str = "ace_step_v1_3.5b.safetensors"   # ACE-Step 配乐模型（ComfyUI models/checkpoints）
     llm_start_timeout: int = 300
 
     comfyui_dir: Path = Path("/root/autodl-tmp/ComfyUI")

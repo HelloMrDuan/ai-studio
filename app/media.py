@@ -49,8 +49,10 @@ def build_srt(items: list[tuple[float, float, list[dict]]]) -> str:
 
 async def assemble(clips: list[Path], output: Path, width: int, height: int, work: Path,
                    srt: str = "", bgm: Path | None = None, bgm_volume: float = 0.25,
-                   pre: list[str] | None = None, ass: str = "", plan: list | None = None) -> Path:
-    """pre：每个片段额外的视频滤镜（调色 LUT / 去闪烁），在缩放前执行。"""
+                   pre: list[str] | None = None, ass: str = "", plan: list | None = None,
+                   mix: dict | None = None) -> Path:
+    """pre：每个片段额外的视频滤镜（调色 LUT / 去闪烁），在缩放前执行。
+    mix：声音后期参数（sound.mix 的关键字：narration / sfx / bgm / duck / loudnorm …），结果写回 mix["info"]。"""
     if not shutil.which("ffmpeg"):
         raise RuntimeError("系统没有安装 ffmpeg")
     work.mkdir(parents=True, exist_ok=True)
@@ -73,11 +75,15 @@ async def assemble(clips: list[Path], output: Path, width: int, height: int, wor
     durs = [(await probe(p))["duration"] for p in normalized]
     await package.join(normalized, durs, plan or [("", 0.0)] * len(normalized), joined)
     current = joined
-    if bgm is not None:
-        mixed = work / "bgm.mp4"
-        await _run("ffmpeg", "-y", "-i", str(current), "-stream_loop", "-1", "-i", str(bgm),
-                   "-filter_complex", f"[1:a]volume={bgm_volume}[b];[0:a][b]amix=inputs=2:duration=first:dropout_transition=0[a]",
-                   "-map", "0:v", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", str(mixed))
+    if mix is not None or bgm is not None:
+        from . import sound
+        kw = {k: v for k, v in (mix or {"loudnorm": False}).items() if k != "info"}
+        if bgm is not None and kw.get("bgm") is None:
+            kw.update(bgm=bgm, bgm_volume=bgm_volume)
+        mixed = work / "mixed.mp4"
+        info = await sound.mix(current, mixed, **kw)
+        if mix is not None:
+            mix["info"] = info
         current = mixed
     if ass.strip():
         ass_path = work / "subs.ass"

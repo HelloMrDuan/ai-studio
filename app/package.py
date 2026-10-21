@@ -47,22 +47,16 @@ def line_timing(start: float, dur: float, lines: list[dict], exact: list[dict] |
     """每句台词的起止时间：有配音时间就用配音的，否则按字数比例分配。"""
     if not lines:
         return []
-    if exact:
-        by_j = {t["j"]: t for t in exact if t.get("j", -1) >= 0}
-        if by_j:
-            out = []
-            for j, d in enumerate(lines):
-                if j in by_j:
-                    out.append((start + by_j[j]["start"], start + by_j[j]["start"] + by_j[j]["dur"], d))
-            if out:
-                return out
-    weights = [max(2, len(re.sub(r"\s", "", d.get("line") or ""))) for d in lines]
+    by_j = {t["j"]: t for t in exact or [] if t.get("j", -1) >= 0}
+    timed = [(start + by_j[j]["start"], start + by_j[j]["start"] + by_j[j]["dur"], d) for j, d in enumerate(lines) if j in by_j]
+    rest = [d for j, d in enumerate(lines) if j not in by_j]       # 没配音的句子（缺音色 / 旁白未配）按字数比例铺满镜头
+    weights = [max(2, len(re.sub(r"\s", "", d.get("line") or ""))) for d in rest]
     total, t, out = sum(weights), start, []
-    for w, d in zip(weights, lines):
+    for w, d in zip(weights, rest):
         seg = dur * w / total
         out.append((t, t + seg - 0.05, d))
         t += seg
-    return out
+    return sorted(timed + out, key=lambda x: x[0])
 
 
 def wrap(text: str, max_chars: int) -> list[str]:

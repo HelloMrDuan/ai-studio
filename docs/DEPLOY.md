@@ -192,3 +192,10 @@ tail -f /root/autodl-tmp/logs/studio.log /root/autodl-tmp/logs/comfyui.log
 - **本地（推荐）**：`bash deploy/08_vlm.sh` —— 下载 Qwen3.6 的视觉投影 mmproj（审片与写剧本共用一个模型，不额外占显存）并装 faster-whisper 做台词核对，自动写入 `.env` 的 `LLM_MMPROJ`、`ASR_PYTHON`。本地模型与 ComfyUI 共享显卡，所以只做**批量审片**（④视频页「整片审片」），不在每次出图后即时审。
 - **接口**：在 `.env` 设置 `VLM_BASE_URL`、`VLM_API_KEY`、`VLM_MODEL`（任何 OpenAI 兼容的视觉模型）。接口模式下出图/出视频后会**即时审**，不合格自动重抽（`VLM_AUTO=false` 可关闭）。
 - 合格线：`VLM_PASS_SCORE`（默认 6 分，且没有严重问题）。审片结果在分镜卡/视频卡上展开查看，「一键返工」会把问题和修正描述写进提示词重抽。
+
+## 声音后期（P3-5，可选）
+
+- **旁白 / 解说**：复用 IndexTTS2（`deploy/06_voice.sh`）。台词里说话人选「旁白」，或在④分镜每个镜头填「解说词」（也可在⑤成片点「写解说词」让文字模型按 解说 / 第一人称 / 悬念 风格批量写）。旁白音色在⑤成片 → 声音里选角色音色或上传 3~15 秒样本；默认用 `data/voices/narrator.wav`。
+- **音效库**：wav/mp3 放进 `data/sfx/`（或网页上传），**文件名即标签**（`雨声_环境.wav`、`关门声.mp3`）。合成时按镜头「环境音/音效」描述自动匹配，文件名带 雨/风/人群/环境 等字样的会循环铺满整个镜头。
+- **AI 配乐**：`bash deploy/09_music.sh` 下载 ACE-Step v1 3.5B（约 7.7GB，可在无卡模式下运行；`--check` 检查 ComfyUI 节点）。按场次情绪曲线（紧张/悲伤/温馨/浪漫/燃/欢快/神秘/平静）分段生成、段间交叉淡化；想换工作流就把 API 格式 JSON 放到 `data/workflows/music.json`，占位符 `{{TAGS}} {{LYRICS}} {{SECONDS}} {{SEED}} {{STEPS}}`。
+- **混音**：人声（对白 + 旁白）闪避 BGM（sidechaincompress），整片两遍 loudnorm 标准化到 -14 LUFS / -1.5 dBTP（可选 -16、-23）。成片历史版本里显示用了哪些声音层和目标响度。

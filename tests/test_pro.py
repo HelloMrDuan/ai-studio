@@ -392,8 +392,88 @@ def test_packaging(client, project):
     assert ass.count("\\kf") == 6
     # 配音时间优先
     lt = package.line_timing(10, 5, [{"line": "a"}, {"line": "b"}], [{"j": 1, "start": 1.0, "dur": 2.0}])
-    assert lt == [(11.0, 13.0, {"line": "b"})]
+    assert lt[1] == (11.0, 13.0, {"line": "b"}) and lt[0][0] == 10 and lt[0][2] == {"line": "a"}   # 未配音的句子仍有字幕
     # 手动封面：指定镜头 + 竖版
     r = client.post(f"/api/projects/{pid}/cover", json={"shot_id": vids[0]["id"], "title": "重生之我是\n总裁", "aspect": "9:16"}).json()
     from PIL import Image
     assert Image.open(pipeline.absolute(r["cover"])).size == (1080, 1920)
+
+
+def test_sound_post(client, project, monkeypatch, tmp_path):
+    import asyncio
+    import shutil
+    import subprocess
+    from pathlib import Path
+    from app import comfy, pipeline, sound, voice
+
+    def tone(path, freq, d, vol=0.5):
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", f"sine=f={freq}:d={d}", "-af", f"volume={vol}",
+                        "-ar", "48000", str(path)], check=True)
+        return path
+    pid = project
+    snap = client.get(f"/api/projects/{pid}").json()
+    shots = snap["shots"][:2]
+    for s in shots:
+        if not s["video"]:
+            wait(client, client.post(f"/api/shots/{s['id']}/video", json={}).json()["id"])
+    # 音效库：按文件名标签匹配镜头的「环境音」描述
+    for name in ("雨声_环境.wav", "关门声.wav", "脚步_走廊.wav"):
+        tone(sound.sfx_dir() / name, 300, 1.0, 0.3)
+    m = sound.match_sfx("窗外雨声、远处关门声")
+    assert [x["name"] for x in m] == ["雨声_环境.wav", "关门声.wav"] and m[0]["loop"]
+    assert client.get("/api/sfx").json()[0]["tags"]
+    client.patch(f"/api/shots/{shots[0]['id']}", json={"sound": "雨声", "narration": "那一夜，他终于等到了她。",
+                                                       "dialogue": [{"speaker": "旁白", "line": "三年前"}]})
+    # 解说词（LLM）：不覆盖已有
+    from test_features import LLM_EXTRA
+    monkeypatch.setitem(LLM_EXTRA, sound.NARR_SYSTEM, lambda m: json.dumps(
+        {"lines": [{"n": 1, "text": "不该覆盖"}, {"n": 2, "text": "她没有回头。"}]}, ensure_ascii=False))
+    assert wait(client, client.post(f"/api/projects/{pid}/narration/write", json={}).json()["id"])["result"]["written"] == 1
+    snap = client.get(f"/api/projects/{pid}").json()
+    assert snap["shots"][0]["narration"].startswith("那一夜") and snap["shots"][1]["narration"] == "她没有回头。"
+    # 旁白配音：上传旁白音色 → 合成（TTS 模拟）
+    monkeypatch.setattr(voice, "tts_available", lambda: True)
+
+    async def fake_synth(items, log_cb=None):
+        for it in items:
+            await asyncio.to_thread(tone, Path(it["out"]), 600, 1.2)
+    monkeypatch.setattr(voice, "synthesize", fake_synth)
+    ref = tone(tmp_path / "narr.wav", 500, 2)
+    with open(ref, "rb") as fh:
+        client.post(f"/api/projects/{pid}/narration/voice", files={"file": ("narr.wav", fh, "audio/wav")})
+    r = wait(client, client.post(f"/api/projects/{pid}/narration", json={}).json()["id"])
+    assert r["status"] == "done" and r["result"]["lines"] == 3, r
+    snap = client.get(f"/api/projects/{pid}").json()
+    narr = [x for x in snap["assets"][shots[0]["id"]] if x["kind"] == "narration"][0]
+    assert [t["j"] for t in narr["meta"]["timing"]] == [0, 1] and narr["meta"]["timing"][1]["start"] > 1.2
+    # 配乐：情绪分段 + ACE-Step 工作流（ComfyUI 模拟出音频）
+    wf = sound.music_workflow("sad, piano", 12, 7)
+    assert {n["class_type"] for n in wf.values()} >= {"TextEncodeAceStepAudio", "EmptyAceStepLatentAudio", "VAEDecodeAudio"}
+    segs = sound.mood_segments([{"id": "a", "scene": "1", "description": "她哭着告别"}, {"id": "b", "scene": "1"},
+                                {"id": "c", "scene": "2", "description": "他当众反击打脸"}], [6, 6, 10])
+    assert [g["mood"] for g in segs] == ["悲伤", "燃"] and segs[0]["shots"] == ["a", "b"]
+    real = comfy.run
+
+    async def fake_music(workflow, out_dir, progress=None):
+        if not any(n["class_type"] == "SaveAudio" for n in workflow.values()):
+            return await real(workflow, out_dir, progress)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        secs = next(n for n in workflow.values() if n["class_type"] == "EmptyAceStepLatentAudio")["inputs"]["seconds"]
+        return [await asyncio.to_thread(tone, out_dir / "bgm_00001_.flac", 220, secs, 0.6)]
+    monkeypatch.setattr(comfy, "run", fake_music)
+    r = wait(client, client.post(f"/api/projects/{pid}/bgm", json={}).json()["id"])
+    assert r["status"] == "done", r
+    snap = client.get(f"/api/projects/{pid}").json()
+    assert snap["project"]["bgm"] and pipeline.exists(snap["project"]["bgm"])
+    # 成片：旁白 + 音效 + 生成的 BGM（闪避）+ 响度标准化到 -14 LUFS
+    client.patch(f"/api/projects/{pid}", json={"grade": {}, "post": {"sound": {"bgm_volume": 0.3}}})
+    wait(client, client.post(f"/api/projects/{pid}/assemble", json={}).json()["id"])
+    snap = client.get(f"/api/projects/{pid}").json()
+    fin = [x for x in snap["assets"][pid] if x["kind"] == "final"][0]
+    info = fin["meta"]["sound"]
+    assert info["narration"] >= 1 and info["sfx"] >= 1 and info["bgm"] == "生成" and info["layers"] == ["bgm", "narr", "sfx"], info
+    lufs = asyncio_run(sound.measure_lufs(pipeline.absolute(fin["path"])))
+    assert abs(lufs - sound.LUFS) < 1.5, lufs
+    srt = (pipeline.project_dir(pid, "final") / "subtitles.srt").read_text("utf-8")
+    assert "那一夜" in srt and "三年前" in srt
+    shutil.rmtree(sound.sfx_dir(), ignore_errors=True)

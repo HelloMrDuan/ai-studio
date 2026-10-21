@@ -67,7 +67,7 @@ CREATE INDEX IF NOT EXISTS idx_assets_owner ON assets(owner_type, owner_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
 """
 
-JSON_FIELDS = {"grade", "post", "review", "review_report", "positions", "character_ids", "prop_ids", "dialogue", "meta", "params", "result", "autopilot", "old_value", "new_value",
+JSON_FIELDS = {"sfx", "grade", "post", "review", "review_report", "positions", "character_ids", "prop_ids", "dialogue", "meta", "params", "result", "autopilot", "old_value", "new_value",
                "beats", "writer", "sheet", "variants", "outfits", "data", "images"}
 LIST_FIELDS = {"character_ids", "prop_ids", "dialogue", "beats"}
 _lock = threading.RLock()
@@ -117,7 +117,10 @@ MIGRATIONS = [("characters", "face_image", "TEXT DEFAULT ''"), ("characters", "v
               ("shots", "review", "TEXT DEFAULT '{}'"), ("projects", "review_report", "TEXT DEFAULT '{}'"),
               # 阶段 3 后期
               ("projects", "grade", "TEXT DEFAULT '{}'"), ("projects", "post", "TEXT DEFAULT '{}'"),
-              ("projects", "cover", "TEXT DEFAULT ''")]
+              ("projects", "cover", "TEXT DEFAULT ''"),
+              # P3-5 声音后期
+              ("shots", "narration", "TEXT DEFAULT ''"), ("shots", "narration_audio", "TEXT DEFAULT ''"),
+              ("shots", "sfx", "TEXT DEFAULT '[]'"), ("projects", "bgm", "TEXT DEFAULT ''")]
 
 
 def _migrate(c: sqlite3.Connection) -> None:

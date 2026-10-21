@@ -716,3 +716,125 @@ def test_reframe_assemble_and_clone(client, project):
     assert all(set(s["character_ids"]) <= new_chars for s in cs["shots"]) and any(s["character_ids"] for s in cs["shots"])
     assert all(not s["location_id"] or s["location_id"] in new_locs for s in cs["shots"])
     assert cs["project"]["script"] == snap["project"]["script"]
+
+
+def test_cloud_parallel_pick():
+    from app import tasks
+    mk = lambda i, typ, eng="", st="queued", pid="p", owner="", params=None: {  # noqa: E731
+        "id": str(i), "type": typ, "status": st, "project_id": pid, "owner_id": owner or f"s{i}",
+        "params": {"engine": eng, **(params or {})}}
+    rows = [mk(1, "cloud_video", "hailuo", "running"), mk(2, "cloud_video", "hailuo"), mk(3, "cloud_video", "hailuo"),
+            mk(4, "cloud_video", "kling"), mk(5, "video"), mk(6, "cloud_video", "kling", params={"_after": "s5"})]
+    got = [t["id"] for t in tasks.pick_parallel(rows, {"cloud_video:hailuo": 1}, 2)]
+    assert got == ["2", "4"], got                         # 海螺通道只剩 1 个名额；6 要等上一镜（本地视频）
+    assert tasks.pick_next(rows, "video")["id"] == "5"   # 主队列不会挑云端任务
+    rows2 = [mk(1, "keyframe", st="running"), mk(2, "cloud_video", "kling")]
+    assert tasks.pick_parallel(rows2, {}, 3) == []        # 同项目分镜图没做完，视频不抢跑
+    from app import recovery
+    assert recovery.diagnose("cloud_video", "ConnectTimeout").retry
+    assert not recovery.diagnose("cloud_video", "可灵生成失败：内容涉及敏感信息").retry
+    assert recovery.diagnose("cloud_video", "Connection refused").kind == "cloud"   # 不会去重启 ComfyUI
+
+
+def test_cloud_video(client, project, monkeypatch, tmp_path):
+    import base64
+    import hashlib
+    import hmac
+    import httpx
+    from app import cloud, db, pipeline
+    from app.config import get_settings
+    from test_features import media_file
+    s = get_settings()
+    keep = {k: getattr(s, k) for k in ("minimax_api_key", "kling_access_key", "kling_secret_key", "cloud_concurrency")}
+    s.minimax_api_key, s.kling_access_key, s.kling_secret_key, s.cloud_concurrency = "mm-key", "ak", "sk", 3
+    monkeypatch.setattr(cloud, "POLL", 0.05)
+    clip = tmp_path / "cloud.mp4"
+    media_file(clip, 6.0)
+    data = clip.read_bytes()
+    calls = {"mm_submit": 0, "kl_submit": 0, "polls": {}}
+
+    def handle(req: httpx.Request) -> httpx.Response:
+        u = req.url
+        if u.host == "cdn.test":
+            return httpx.Response(200, content=data)
+        if u.host == "api.minimaxi.com":
+            assert req.headers["authorization"] == "Bearer mm-key"
+            if u.path == "/v1/video_generation":
+                body = json.loads(req.content)
+                assert body["first_frame_image"].startswith("data:image/jpeg;base64,") and body["duration"] in (6, 10)
+                calls["mm_submit"] += 1
+                return httpx.Response(200, json={"task_id": f"mm{calls['mm_submit']}", "base_resp": {"status_code": 0}})
+            if u.path == "/v1/query/video_generation":
+                tid = u.params["task_id"]
+                n = calls["polls"][tid] = calls["polls"].get(tid, 0) + 1
+                st = "Processing" if n < 2 else "Success"
+                return httpx.Response(200, json={"task_id": tid, "status": st, "file_id": "f1", "base_resp": {"status_code": 0}})
+            if u.path == "/v1/files/retrieve":
+                return httpx.Response(200, json={"file": {"download_url": "https://cdn.test/a.mp4"}, "base_resp": {"status_code": 0}})
+        if u.host == "api-beijing.klingai.com":
+            tok = req.headers["authorization"].split()[1]
+            h, b, sig = tok.split(".")
+            good = base64.urlsafe_b64encode(hmac.new(b"sk", f"{h}.{b}".encode(), hashlib.sha256).digest()).rstrip(b"=").decode()
+            assert sig == good and json.loads(base64.urlsafe_b64decode(b + "=="))["iss"] == "ak"
+            if req.method == "POST":
+                body = json.loads(req.content)
+                assert body["model_name"] and body["duration"] in ("5", "10") and ("image" in body or "aspect_ratio" in body)
+                calls["kl_submit"] += 1
+                return httpx.Response(200, json={"code": 0, "data": {"task_id": f"k{calls['kl_submit']}", "task_status": "submitted"}})
+            tid = u.path.rsplit("/", 1)[-1]
+            n = calls["polls"][tid] = calls["polls"].get(tid, 0) + 1
+            if n < 2:
+                return httpx.Response(200, json={"code": 0, "data": {"task_status": "processing"}})
+            return httpx.Response(200, json={"code": 0, "data": {"task_status": "succeed",
+                                                                 "task_result": {"videos": [{"url": "https://cdn.test/k.mp4"}]}}})
+        return httpx.Response(404, json={})
+
+    monkeypatch.setattr(cloud, "_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handle)))
+    try:
+        pid = project
+        meta = client.get("/api/meta").json()["cloud"]
+        assert meta["engines"]["hailuo"]["ready"] and meta["engines"]["kling"]["ready"]
+        snap = client.get(f"/api/projects/{pid}").json()
+        for x in snap["shots"][:2]:
+            if not x["keyframe"]:
+                wait(client, client.post(f"/api/shots/{x['id']}/keyframe", json={"count": 1}).json()["id"])
+        snap = client.get(f"/api/projects/{pid}").json()
+        shots = [x for x in snap["shots"] if x["keyframe"]]
+        assert len(shots) >= 2
+        client.patch(f"/api/shots/{shots[0]['id']}", json={"duration": 4})
+        t = client.post(f"/api/shots/{shots[0]['id']}/video", json={"engine": "hailuo"}).json()
+        assert t["type"] == "cloud_video"
+        r = wait(client, t["id"])
+        assert r["result"]["engine"] == "hailuo" and calls["mm_submit"] == 1
+        cur = client.get(f"/api/projects/{pid}").json()
+        sh = next(x for x in cur["shots"] if x["id"] == shots[0]["id"])
+        a = next(x for x in cur["assets"][sh["id"]] if x["path"] == sh["video"])
+        assert a["meta"]["engine"] == "hailuo" and a["meta"]["remote_id"] == "mm1"
+        assert abs(asyncio_run(pipeline.media.probe(pipeline.absolute(sh["video"])))["duration"] - 4) < 0.3   # 裁到镜头时长
+        # 重试 / 重启：已有远端任务号时只查询、不重复提交
+        t2 = cloud.queue.submit("cloud_video", project_id=pid, title="resume", owner_type="shot", owner_id=shots[1]["id"],
+                                params={"shot_id": shots[1]["id"], "engine": "kling", "_remote": "image2video/kOLD"})
+        r2 = wait(client, t2["id"])
+        assert calls["kl_submit"] == 0 and r2["result"]["remote_id"] == "image2video/kOLD"
+        # 镜头级引擎 + 项目「混合」：批量时一部分镜头走云端、其余本地，同时排队
+        assert client.patch(f"/api/projects/{pid}", json={"video_engine": "bogus"}).status_code == 400
+        client.patch(f"/api/projects/{pid}", json={"video_engine": "mix", "cloud_share": 0.5})
+        client.patch(f"/api/shots/{shots[0]['id']}", json={"engine": "local"})
+        client.post(f"/api/projects/{pid}/batch/videos", json={"only_missing": False})
+        rows = [x for x in client.get(f"/api/tasks?project_id={pid}&active=1").json()]
+        types = {x["owner_id"]: (x["type"], (x["params"] or {}).get("engine")) for x in rows}
+        assert types[shots[0]["id"]][0] == "video"
+        assert any(tp == "cloud_video" for tp, _ in types.values()) and any(tp == "video" for tp, _ in types.values())
+        drain(client, pid)
+        assert calls["kl_submit"] + calls["mm_submit"] >= 2
+        # 没配置 Key 的引擎回落本地；指定未配置的引擎报错
+        s.minimax_api_key = ""
+        assert cloud.engine_for({"engine": "hailuo"}, {"video_engine": "local"}) == "local"
+        assert client.post(f"/api/shots/{shots[0]['id']}/video", json={"engine": "hailuo"}).status_code == 400
+    finally:
+        for k, v in keep.items():
+            setattr(s, k, v)
+        client.patch(f"/api/projects/{project}", json={"video_engine": "local"})
+        for x in client.get(f"/api/projects/{project}").json()["shots"]:
+            if x.get("engine"):
+                client.patch(f"/api/shots/{x['id']}", json={"engine": ""})

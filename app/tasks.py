@@ -64,10 +64,14 @@ GROUP = {
     "narration": "voice", "narration_write": "llm", "bgm": "music",
     "upscale": "enhance", "interpolate": "enhance",
     "series_plan": "llm", "recap": "llm",
+    "cloud_video": "cloud",
 }
+# 并行通道：云端任务不占本机显卡，单独调度、可同时跑多个（每个引擎 cloud_concurrency 个）
+PARALLEL = {"cloud_video"}
+VIDEO_TYPES = {"video", "cloud_video"}
 # 依赖阶段：同一项目里，先提交的低阶段任务没做完，后提交的高阶段任务不会抢跑（如分镜图 → 视频 → 配音 → 合成）。
 STAGE = {"portrait": 1, "face_ref": 1, "location_image": 1, "prop_image": 1,
-         "keyframe": 2, "keyframe_edit": 2, "end_frame": 2, "video": 3, "voice_sample": 3,
+         "keyframe": 2, "keyframe_edit": 2, "end_frame": 2, "video": 3, "cloud_video": 3, "voice_sample": 3,
          "animatic": 3, "dub": 4, "face_fix": 4, "facefusion": 4, "narration": 4, "bgm": 4, "upscale": 4, "interpolate": 4, "assemble": 5, "export": 5}
 BARRIER = {"script", "extract", "storyboard"}      # 改动项目结构的文字任务：与同项目其它任务严格按提交顺序
 
@@ -89,7 +93,7 @@ def blocked(task: dict, earlier: list[dict]) -> bool:
         if task["owner_id"] and u["owner_id"] == task["owner_id"]:
             return True                                 # 同一对象（同一镜头/角色）严格按顺序
         after = (task.get("params") or {}).get("_after")
-        if after and u["owner_id"] == after and u["type"] == task["type"]:
+        if after and u["owner_id"] == after and (u["type"] == task["type"] or {u["type"], task["type"]} <= VIDEO_TYPES):
             return True                                 # 连续镜头：等上一镜的视频先做完
         if u["status"] == "paused" or not task["project_id"] or u["project_id"] != task["project_id"]:
             continue
@@ -105,7 +109,7 @@ def pick_next(tasks: list[dict], current_group: str) -> dict | None:
     手动触发优先于批量 → 与当前已加载模型同组优先 → 先提交先执行；并遵守依赖顺序。"""
     best, best_key = None, None
     for i, t in enumerate(tasks):
-        if t["status"] != "queued" or blocked(t, tasks[:i]):
+        if t["status"] != "queued" or t["type"] in PARALLEL or blocked(t, tasks[:i]):
             continue
         g = task_group(t["type"])
         key = (1 if is_batch(t) else 0, 0 if g in {"cpu", current_group} else 1, i)
@@ -114,17 +118,46 @@ def pick_next(tasks: list[dict], current_group: str) -> dict | None:
     return best
 
 
+def lane_of(task: dict) -> str:
+    return f"{task['type']}:{(task.get('params') or {}).get('engine') or ''}"
+
+
+def pick_parallel(tasks: list[dict], running: dict[str, int], limit: int) -> list[dict]:
+    """并行通道里可以马上开始的任务（遵守依赖顺序；每条通道最多 limit 个同时跑）。"""
+    out, busy = [], dict(running)
+    for i, t in enumerate(tasks):
+        if t["status"] != "queued" or t["type"] not in PARALLEL or blocked(t, tasks[:i]):
+            continue
+        lane = lane_of(t)
+        if busy.get(lane, 0) >= limit:
+            continue
+        busy[lane] = busy.get(lane, 0) + 1
+        out.append(t)
+    return out
+
+
 class TaskQueue:
     def __init__(self) -> None:
         self.wake = asyncio.Event()
         self.worker: asyncio.Task | None = None
+        self.parallel_worker: asyncio.Task | None = None
         self.current: str | None = None
+        self.running: dict[str, tuple[str, asyncio.Task]] = {}     # 并行通道：task_id → (lane, asyncio 任务)
 
     def start(self) -> None:
         self.wake = asyncio.Event()      # 绑定当前事件循环（测试里会多次启动）
+        self.wake_p = asyncio.Event()
+        self.running = {}
         self.recover_interrupted()
         self.wake.set()
+        self.wake_p.set()
         self.worker = asyncio.create_task(self._loop())
+        self.parallel_worker = asyncio.create_task(self._parallel_loop())
+
+    def stop(self) -> None:
+        for w in (self.worker, self.parallel_worker, *[t for _, t in self.running.values()]):
+            if w:
+                w.cancel()
 
     @staticmethod
     def recover_interrupted() -> None:
@@ -140,6 +173,8 @@ class TaskQueue:
 
     def _notify(self) -> None:
         self.wake.set()
+        if getattr(self, "wake_p", None):
+            self.wake_p.set()
 
     def submit(self, type_: str, *, project_id: str = "", title: str = "", owner_type: str = "",
                owner_id: str = "", params: dict | None = None, dedupe: bool = True) -> dict:
@@ -239,48 +274,76 @@ class TaskQueue:
                 with contextlib.suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(self.wake.wait(), timeout=5)
                 continue
-            task_id = task["id"]
-            self.current = task_id
-            db.update("tasks", task_id, {"status": "running", "progress": 1, "message": "开始执行"})
-            ctx = TaskContext(db.get("tasks", task_id))
-            t0 = time.monotonic()
-            notes: list[str] = []
+            self.current = task["id"]
             try:
-                attempt = 0
-                while True:
-                    try:
-                        result = await HANDLERS[task["type"]](ctx)
-                        break
-                    except Cancelled:
-                        raise
-                    except Exception as exc:  # noqa: BLE001
-                        attempt += 1
-                        if not await self._recover(ctx, task, exc, attempt, notes):
-                            raise
-                cost = round(time.monotonic() - t0, 1)
-                result = {**(result or {}), "elapsed": cost}
-                if notes:
-                    result["recovered"] = notes
-                db.update("tasks", task_id, {"status": "done", "progress": 100,
-                                             "message": f"完成（用时 {_fmt(cost)}" + (f"，自动恢复 {len(notes)} 次）" if notes else "）"),
-                                             "result": result})
-                log.info("任务完成 %s [%s/%s] 用时 %.1fs", task["title"], task["type"], task_group(task["type"]), cost)
-            except Cancelled:
-                db.update("tasks", task_id, {"status": "cancelled", "message": "已取消"})
-            except Exception as exc:  # noqa: BLE001
-                from .recovery import diagnose, explain
-                log.error("任务失败 %s: %s\n%s", task_id, exc, traceback.format_exc())
-                d = diagnose(task["type"], str(exc))
-                db.update("tasks", task_id, {"status": "failed", "message": explain(task["type"], str(exc)),
-                                             "result": {"error": str(exc)[:2000], "error_kind": d.kind,
-                                                        "recovered": notes}})
+                await self._execute(task)
             finally:
                 self.current = None
-            for hook in AFTER_HOOKS:
+                self._notify()
+
+    async def _parallel_loop(self) -> None:
+        while True:
+            rows = db.query("SELECT * FROM tasks WHERE status IN ('queued','running','cancelling','paused') "
+                            "ORDER BY created_at, rowid")
+            counts: dict[str, int] = {}
+            for lane, _ in self.running.values():
+                counts[lane] = counts.get(lane, 0) + 1
+            limit = max(1, int(get_settings().cloud_concurrency or 1))
+            for t in pick_parallel(rows, counts, limit):
+                db.update("tasks", t["id"], {"status": "running", "progress": 1, "message": "开始执行"})
+                job = asyncio.create_task(self._run_parallel(t))
+                self.running[t["id"]] = (lane_of(t), job)
+            self.wake_p.clear()
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self.wake_p.wait(), timeout=5)
+
+    async def _run_parallel(self, task: dict) -> None:
+        try:
+            await self._execute(task)
+        finally:
+            self.running.pop(task["id"], None)
+            self._notify()
+
+    async def _execute(self, task: dict) -> None:
+        task_id = task["id"]
+        db.update("tasks", task_id, {"status": "running", "progress": 1, "message": "开始执行"})
+        ctx = TaskContext(db.get("tasks", task_id))
+        t0 = time.monotonic()
+        notes: list[str] = []
+        try:
+            attempt = 0
+            while True:
                 try:
-                    hook(db.get("tasks", task_id) or task)
-                except Exception:  # noqa: BLE001
-                    log.error("任务后处理失败：\n%s", traceback.format_exc())
+                    result = await HANDLERS[task["type"]](ctx)
+                    break
+                except Cancelled:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    attempt += 1
+                    if not await self._recover(ctx, task, exc, attempt, notes):
+                        raise
+            cost = round(time.monotonic() - t0, 1)
+            result = {**(result or {}), "elapsed": cost}
+            if notes:
+                result["recovered"] = notes
+            db.update("tasks", task_id, {"status": "done", "progress": 100,
+                                         "message": f"完成（用时 {_fmt(cost)}" + (f"，自动恢复 {len(notes)} 次）" if notes else "）"),
+                                         "result": result})
+            log.info("任务完成 %s [%s/%s] 用时 %.1fs", task["title"], task["type"], task_group(task["type"]), cost)
+        except Cancelled:
+            db.update("tasks", task_id, {"status": "cancelled", "message": "已取消"})
+        except Exception as exc:  # noqa: BLE001
+            from .recovery import diagnose, explain
+            log.error("任务失败 %s: %s\n%s", task_id, exc, traceback.format_exc())
+            d = diagnose(task["type"], str(exc))
+            db.update("tasks", task_id, {"status": "failed", "message": explain(task["type"], str(exc)),
+                                         "result": {"error": str(exc)[:2000], "error_kind": d.kind,
+                                                    "recovered": notes}})
+        for hook in AFTER_HOOKS:
+            try:
+                hook(db.get("tasks", task_id) or task)
+            except Exception:  # noqa: BLE001
+                log.error("任务后处理失败：\n%s", traceback.format_exc())
 
 
 def _fmt(sec: float) -> str:

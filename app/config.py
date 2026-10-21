@@ -79,6 +79,18 @@ class Settings(BaseSettings):
     comfyui_python: Path | None = None
     upscale_model: str = "realesr-animevideov3.pth"     # ComfyUI/models/upscale_models 里的文件
     rife_ckpt: str = "rife47.pth"
+    # 云端视频（P4-4，可选）：填了 Key 才会出现在引擎选项里；云端任务不占本机显卡，可与本地任务并行
+    minimax_api_key: str = ""
+    minimax_base_url: str = "https://api.minimaxi.com"     # 海外账号用 https://api.minimax.io
+    minimax_model: str = "MiniMax-Hailuo-02"
+    minimax_resolution: str = "768P"                        # 768P（6/10 秒）或 1080P（6 秒）
+    kling_access_key: str = ""
+    kling_secret_key: str = ""
+    kling_base_url: str = "https://api-beijing.klingai.com"
+    kling_model: str = "kling-v2-1"
+    kling_mode: str = "std"                                  # std 标准 / pro 高品质（首尾帧需要 pro）
+    cloud_concurrency: int = 3                               # 每个云端引擎同时跑几个镜头
+    cloud_timeout: int = 1800                                # 单个镜头最长等待秒数
 
     @property
     def db_path(self) -> Path:

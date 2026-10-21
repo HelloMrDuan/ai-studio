@@ -1024,7 +1024,10 @@ def submit_batch(project_id: str, kind: str, only_missing: bool = True, count: i
             submitted.append(_submit("dub", f"配音 #{s['sort'] + 1}", project_id, "shot", s["id"],
                                      {"shot_id": s["id"], "lipsync": "auto"}))
     elif kind in {"keyframes", "videos"}:
-        for s in shots_of(project_id):
+        from . import cloud
+        all_shots = shots_of(project_id)
+        project = need("projects", project_id, "项目")
+        for idx, s in enumerate(all_shots):
             field = "keyframe" if kind == "keyframes" else "video"
             if only_missing and s[field]:
                 continue
@@ -1032,9 +1035,9 @@ def submit_batch(project_id: str, kind: str, only_missing: bool = True, count: i
                 submitted.append(_submit("keyframe", f"分镜图 #{s['sort'] + 1}", project_id, "shot", s["id"],
                                          {"shot_id": s["id"], "count": count}))
             else:
-                submitted.append(_submit("video", f"镜头视频 #{s['sort'] + 1}", project_id, "shot", s["id"],
-                                         {"shot_id": s["id"], "quality": quality, "turbo": turbo,
-                                          "mode": mode, **video_after(s)}))
+                submitted.append(cloud.submit_video(s, project, {"quality": quality, "turbo": turbo, "mode": mode,
+                                                                 "_batch": bid, **(extra or {})},
+                                                    index=idx, total=len(all_shots)))      # P4-4 按镜头分配本地/云端
     else:
         raise ValueError("未知批量类型")
     return submitted, bid

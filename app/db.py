@@ -127,7 +127,10 @@ MIGRATIONS = [("characters", "face_image", "TEXT DEFAULT ''"), ("characters", "v
               ("shots", "sfx", "TEXT DEFAULT '[]'"), ("projects", "bgm", "TEXT DEFAULT ''"),
               # P4-2 多集与系列
               ("projects", "series_id", "TEXT DEFAULT ''"), ("projects", "episode", "INTEGER DEFAULT 0"),
-              ("projects", "recap", "TEXT DEFAULT ''")]
+              ("projects", "recap", "TEXT DEFAULT ''"),
+              # P4-4 云端混合
+              ("projects", "video_engine", "TEXT DEFAULT 'local'"), ("projects", "cloud_share", "REAL DEFAULT 0.5"),
+              ("shots", "engine", "TEXT DEFAULT ''")]
 
 
 def _migrate(c: sqlite3.Connection) -> None:

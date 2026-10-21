@@ -657,3 +657,30 @@ Object.assign(ACTIONS, {
     const r = await api('POST', `/api/projects/${S.pid}/clone`, { aspect: asp }); toast(`已创建「${r.title}」`); location.hash = `#/p/${r.id}/board`;
   },
 });
+
+/* ---------------- 云端混合（P4-4） ---------------- */
+const cloudMeta = () => (S.meta && S.meta.cloud) || { engines: {} };
+const cloudReady = () => Object.entries(cloudMeta().engines || {}).filter(([k, v]) => k !== 'local' && v.ready).map(([k]) => k);
+const ENGINE_NAMES = { local: '本地', hailuo: '海螺', kling: '可灵' };
+function cloudShotSel(x) {
+  if (!cloudReady().length && !x.engine) return '';
+  const opts = [['', '引擎：跟随项目'], ['local', '本地显卡'], ...['hailuo', 'kling'].map((k) => [k, `${ENGINE_NAMES[k]}${(cloudMeta().engines[k] || {}).ready ? '（云端）' : '（未配置）'}`])];
+  return `<div style="margin-top:6px">${sel(opts, x.engine || '', `data-save="shots:${x.id}:engine"`)}</div>`;
+}
+function engineLine(x) {
+  const a = x.video && assetsOf(x.id, 'video').find((y) => y.path === x.video);
+  const m = a && a.meta; if (!m || !m.engine) return '';
+  return `<div class="small muted">☁ ${ENGINE_NAMES[m.engine] || m.engine} · ${esc(m.model || '')}${m.silent ? ' · 无声（需配音）' : ''}</div>`;
+}
+function cloudToolbar(p) {
+  const ready = cloudReady();
+  if (!ready.length && (p.video_engine || 'local') === 'local') return '';
+  const opts = [['local', '本地显卡'], ...['hailuo', 'kling'].filter((k) => ready.includes(k) || p.video_engine === k).map((k) => [k, `全部用${ENGINE_NAMES[k]}`]), ['mix', '混合（本地 + 云端并行）']];
+  return `<span class="row small">默认引擎 ${sel(opts, p.video_engine || 'local', `data-save="projects:${p.id}:video_engine" data-rerender="1" style="width:170px"`)}
+    ${p.video_engine === 'mix' ? `云端占比 <input type="number" min="0" max="1" step="0.1" data-num="1" data-save="projects:${p.id}:cloud_share" value="${p.cloud_share ?? 0.5}" style="width:64px">` : ''}</span>`;
+}
+function cloudNote(p) {
+  const ready = cloudReady(); if (!ready.length) return '';
+  const used = (p.video_engine && p.video_engine !== 'local') || S.snap.shots.some((x) => x.engine && x.engine !== 'local');
+  return used ? `<p class="muted small">☁ 云端引擎（${ready.map((k) => ENGINE_NAMES[k]).join('、')}）与本地显卡并行出片，按量计费；云端视频<b>没有声音</b>${p.dub_mode ? '，生成后会自动用角色音色配音。' : '，有台词的镜头请开启「固定音色配音」或手动配音。'}「混合」时批量生成会把靠后的一部分镜头分给云端，单个镜头可在卡片里指定引擎。</p>` : '';
+}

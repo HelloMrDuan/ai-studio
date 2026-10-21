@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from . import art, autopilot, board, db, enhance, grade, package, videox, vlm, director, facefusion, pipeline, prompts, qa, sound, suggest, voice, writers
+from . import cloud, art, autopilot, board, db, enhance, grade, package, videox, vlm, director, facefusion, pipeline, prompts, qa, sound, suggest, voice, writers
 from .config import get_settings
 from .gpu import gpu
 from .tasks import queue
@@ -61,7 +61,8 @@ async def meta() -> dict:
             "camera_dirs": {k: list(v) for k, v in videox.DIRECTIONS.items()}, "motion": videox.motion_available(),
             "luts": grade.STYLE_LUTS, "sub_presets": {k: v["label"] for k, v in package.SUB_PRESETS.items()},
             "transition_fx": list(package.TRANSITION_FX), "vlm": vlm.available(), "vlm_provider": vlm.provider(), "asr": vlm.asr_available(),
-            "moods": {k: v[0] for k, v in sound.MOODS.items()}, "narr_styles": sound.NARR_STYLES, "music": sound.music_available(), "enhance": enhance.status()}
+            "moods": {k: v[0] for k, v in sound.MOODS.items()}, "narr_styles": sound.NARR_STYLES, "music": sound.music_available(), "enhance": enhance.status(),
+            "cloud": cloud.status()}
 
 
 def _model_check() -> list[dict]:
@@ -125,7 +126,7 @@ class ProjectIn(BaseModel):
 
 PROJECT_FIELDS = {"title", "source_type", "source_text", "aspect_ratio", "style", "style_note", "target_seconds",
                   "script", "synopsis", "dub_mode", "genre", "style_ref", "style_lora", "style_lora_strength",
-                  "grade", "post", "cover", "bgm", "recap"}
+                  "grade", "post", "cover", "bgm", "recap", "video_engine", "cloud_share"}
 
 
 def _check_project(values: dict) -> None:
@@ -136,6 +137,10 @@ def _check_project(values: dict) -> None:
     from .writers import GENRES
     if "genre" in values and values["genre"] not in GENRES:
         raise HTTPException(400, "不支持的题材")
+    if "video_engine" in values and values["video_engine"] not in cloud.PROJECT_ENGINES:
+        raise HTTPException(400, "不支持的视频引擎")
+    if "cloud_share" in values:
+        values["cloud_share"] = max(0.0, min(1.0, float(values["cloud_share"] or 0)))
 
 
 @router.get("/projects")
@@ -499,7 +504,7 @@ async def upload_location(loc_id: str, file: UploadFile = File(...)) -> dict:
 SHOT_FIELDS = {"scene", "location_id", "shot_size", "camera_angle", "camera_move", "description", "action",
                "character_ids", "prop_ids", "dialogue", "sound", "duration", "image_prompt", "video_prompt", "keyframe", "video",
                "continuous", "end_frame", "performance", "transition", "outfits", "location_variant", "positions", "pose_ref", "camera_dir", "camera_speed", "motion_ref",
-               "narration", "narration_audio", "sfx"}
+               "narration", "narration_audio", "sfx", "engine"}
 
 
 def _renumber(project_id: str, ids: list[str]) -> None:
@@ -591,13 +596,18 @@ class VideoIn(BaseModel):
     prompt: str = ""
     seconds: float | None = None
     seed: int | None = None
+    engine: str = ""               # P4-4：留空按镜头/项目设置；local / hailuo / kling
 
 
 @router.post("/shots/{shot_id}/video")
 async def gen_video(shot_id: str, body: VideoIn) -> dict:
     shot = _get("shots", shot_id, "镜头")
-    return _submit("video", f"镜头视频 #{shot['sort'] + 1}", shot["project_id"], "shot", shot_id,
-                   {"shot_id": shot_id, **body.model_dump(), **pipeline.video_after(shot)})
+    project = _get("projects", shot["project_id"], "项目")
+    params = body.model_dump(exclude={"engine"})
+    try:
+        return cloud.submit_video(shot, project, params, engine=body.engine)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 class EndFrameIn(BaseModel):

@@ -426,10 +426,10 @@ function viewVideo() {
       <span class="small ${x.video ? 'ok' : 'muted'}">${x.video ? '✓ 已生成' : '未生成'}</span></div>
     <div class="frame ${frameClass()}" style="margin-top:8px;${!x.video && x.keyframe ? `background-image:url('${media(x.keyframe)}')` : ''}">
       ${x.video ? `<video src="${media(x.video)}" controls preload="metadata"></video>` : (x.keyframe ? '' : '<span>无分镜图（将纯文生视频）</span>')}${busyBox(x.id)}</div>
-    ${thumbs(x.id, 'video', x.video)}${assetsOf(x.id, 'video').length > 1 ? `<button class="btn small ghost" data-act="compare" data-id="${x.id}" data-k="video">并排对比 ${assetsOf(x.id, 'video').length} 个版本</button>` : ''}${qaLine(x.id, x.video)}${chainInfo(x, i)}${x.end_frame ? '<div class="small muted">🎯 已设尾帧（首尾帧模式）</div>' : ''}
+    ${thumbs(x.id, 'video', x.video)}${assetsOf(x.id, 'video').length > 1 ? `<button class="btn small ghost" data-act="compare" data-id="${x.id}" data-k="video">并排对比 ${assetsOf(x.id, 'video').length} 个版本</button>` : ''}${qaLine(x.id, x.video)}${engineLine(x)}${chainInfo(x, i)}${x.end_frame ? '<div class="small muted">🎯 已设尾帧（首尾帧模式）</div>' : ''}
     <div class="muted small" style="margin-top:6px;max-height:42px;overflow:hidden">${esc(x.description)}</div>
     <div class="grid3" style="margin-top:8px">${sel(modes, 'auto', `id="vm-${x.id}"`)}${sel([['draft', '草稿 480p'], ['final', '成品 768p']], 'draft', `id="vq-${x.id}"`)}
-      <label class="row small"><input type="checkbox" id="vt-${x.id}" checked> 加速(Turbo)</label></div>
+      <label class="row small"><input type="checkbox" id="vt-${x.id}" checked> 加速(Turbo)</label></div>${cloudShotSel(x)}
     <details style="margin-top:6px"><summary class="muted small">自定义视频提示词（留空自动生成）</summary><textarea rows="4" data-save="shots:${x.id}:video_prompt">${esc(x.video_prompt)}</textarea></details>
     <div class="row" style="margin-top:8px"><button class="btn small" data-act="gen-video" data-id="${x.id}">${x.video ? '重新生成' : '生成视频'}</button>
       <button class="btn small ghost" data-act="plan" data-id="${x.id}">提示词</button>
@@ -440,13 +440,13 @@ function viewVideo() {
   return `<div class="toolbar"><span class="title">④ 视频 <span class="muted small">MiniMax H3 · 自带对白配音与音效</span></span>
       ${sel([['draft', '草稿 480p（快）'], ['final', '成品 768p']], 'draft', 'id="bv-q"')}
       ${sel(modes, 'auto', 'id="bv-m" style="width:200px"')}
-      <label class="row small"><input type="checkbox" id="bv-t" checked> Turbo</label>
+      <label class="row small"><input type="checkbox" id="bv-t" checked> Turbo</label>${cloudToolbar(s.project)}
       <button class="btn" data-act="batch-videos" ${s.shots.length ? '' : 'disabled'}>批量生成（仅缺失）</button>
       <button class="btn ghost" data-act="batch-dub" ${s.shots.length && (S.meta.voice || {}).tts ? '' : 'disabled'} title="${(S.meta.voice || {}).tts ? '为有台词、还没配音的镜头配音' : '配音组件未安装'}">批量配音</button>
       <button class="btn ghost" data-go="#/p/${s.project.id}/final">下一步：成片 →</button></div>
     <p class="muted small">建议先用「草稿 + Turbo」快速过一遍节奏，满意后再对关键镜头用「成品」重生成。${S.meta.qa ? '每段视频生成后会<b>自动质检</b>（多余字幕、人脸不像），不合格自动换种子重抽一次，候选里带 ⚠ 的是没通过的版本。' : ''}
       ${s.project.dub_mode ? '已开启<b>固定音色配音</b>：视频只生成环境音，生成后自动用角色音色配音并对口型。' : '台词由 H3 直接配音（每个镜头的声音可能不一样）；想要全片同一个声音，到①开启「固定音色配音」。'}</p>
-    ${reviewPanel()}${cards ? `<div class="vgrid">${cards}</div>` : '<div class="empty">还没有分镜</div>'}`;
+    ${cloudNote(s.project)}${reviewPanel()}${cards ? `<div class="vgrid">${cards}</div>` : '<div class="empty">还没有分镜</div>'}`;
 }
 
 function viewFinal() {

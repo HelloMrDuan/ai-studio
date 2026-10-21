@@ -48,6 +48,10 @@ def diagnose(task_type: str, error: str) -> Diagnosis:
 
     def task_group(t: str) -> str:
         return GROUP.get(t, "cpu")
+    if task_group(task_type) == "cloud":           # 云端接口：只重试网络抖动 / 限流 / 服务端 5xx，不动本机服务
+        if re.search(r"timed? ?out|timeout|connect|429|rate.?limit|限流|5\d\d|temporar|稍后", text, re.I):
+            return Diagnosis("cloud", "云端接口暂时不可用：已自动重试；仍失败请检查网络、API Key 和账户余额", True)
+        return Diagnosis("unknown", "", False)
     for kind, pattern, advice, retry in RULES:
         if re.search(pattern, text, re.I | re.M):
             if kind == "comfy_down" and task_group(task_type) == "llm":

@@ -29,7 +29,7 @@ DEFAULT_OPTIONS = {"quality": "draft", "turbo": True, "mode": "auto", "keyframe_
 ACTIVE_SQL = "SELECT * FROM tasks WHERE project_id=? AND status IN ('queued','running','cancelling','paused')"
 # 估算剩余时间用的默认单任务耗时（秒）；实际以最近完成任务的平均用时为准
 DEFAULT_COST = {"beats": 30, "script_review": 90, "script": 60, "extract": 40, "portrait": 45, "face_ref": 30, "location_image": 35, "prop_image": 30,
-                "voice_sample": 150, "storyboard": 90, "keyframe": 45, "animatic": 20, "video": 150, "dub": 70,
+                "voice_sample": 150, "storyboard": 90, "keyframe": 45, "animatic": 20, "video": 150, "cloud_video": 150, "dub": 70,
                 "assemble": 60}
 
 

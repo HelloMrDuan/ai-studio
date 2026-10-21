@@ -922,3 +922,63 @@ def test_ops_stats_cleanup_backup(client, project):
     assert client.delete(f"/api/backups/{name}").json()["ok"]
     for x in (nid, up2["id"]):
         client.delete(f"/api/projects/{x}")
+
+
+def test_aspects_auto_and_per_shot(client, project):
+    import subprocess
+    from app import cloud, enhance, pipeline, reframe, workflows
+    from test_features import CALLS
+    # 8 种画幅尺寸齐全（视频 / 图像宽高都是 16 的倍数）
+    meta = client.get("/api/meta").json()
+    assert len(meta["aspects"]) == 8 and meta["aspect_info"]["21:9"][0] == "宽银幕"
+    for a in meta["aspects"]:
+        sizes = [workflows.IMAGE_SIZES[a], workflows.VIDEO_SIZES["draft"][a], workflows.VIDEO_SIZES["final"][a]]
+        assert all(v % 16 == 0 for wh in sizes for v in wh), a
+        assert a in enhance.EXPORT_SIZES["1080p"] and a in reframe.ASPECTS
+    # 智能画幅
+    r = client.post("/api/projects", json={"title": "抖音短剧", "source_text": "x", "aspect_ratio": "auto"}).json()
+    assert r["aspect_ratio"] == "9:16" and "抖音" in r["aspect_reason"]
+    r2 = client.post("/api/projects", json={"title": "史诗", "source_text": "一部宽银幕电影大片", "aspect_ratio": "auto"}).json()
+    assert r2["aspect_ratio"] == "21:9"
+    r3 = client.patch(f"/api/projects/{r2['id']}", json={"aspect_ratio": "auto", "title": "穿搭", "source_text": "发小红书"}).json()
+    assert r3["aspect_ratio"] == "3:4" and r3["aspect_reason"]
+    assert workflows.suggest_aspect("")[0] == "9:16"
+    assert client.post("/api/projects", json={"aspect_ratio": "5:4"}).status_code == 400
+    assert cloud.nearest_aspect("21:9", ("16:9", "9:16", "1:1")) == "16:9"
+    assert cloud.nearest_aspect("2:3", ("16:9", "9:16", "1:1")) == "9:16"
+    # 镜头级画幅：出图 / 出视频按镜头画幅
+    snap = client.get(f"/api/projects/{project}").json()
+    pa = snap["project"]["aspect_ratio"]
+    shot = snap["shots"][0]
+    assert client.patch(f"/api/shots/{shot['id']}", json={"aspect": "2:1"}).status_code == 400
+    assert client.patch(f"/api/shots/{shot['id']}", json={"aspect": "1:1"}).json()["aspect"] == "1:1"
+    n = len(CALLS)
+    wait(client, client.post(f"/api/shots/{shot['id']}/keyframe", json={}).json()["id"])
+    dims = [(nd["inputs"].get("width"), nd["inputs"].get("height")) for wf in CALLS[n:] for nd in wf.values()]
+    assert workflows.IMAGE_SIZES["1:1"] in dims, dims
+    n = len(CALLS)
+    wait(client, client.post(f"/api/shots/{shot['id']}/video", json={}).json()["id"])
+    dims = [(nd["inputs"].get("width"), nd["inputs"].get("height")) for wf in CALLS[n:] for nd in wf.values()]
+    assert workflows.VIDEO_SIZES["draft"]["1:1"] in dims or workflows.VIDEO_SIZES["final"]["1:1"] in dims, dims
+    # 成片合成：画幅不一致的镜头自动重构图，输出仍是项目画幅
+    snap = client.get(f"/api/projects/{project}").json()
+    for s in snap["shots"]:
+        if not s["video"]:
+            wait(client, client.post(f"/api/shots/{s['id']}/video", json={}).json()["id"])
+    sq = pipeline.project_dir(project, "videos") / "square_test.mp4"
+    subprocess.run(["ffmpeg", "-nostdin", "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x320:rate=24:d=2",
+                    "-f", "lavfi", "-i", "sine=frequency=330:duration=2", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", str(sq)], check=True)
+    old_video = client.get(f"/api/projects/{project}").json()["shots"][0]["video"]
+    client.patch(f"/api/shots/{shot['id']}", json={"video": pipeline.rel(sq)})
+    try:
+        r = wait(client, client.post(f"/api/projects/{project}/assemble", json={"quality": "draft"}).json()["id"])
+        assert r["status"] == "done", r
+        assert r["result"]["aspect"] == pa
+        info = asyncio_run(pipeline.media.probe(pipeline.absolute(r["result"]["path"])))
+        assert (info["width"], info["height"]) == workflows.VIDEO_SIZES["draft"][pa]
+        fin = next(a for a in client.get(f"/api/projects/{project}").json()["assets"][project] if a["path"] == r["result"]["path"])
+        rf = fin["meta"]["reframe"]
+        assert rf["crop"] + rf["pad"] >= 1, rf
+    finally:
+        client.patch(f"/api/shots/{shot['id']}", json={"aspect": "", "video": old_video})

@@ -14,7 +14,7 @@ from . import comfy, db, facefusion, llm, media, prompts, qa, videox, vlm, voice
 from .config import get_settings
 from .gpu import gpu
 from .tasks import TaskContext, handler, queue
-from .workflows import (MAX_IMAGE_REFS, MAX_VIDEO_REFS, VIDEO_SIZES, image_workflow, video_i2v_workflow,
+from .workflows import (IMAGE_SIZES, MAX_IMAGE_REFS, MAX_VIDEO_REFS, VIDEO_SIZES, image_workflow, video_i2v_workflow,
                         video_r2v_workflow)
 
 IMAGE_SUFFIX = {".png", ".jpg", ".jpeg", ".webp"}
@@ -395,7 +395,7 @@ async def task_keyframe(ctx: TaskContext) -> dict:
     plan = keyframe_plan(shot)
     prompt = (ctx.params.get("prompt") or "").strip() or plan["prompt"]
     out_dir = project_dir(shot["project_id"], "keyframes")
-    aspect = plan["project"]["aspect_ratio"]
+    aspect = shot_aspect(shot, plan["project"])
     files = await _generate_images(ctx, prompt, aspect, plan["refs"], ctx.params.get("count", 1), out_dir)
 
     async def check(f: Path) -> dict | None:
@@ -433,7 +433,7 @@ async def task_keyframe_edit(ctx: TaskContext) -> dict:
     lines += [ln for ln in prompts.char_ref_lines(plan["chars"], ref_map) if ln.startswith("<image")]
     lines.append("不要出现任何文字、字幕或水印。")
     prompt = "\n".join(lines)
-    files = await _generate_images(ctx, prompt, plan["project"]["aspect_ratio"], refs, ctx.params.get("count", 1),
+    files = await _generate_images(ctx, prompt, shot_aspect(shot, plan["project"]), refs, ctx.params.get("count", 1),
                                    project_dir(shot["project_id"], "keyframes"))
     assets = [add_asset(shot["project_id"], "keyframe", f, "shot", shot["id"],
                         {"prompt": prompt, "edit": instruction}) for f in files]
@@ -509,6 +509,14 @@ async def _fix_faces(ctx: TaskContext, shot: dict, image: Path, out_dir: Path) -
     return current
 
 
+def shot_aspect(shot: dict, project: dict | None = None) -> str:
+    """镜头画幅：镜头单独设置的优先，否则跟随项目（成片合成时不一致的镜头自动重构图）。"""
+    a = (shot.get("aspect") or "").strip()
+    if a in IMAGE_SIZES:
+        return a
+    return (project or need("projects", shot["project_id"], "项目"))["aspect_ratio"]
+
+
 def video_after(shot: dict) -> dict:
     """连续镜头的视频任务要等上一镜视频先做完（调度器据此排序）。"""
     if shot.get("continuous"):
@@ -537,7 +545,7 @@ async def task_end_frame(ctx: TaskContext) -> dict:
     lines += [ln for ln in prompts.char_ref_lines(plan["chars"], ref_map) if ln.startswith("<image")]
     lines.append("不要出现任何文字、字幕或水印。")
     prompt = "\n".join(lines)
-    files = await _generate_images(ctx, prompt, plan["project"]["aspect_ratio"], refs, ctx.params.get("count", 1),
+    files = await _generate_images(ctx, prompt, shot_aspect(shot, plan["project"]), refs, ctx.params.get("count", 1),
                                    project_dir(shot["project_id"], "keyframes"))
     assets = [add_asset(shot["project_id"], "end_frame", f, "shot", shot["id"], {"prompt": prompt, "end": target})
               for f in files]
@@ -625,9 +633,9 @@ async def task_video(ctx: TaskContext) -> dict:
             up_end = await comfy.upload_image(end_frame) if end_frame else None
             s_ = seed if attempt == 0 else None
             if plan["mode"] == "r2v":
-                wf = video_r2v_workflow(prompt, uploaded, project["aspect_ratio"], seconds, quality, turbo, s_)
+                wf = video_r2v_workflow(prompt, uploaded, shot_aspect(shot, project), seconds, quality, turbo, s_)
             else:
-                wf = video_i2v_workflow(prompt, uploaded[0] if uploaded else None, project["aspect_ratio"], seconds,
+                wf = video_i2v_workflow(prompt, uploaded[0] if uploaded else None, shot_aspect(shot, project), seconds,
                                         quality, turbo, last_frame=up_end, seed=s_)
             cam_lora = videox.camera_loras().get(shot.get("camera_move") or "")
             if cam_lora:
@@ -848,7 +856,8 @@ async def task_assemble(ctx: TaskContext) -> dict:
         raise ValueError("还没有任何镜头视频")
     post = {**(project.get("post") or {}), **(ctx.params.get("post") or {})}
     clips = [absolute(s["video"]) for s in shots]
-    durs = [(await media.probe(c))["duration"] or float(s["duration"] or 5) for s, c in zip(shots, clips)]
+    infos = [await media.probe(c) for c in clips]
+    durs = [i["duration"] or float(s["duration"] or 5) for s, i in zip(shots, infos)]
     out_dir = project_dir(project["id"], "final")
     bgm = absolute(ctx.params["bgm"]) if ctx.params.get("bgm") else None
     sizes = {**VIDEO_SIZES, **enhance.EXPORT_SIZES}
@@ -877,10 +886,14 @@ async def task_assemble(ctx: TaskContext) -> dict:
             grade_info = {"before": gp["before"], "after": gp["after"], "bases": gp["bases"], "lut": g.get("lut") or ""}
             await ctx.log(f"调色统一：相邻镜头平均色差 ΔE {gp['before']} → {gp['after']}")
         reframe_info: dict = {}
-        if alt:
+        # 镜头级画幅 / 中途改过项目画幅：按实际视频尺寸判断，不一致的镜头自动重构图（一致的直接跳过）
+        mixed = [x["id"] for x, i in zip(shots, infos) if shot_aspect(x, project) != aspect or (
+            i.get("width") and i.get("height") and abs(i["width"] / i["height"] / reframe.ratio(aspect) - 1) > 0.03)]
+        if alt or mixed:
             opts = reframe.options(project)
             opts.update({k: v for k, v in (ctx.params.get("reframe") or {}).items() if k in ("mode", "shots")})
-            await ctx.progress(8, f"重构图 {project['aspect_ratio']} → {aspect}：分析各镜头主体位置…")
+            await ctx.progress(8, f"重构图 {project['aspect_ratio']} → {aspect}：分析各镜头主体位置…" if alt else
+                               f"{len(mixed)} 个镜头画幅与成片不同，自动重构图到 {aspect}…")
             plans = await reframe.plan_shots(shots, clips, aspect, opts)
             pre = [",".join(f for f in (pre[i], reframe.filter_for(p, width, height)) if f) for i, p in enumerate(plans)]
             reframe_info = {"from": project["aspect_ratio"], "mode": opts["mode"], **reframe.summary(plans)}
@@ -967,8 +980,8 @@ def _make_cover(project: dict, shot: dict, post: dict | None = None, title: str 
                 aspect: str = "") -> str:
     post = post or project.get("post") or {}
     cv = post.get("cover_opts") or {}
-    aspect = aspect or cv.get("aspect") or ("3:4" if project["aspect_ratio"] in ("9:16", "3:4") else "16:9")
-    w, h = {"3:4": (1080, 1440), "9:16": (1080, 1920), "16:9": (1920, 1080), "1:1": (1080, 1080)}.get(aspect, (1920, 1080))
+    aspect = aspect or cv.get("aspect") or ("3:4" if project["aspect_ratio"] in ("9:16", "3:4", "2:3") else "16:9")
+    w, h = enhance.EXPORT_SIZES["1080p"].get(aspect, (1920, 1080))
     out = project_dir(project["id"], "final") / f"cover_{time.strftime('%Y%m%d_%H%M%S')}_{aspect.replace(':', 'x')}.jpg"
     package.cover_image(absolute(shot["keyframe"]), out, w, h, (title or cv.get("title") or project["title"] or "").replace("\\n", "\n"),
                         subtitle or cv.get("subtitle") or (project.get("synopsis") or "")[:24])

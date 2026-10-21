@@ -148,6 +148,18 @@ def _kl_check(r: httpx.Response, what: str) -> dict:
     return data.get("data") or {}
 
 
+def nearest_aspect(aspect: str, allowed: tuple[str, ...]) -> str:
+    """云端只支持少数画幅时取最接近的（成片合成时再按项目画幅重构图）。"""
+    if aspect in allowed:
+        return aspect
+    try:
+        w, h = (float(v) for v in aspect.split(":"))
+    except ValueError:
+        return allowed[0]
+    import math
+    return min(allowed, key=lambda a: abs(math.log((w / h) / (float(a.split(":")[0]) / float(a.split(":")[1])))))
+
+
 async def kling_submit(prompt: str, image: Path | None, end: Path | None, seconds: float, aspect: str) -> str:
     s = get_settings()
     body: dict[str, Any] = {"model_name": s.kling_model, "prompt": prompt[:2500], "negative_prompt": NEGATIVE,
@@ -159,7 +171,7 @@ async def kling_submit(prompt: str, image: Path | None, end: Path | None, second
             body["image_tail"] = _image_b64(end)
     else:
         kind = "text2video"
-        body["aspect_ratio"] = aspect if aspect in ("16:9", "9:16", "1:1") else "16:9"
+        body["aspect_ratio"] = nearest_aspect(aspect, ("16:9", "9:16", "1:1"))
     async with _client() as c:
         r = await c.post(f"{s.kling_base_url.rstrip('/')}/v1/videos/{kind}", json=body, headers=_kl_headers())
     data = _kl_check(r, "提交")
@@ -241,7 +253,7 @@ def submit_video(shot: dict, project: dict, params: dict, engine: str = "", inde
 @handler("cloud_video")
 async def task_cloud_video(ctx: TaskContext) -> dict:
     from .pipeline import (_qa_faces, _shot_context, absolute, add_asset, chain_first_frame, chain_source,
-                           dub_lines, exists, need, project_dir, rel, video_plan)
+                           dub_lines, exists, need, project_dir, rel, shot_aspect, video_plan)
     from . import qa, vlm, voice
     engine = ctx.params.get("engine")
     if engine not in SUBMIT:
@@ -266,7 +278,7 @@ async def task_cloud_video(ctx: TaskContext) -> dict:
         prompt = video_plan({**shot, "_end_frame": True}, "i2v")["prompt"]
     if not remote:
         await ctx.progress(3, f"提交到{ENGINES[engine]}…")
-        remote = await SUBMIT[engine](prompt, image, end, seconds, project["aspect_ratio"])
+        remote = await SUBMIT[engine](prompt, image, end, seconds, shot_aspect(shot, project))
         ctx.params = {**ctx.params, "_remote": remote}
         db.update("tasks", ctx.id, {"params": ctx.params})          # 重启 / 重试时接着查，不重复扣费
     else:

@@ -110,7 +110,7 @@ async def task_video_extend(ctx: TaskContext) -> dict:
     async with gpu.use("comfyui", ctx.task.get("title") or "视频延长"):
         await gpu.comfy_switch("video")
         up = await comfy.upload_image(frame)
-        wf = video_i2v_workflow(prompt, up, project["aspect_ratio"], seconds, quality, bool(ctx.params.get("turbo", True)))
+        wf = video_i2v_workflow(prompt, up, pipeline.shot_aspect(shot, project), seconds, quality, bool(ctx.params.get("turbo", True)))
         lora = camera_loras().get(shot.get("camera_move") or "")
         if lora:
             chain_lora(wf, lora)
@@ -186,7 +186,7 @@ async def task_video_motion(ctx: TaskContext) -> dict:
     if not pipeline.exists(shot.get("motion_ref")) or not pipeline.exists(shot.get("keyframe")):
         raise ValueError("需要分镜图和动作参考视频")
     project = pipeline.need("projects", shot["project_id"], "项目")
-    w, h = VIDEO_SIZES["final" if ctx.params.get("quality") == "final" else "draft"].get(project["aspect_ratio"], (864, 480))
+    w, h = VIDEO_SIZES["final" if ctx.params.get("quality") == "final" else "draft"].get(pipeline.shot_aspect(shot, project), (864, 480))
     seconds = float(shot.get("duration") or 5)
     prompt = pipeline.video_plan(shot, "i2v")["prompt"] + "\n人物的动作、姿态和节奏与参考视频一致。"
     out_dir = pipeline.project_dir(project["id"], "videos")

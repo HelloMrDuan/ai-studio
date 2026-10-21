@@ -101,8 +101,8 @@ function newProjectModal() {
     <label class="f">从哪里开始</label>
     <div class="chips" id="np-src"><span class="chip on" data-v="idea">一句话创意</span><span class="chip" data-v="novel">小说原文</span><span class="chip" data-v="script">已有剧本</span></div>
     <label class="f">素材内容</label><textarea id="np-text" rows="7" placeholder="例如：外卖小哥意外捡到一部能预知未来 10 秒的手机……"></textarea>
-    <div class="grid3"><div><label class="f">画幅</label><select id="np-aspect">${S.meta.aspects.map((a) => `<option>${a}</option>`).join('')}</select></div>
-    <div><label class="f">目标时长（秒）</label><input type="number" id="np-sec" value="60" min="10" max="600"></div>
+    <label class="f">画幅 <span class="muted small">智能 = 按素材里的平台 / 题材线索推荐；单个镜头之后还能单独改</span></label>${aspectPicker('np-aspect', 'auto')}
+    <div class="grid2"><div><label class="f">目标时长（秒）</label><input type="number" id="np-sec" value="60" min="10" max="600"></div>
     <div><label class="f">创建后</label>${sel([['ap', '一键成片（关键步骤停下审核）'], ['ap-full', '一键成片（全自动）'], ['script', '只生成剧本'], ['none', '什么都不做']], 'ap', 'id="np-auto"')}</div></div>
     <label class="f">画面风格</label><div class="style-grid" id="np-style">${styles}</div>
     <label class="f">风格补充（可选）</label><input type="text" id="np-note" placeholder="例如：冷色调、雨夜、王家卫式色彩">
@@ -208,8 +208,8 @@ function viewScript() {
         <label class="f">素材类型</label>${sel([['idea', '一句话创意'], ['novel', '小说原文'], ['script', '已有剧本']], p.source_type, `data-save="projects:${p.id}:source_type"`)}
         <label class="f">素材内容</label><textarea rows="12" data-save="projects:${p.id}:source_text">${esc(p.source_text)}</textarea>
         ${seriesBox(p)}
-        <div class="grid3"><div><label class="f">画幅</label>${sel(S.meta.aspects, p.aspect_ratio, `data-save="projects:${p.id}:aspect_ratio" data-rerender="1"`)}</div>
-        <div><label class="f">风格</label>${sel(Object.entries(S.meta.styles), p.style, `data-save="projects:${p.id}:style" data-rerender="1"`)}</div>
+        <label class="f">画幅</label>${aspectPicker('pj-aspect', p.aspect_ratio, true, p.id)}
+        <div class="grid2"><div><label class="f">风格</label>${sel(Object.entries(S.meta.styles), p.style, `data-save="projects:${p.id}:style" data-rerender="1"`)}</div>
         <div><label class="f">目标时长（秒）</label><input type="number" data-save="projects:${p.id}:target_seconds" data-num="1" value="${p.target_seconds}"></div></div>
         <label class="f">风格补充</label><input type="text" data-save="projects:${p.id}:style_note" value="${esc(p.style_note)}" placeholder="会附加到所有画面提示词中">
         <label class="row small" style="margin-top:12px"><input type="checkbox" data-save="projects:${p.id}:dub_mode" ${p.dub_mode ? 'checked' : ''} data-rerender="1">
@@ -305,14 +305,27 @@ function viewCast() {
     <h3 style="margin-top:22px">关键道具（${(s.props || []).length}） <span class="muted small">反复出现的物品（照片、信物、武器…）有了参考图，每个镜头里都长一样</span></h3>${props ? `<div class="entity-grid">${props}</div>` : '<div class="empty">没有道具。重新「从剧本提取」会自动识别，也可以手动添加</div>'}`;
 }
 
-function frameClass() { const a = S.snap.project.aspect_ratio; return a === '9:16' ? 'portrait' : (a === '1:1' || a === '3:4') ? 'square' : ''; }
+// 画幅：镜头单独设置的优先，否则跟随项目
+const shotAspect = (x) => (x && x.aspect) || S.snap.project.aspect_ratio;
+function frameClass(x) { const a = shotAspect(x); return `ar-${a.replace(':', 'x')}${a === '9:16' || a === '2:3' ? ' portrait' : ''}`; }
+function aspectIcon(a) {
+  if (a === 'auto') return '<svg class="asp-ico auto" viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 2l2.2 7.8L22 12l-7.8 2.2L12 22l-2.2-7.8L2 12l7.8-2.2z"/></svg>';
+  const [w, h] = a.split(':').map(Number); const k = 24 / Math.max(w, h);
+  return `<span class="asp-ico" style="width:${Math.round(w * k)}px;height:${Math.round(h * k)}px"></span>`;
+}
+// 图标式画幅选择器；pid 有值时点选即保存到项目
+function aspectPicker(id, cur, auto = true, pid = '') {
+  const info = S.meta.aspect_info || {};
+  const opts = [...(auto ? [['auto', '智能', '按素材内容推荐画幅']] : []), ...S.meta.aspects.map((a) => [a, a, (info[a] || []).join(' · ')])];
+  return `<div class="asp-grid" id="${id}" ${pid ? `data-pid="${pid}"` : ''}>${opts.map(([v, l, t]) => `<div class="asp-opt ${v === cur ? 'on' : ''}" data-act="pick-aspect" data-a="${v}" title="${esc(t)}">${aspectIcon(v)}<span>${l}</span></div>`).join('')}</div>`;
+}
 
 /* 尾帧：视频首尾帧模式让动作落到这张图；连续镜头的下一镜在上一镜没视频时也会用它做首帧 */
 function endFrameBox(x) {
   const busy = busyOf(x.id); const has = !!x.end_frame;
   return `<details class="endf" style="margin-top:8px" ${has ? 'open' : ''}><summary class="muted small">尾帧（可选）${has ? ' · <span class="ok">已设置</span>' : ''}</summary>
     <p class="muted small" style="margin:4px 0">指定镜头结束时的画面，视频会从分镜图自然过渡到这里；适合动作必须到位的镜头（如转身、坐下、递东西）。</p>
-    ${has ? `<div class="frame ${frameClass()} small-frame" data-act="zoom" data-src="${media(x.end_frame)}" style="background-image:url('${media(x.end_frame)}')"></div>` : ''}
+    ${has ? `<div class="frame ${frameClass(x)} small-frame" data-act="zoom" data-src="${media(x.end_frame)}" style="background-image:url('${media(x.end_frame)}')"></div>` : ''}
     ${thumbs(x.id, 'end_frame', x.end_frame)}
     <div class="row" style="margin-top:6px"><button class="btn small" data-act="gen-endframe" data-id="${x.id}" ${x.keyframe && !busy ? '' : 'disabled'} title="以分镜图为基础，画出动作完成后的画面">生成尾帧</button>
       <button class="btn small ghost" data-act="upload-endframe" data-id="${x.id}">上传</button>
@@ -335,7 +348,7 @@ function viewBoard() {
   const shots = s.shots.map((x, i) => `<div class="card shot" id="shot-${x.id}">
     <div class="idx">${i + 1}<div style="margin-top:8px"><button class="btn small ghost" data-act="move" data-id="${x.id}" data-d="-1">↑</button></div>
       <div style="margin-top:4px"><button class="btn small ghost" data-act="move" data-id="${x.id}" data-d="1">↓</button></div></div>
-    <div><div class="frame ${frameClass()}" data-act="zoom" data-src="${media(x.keyframe)}" style="${x.keyframe ? `background-image:url('${media(x.keyframe)}')` : ''}">${x.keyframe ? '' : '暂无分镜图'}${busyBox(x.id)}</div>
+    <div><div class="frame ${frameClass(x)}" data-act="zoom" data-src="${media(x.keyframe)}" style="${x.keyframe ? `background-image:url('${media(x.keyframe)}')` : ''}">${x.keyframe ? '' : '暂无分镜图'}${busyBox(x.id)}</div>
       ${thumbs(x.id, 'keyframe', x.keyframe)}${qaLine(x.id, x.keyframe)}${reviewLine(x, 'keyframe')}
       <div class="row" style="margin-top:8px"><select id="kc-${x.id}" style="width:60px">${[1, 2, 4].map((n) => `<option value="${n}">${n}张</option>`).join('')}</select>
         <button class="btn small" data-act="gen-keyframe" data-id="${x.id}">出图</button>
@@ -352,7 +365,8 @@ function viewBoard() {
         <div><label class="f">角度</label>${sel(S.meta.camera_angles, x.camera_angle, `data-save="shots:${x.id}:camera_angle"`)}</div>
         <div><label class="f">运镜</label>${sel(S.meta.camera_moves, x.camera_move, `data-save="shots:${x.id}:camera_move"`)}</div>
         <div><label class="f">时长（秒）</label><input type="number" step="0.5" min="1" max="20" data-num="1" data-save="shots:${x.id}:duration" value="${x.duration}"></div></div>
-      <div class="row" style="margin-top:8px"><div style="width:200px"><label class="f">场景</label>${sel([['', '（未指定）'], ...s.locations.map((l) => [l.id, l.name])], x.location_id, `data-save="shots:${x.id}:location_id"`)}</div>
+      <div class="row" style="margin-top:8px"><div style="width:150px"><label class="f">画幅</label>${sel([['', `跟随项目（${s.project.aspect_ratio}）`], ...S.meta.aspects.map((a) => [a, `${a} ${((S.meta.aspect_info || {})[a] || [''])[0]}`])], x.aspect || '', `data-save="shots:${x.id}:aspect" data-rerender="1" title="只改这个镜头的出图 / 出视频画幅；成片合成时自动重构图到项目画幅"`)}</div>
+        <div style="width:200px"><label class="f">场景</label>${sel([['', '（未指定）'], ...s.locations.map((l) => [l.id, l.name])], x.location_id, `data-save="shots:${x.id}:location_id"`)}</div>
         <div class="grow"><label class="f">出镜角色（点击切换，顺序即参考图顺序）</label><div class="chips">${s.characters.map((c) => `<span class="chip ${x.character_ids.includes(c.id) ? 'on' : ''}" data-act="toggle-char" data-id="${x.id}" data-c="${c.id}">${esc(c.name)}${c.ref_image ? '' : ' ⚠'}</span>`).join('') || '<span class="muted small">先在②添加角色</span>'}</div></div></div>
       ${(s.props || []).length ? `<label class="f">画面中的道具</label><div class="chips">${s.props.map((pr) => `<span class="chip ${(x.prop_ids || []).includes(pr.id) ? 'on' : ''}" data-act="toggle-prop" data-id="${x.id}" data-p="${pr.id}">${esc(pr.name)}${pr.ref_image ? '' : ' ⚠'}</span>`).join('')}</div>` : ''}
       ${shotArtFields(x)}${shotLayoutFields(x)}${cameraFields(x)}
@@ -424,7 +438,7 @@ function viewVideo() {
   const cards = s.shots.map((x, i) => `<div class="card vcard">
     <div class="row between"><b>#${i + 1} <span class="muted small">${esc(x.shot_size)} · ${esc(x.camera_move)} · ${x.duration}s</span></b>
       <span class="small ${x.video ? 'ok' : 'muted'}">${x.video ? '✓ 已生成' : '未生成'}</span></div>
-    <div class="frame ${frameClass()}" style="margin-top:8px;${!x.video && x.keyframe ? `background-image:url('${media(x.keyframe)}')` : ''}">
+    <div class="frame ${frameClass(x)}" style="margin-top:8px;${!x.video && x.keyframe ? `background-image:url('${media(x.keyframe)}')` : ''}">
       ${x.video ? `<video src="${media(x.video)}" controls preload="metadata"></video>` : (x.keyframe ? '' : '<span>无分镜图（将纯文生视频）</span>')}${busyBox(x.id)}</div>
     ${thumbs(x.id, 'video', x.video)}${assetsOf(x.id, 'video').length > 1 ? `<button class="btn small ghost" data-act="compare" data-id="${x.id}" data-k="video">并排对比 ${assetsOf(x.id, 'video').length} 个版本</button>` : ''}${qaLine(x.id, x.video)}${engineLine(x)}${chainInfo(x, i)}${x.end_frame ? '<div class="small muted">🎯 已设尾帧（首尾帧模式）</div>' : ''}
     <div class="muted small" style="margin-top:6px;max-height:42px;overflow:hidden">${esc(x.description)}</div>
@@ -538,10 +552,19 @@ const ACTIONS = {
   async 'dub-go'(el) { const r = await api('POST', `/api/shots/${el.dataset.id}/dub`, { lipsync: val('dub-lips') }); closeModal(); submitted(r, '已提交配音'); },
   async 'batch-dub'() { const r = await api('POST', `/api/projects/${S.pid}/batch/dub`, { only_missing: true }); submitted(r, `已提交 ${r.submitted} 个配音任务`); },
   'new-project': newProjectModal,
+  async 'pick-aspect'(el) {
+    const g = el.closest('.asp-grid'); g.querySelectorAll('.asp-opt').forEach((o) => o.classList.toggle('on', o === el));
+    if (!g.dataset.pid) return;
+    const r = await api('PATCH', `/api/projects/${g.dataset.pid}`, { aspect_ratio: el.dataset.a });
+    const made = S.snap.shots.some((x) => x.keyframe || x.video);
+    toast(r.aspect_reason ? `智能画幅：${r.aspect_reason}` : `画幅已改为 ${r.aspect_ratio}${made ? '（已出的画面不变，成片合成时自动重构图）' : ''}`);
+    loadSnap(true);
+  },
   async 'create-project'() {
     const body = { title: val('np-title') || '未命名项目', source_type: $('#np-src .chip.on').dataset.v, source_text: val('np-text'),
-      aspect_ratio: val('np-aspect'), style: $('#np-style .style-opt.on').dataset.style, style_note: val('np-note'), target_seconds: Number(val('np-sec')) || 60 };
+      aspect_ratio: $('#np-aspect .asp-opt.on').dataset.a, style: $('#np-style .style-opt.on').dataset.style, style_note: val('np-note'), target_seconds: Number(val('np-sec')) || 60 };
     const p = await api('POST', '/api/projects', body);
+    if (p.aspect_reason) toast(`智能画幅：${p.aspect_reason}`);
     const mode = body.source_text.trim() ? val('np-auto') : 'none';
     closeModal();
     if (mode === 'script') await api('POST', `/api/projects/${p.id}/script/generate`);

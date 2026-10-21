@@ -13,10 +13,10 @@ from . import cloud, art, autopilot, board, db, enhance, grade, package, videox,
 from .config import get_settings
 from .gpu import gpu
 from .tasks import queue
-from .workflows import optional_models, required_models
+from .workflows import ASPECT_INFO, optional_models, required_models, suggest_aspect
 
 router = APIRouter(prefix="/api")
-ASPECTS = ["16:9", "9:16", "1:1", "4:3", "3:4"]
+ASPECTS = ["9:16", "16:9", "1:1", "3:4", "4:3", "2:3", "3:2", "21:9"]   # 与 workflows.IMAGE_SIZES 一致
 UPLOAD_SUFFIX = {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov", ".webm", ".mkv", ".mp3", ".wav", ".m4a", ".aac",
                  ".flac", ".ogg"}
 
@@ -52,7 +52,7 @@ def _submit(type_: str, title: str, project_id: str, owner_type: str = "", owner
 # ================= 系统 =================
 @router.get("/meta")
 async def meta() -> dict:
-    return {"styles": {k: v["label"] for k, v in prompts.STYLES.items()}, "aspects": ASPECTS,
+    return {"styles": {k: v["label"] for k, v in prompts.STYLES.items()}, "aspects": ASPECTS, "aspect_info": {k: list(v) for k, v in ASPECT_INFO.items()},
             "shot_sizes": prompts.SHOT_SIZES, "camera_angles": prompts.CAMERA_ANGLES,
             "camera_moves": prompts.CAMERA_MOVES, "transitions": director.TRANSITIONS, "r2v": pipeline.r2v_available(), "qa": qa.available(),
             "voice": voice.status(), "auth": bool(get_settings().access_password),
@@ -129,6 +129,17 @@ PROJECT_FIELDS = {"title", "source_type", "source_text", "aspect_ratio", "style"
                   "grade", "post", "cover", "bgm", "recap", "video_engine", "cloud_share"}
 
 
+def _auto_aspect(values: dict, project: dict | None = None) -> str:
+    """aspect_ratio = "auto"（智能）时按标题 / 原文 / 风格备注推荐，返回推荐理由。"""
+    if values.get("aspect_ratio") != "auto":
+        return ""
+    src = {**(project or {}), **values}
+    aspect, reason = suggest_aspect(src.get("title") or "", src.get("source_text") or "", src.get("style_note") or "",
+                                    src.get("script") or "", src.get("synopsis") or "")
+    values["aspect_ratio"] = aspect
+    return reason
+
+
 def _check_project(values: dict) -> None:
     if "aspect_ratio" in values and values["aspect_ratio"] not in ASPECTS:
         raise HTTPException(400, "不支持的画幅")
@@ -162,9 +173,11 @@ async def list_projects() -> list[dict]:
 @router.post("/projects")
 async def create_project(body: ProjectIn) -> dict:
     values = _clean(body.model_dump(), PROJECT_FIELDS)
+    reason = _auto_aspect(values)
     _check_project(values)
     values["title"] = values.get("title") or "未命名项目"
-    return db.insert("projects", values)
+    row = db.insert("projects", values)
+    return {**row, "aspect_reason": reason} if reason else row
 
 
 @router.get("/projects/{project_id}")
@@ -186,12 +199,14 @@ async def project_snapshot(project_id: str) -> dict:
 
 @router.patch("/projects/{project_id}")
 async def update_project(project_id: str, body: dict[str, Any]) -> dict:
-    _get("projects", project_id, "项目")
+    project = _get("projects", project_id, "项目")
     values = _clean(body, PROJECT_FIELDS)
+    reason = _auto_aspect(values, project)
     _check_project(values)
     if "dub_mode" in values:
         values["dub_mode"] = 1 if values["dub_mode"] else 0
-    return db.update("projects", project_id, values)
+    row = db.update("projects", project_id, values)
+    return {**row, "aspect_reason": reason} if reason else row
 
 
 @router.delete("/projects/{project_id}")
@@ -504,7 +519,12 @@ async def upload_location(loc_id: str, file: UploadFile = File(...)) -> dict:
 SHOT_FIELDS = {"scene", "location_id", "shot_size", "camera_angle", "camera_move", "description", "action",
                "character_ids", "prop_ids", "dialogue", "sound", "duration", "image_prompt", "video_prompt", "keyframe", "video",
                "continuous", "end_frame", "performance", "transition", "outfits", "location_variant", "positions", "pose_ref", "camera_dir", "camera_speed", "motion_ref",
-               "narration", "narration_audio", "sfx", "engine"}
+               "narration", "narration_audio", "sfx", "engine", "aspect"}
+
+
+def _check_shot(values: dict) -> None:
+    if values.get("aspect") and values["aspect"] not in ASPECTS:
+        raise HTTPException(400, "不支持的画幅")
 
 
 def _renumber(project_id: str, ids: list[str]) -> None:
@@ -516,6 +536,7 @@ def _renumber(project_id: str, ids: list[str]) -> None:
 async def create_shot(project_id: str, body: dict[str, Any]) -> dict:
     _get("projects", project_id, "项目")
     values = _clean(body, SHOT_FIELDS)
+    _check_shot(values)
     values.setdefault("description", "")
     shot = db.insert("shots", {**values, "project_id": project_id, "sort": 10**6})
     ids = [s["id"] for s in pipeline.shots_of(project_id) if s["id"] != shot["id"]]
@@ -530,6 +551,7 @@ async def create_shot(project_id: str, body: dict[str, Any]) -> dict:
 async def update_shot(shot_id: str, body: dict[str, Any]) -> dict:
     _get("shots", shot_id, "镜头")
     values = _clean(body, SHOT_FIELDS)
+    _check_shot(values)
     if "duration" in values:
         values["duration"] = round(min(max(float(values["duration"]), 1.0), 20.0), 1)
     return db.update("shots", shot_id, values)

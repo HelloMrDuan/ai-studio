@@ -394,7 +394,7 @@ POST_SECTIONS.push(() => {
       ${S.snap.project.cover ? `<img src="${media(S.snap.project.cover)}" class="cover-thumb" data-act="zoom" data-src="${media(S.snap.project.cover)}">` : '<div class="cover-thumb empty small">暂无</div>'}
       <div class="grow"><div class="grid2">${ptext('cover_opts', 'title', '', '封面标题（默认项目名，可用 \\n 换行）')}${ptext('cover_opts', 'subtitle', '', '副标题（默认梗概前 24 字）')}</div>
         <div class="row" style="margin-top:6px">${sel([['', '自动选高光镜头'], ...S.snap.shots.filter((x) => x.keyframe).map((x) => [x.id, `#${x.sort + 1} ${x.shot_size}`])], '', 'id="cv-shot" style="width:160px"')}
-          ${sel([['3:4', '3:4 竖版'], ['9:16', '9:16 竖屏'], ['16:9', '16:9 横版'], ['1:1', '1:1']], pget('cover_opts', 'aspect', '3:4'), 'data-jsave2="post.cover_opts.aspect" id="cv-asp" style="width:110px"')}
+          ${sel([['3:4', '3:4 竖版'], ['9:16', '9:16 竖屏'], ['16:9', '16:9 横版'], ['1:1', '1:1'], ['2:3', '2:3 海报'], ['21:9', '21:9 宽银幕']], pget('cover_opts', 'aspect', '3:4'), 'data-jsave2="post.cover_opts.aspect" id="cv-asp" style="width:110px"')}
           <button class="btn small" data-act="make-cover">生成封面</button>${S.snap.project.cover ? `<a class="btn small ghost" href="${media(S.snap.project.cover)}" download>下载</a>` : ''}</div></div></div></div>`;
 });
 Object.assign(ACTIONS, {
@@ -587,7 +587,8 @@ Object.assign(ACTIONS, {
 });
 
 /* ---------------- 多比例导出（P4-3） ---------------- */
-const RF_ASPECTS = [['9:16', '9:16 竖屏'], ['16:9', '16:9 横屏'], ['1:1', '1:1 方形'], ['3:4', '3:4'], ['4:3', '4:3']];
+const RF_ASPECTS = [['9:16', '9:16 竖屏'], ['16:9', '16:9 横屏'], ['1:1', '1:1 方形'], ['3:4', '3:4 竖版'], ['4:3', '4:3 横版'],
+  ['2:3', '2:3 竖版'], ['3:2', '3:2 横版'], ['21:9', '21:9 宽银幕']];
 const rfOpts = () => ((S.snap.project.post || {}).reframe) || {};
 function rfBox(x) {
   if (x.mode === 'none') return '';

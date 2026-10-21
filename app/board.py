@@ -77,7 +77,7 @@ def region_prompt(instruction: str, char_lines: list[str]) -> str:
 async def task_keyframe_region(ctx: TaskContext) -> dict:
     from PIL import Image
 
-    from . import prompts
+    from . import pipeline, prompts
     from .pipeline import (MAX_IMAGE_REFS, _generate_images, absolute, add_asset, char_refs, exists, keyframe_plan,
                            need, project_dir)
     shot = need("shots", ctx.params.get("shot_id"), "镜头")
@@ -99,7 +99,7 @@ async def task_keyframe_region(ctx: TaskContext) -> dict:
     prompt = region_prompt(instruction, lines)
     size = gen_size(outer[2] - outer[0], outer[3] - outer[1])
     await ctx.log(f"局部重绘：区域 {inner}，裁切 {outer}，按 {size[0]}×{size[1]} 生成")
-    files = await _generate_images(ctx, prompt, plan["project"]["aspect_ratio"], [crop, *char_paths],
+    files = await _generate_images(ctx, prompt, pipeline.shot_aspect(shot, plan["project"]), [crop, *char_paths],
                                    ctx.params.get("count", 1), out_dir, size=size)
     assets = []
     for n, f in enumerate(files):

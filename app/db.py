@@ -130,7 +130,9 @@ MIGRATIONS = [("characters", "face_image", "TEXT DEFAULT ''"), ("characters", "v
               ("projects", "recap", "TEXT DEFAULT ''"),
               # P4-4 云端混合
               ("projects", "video_engine", "TEXT DEFAULT 'local'"), ("projects", "cloud_share", "REAL DEFAULT 0.5"),
-              ("shots", "engine", "TEXT DEFAULT ''")]
+              ("shots", "engine", "TEXT DEFAULT ''"),
+              # 镜头级画幅（留空 = 跟随项目）
+              ("shots", "aspect", "TEXT DEFAULT ''")]
 
 
 def _migrate(c: sqlite3.Connection) -> None:

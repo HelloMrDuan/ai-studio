@@ -118,3 +118,128 @@ async def reset_layout(project_id: str) -> dict:
     c["groups"] = [g for g in c.get("groups") or [] if not g.get("auto")]
     db.update("projects", project_id, {"canvas": c})
     return c
+
+
+# ---------------- 存档点：整个项目的一键回退 ----------------
+SNAP_TABLES = ("characters", "locations", "props", "outfits", "shots")
+SNAP_SKIP_PROJECT = {"id", "created_at", "updated_at", "autopilot", "series_id", "episode"}
+MAX_AUTO_SNAPSHOTS = 20
+MAX_SNAPSHOTS = 100
+
+
+def _summary(data: dict) -> dict:
+    shots = [s for s in data.get("shots") or [] if not s.get("branch_of")]
+    return {"shots": len(shots), "keyframes": sum(1 for s in shots if s.get("keyframe")),
+            "videos": sum(1 for s in shots if s.get("video")), "characters": len(data.get("characters") or []),
+            "final": bool((data.get("project") or {}).get("final_video")),
+            "script_len": len((data.get("project") or {}).get("script") or "")}
+
+
+def take_snapshot(pid: str, title: str = "", auto: bool = False) -> dict:
+    p = db.get("projects", pid)
+    if not p:
+        raise HTTPException(404, "项目不存在")
+    data: dict[str, Any] = {"project": {k: v for k, v in p.items() if k not in SNAP_SKIP_PROJECT}}
+    for t in SNAP_TABLES:
+        data[t] = db.query(f"SELECT * FROM {t} WHERE project_id=?", [pid])
+    data["assets"] = db.query("SELECT * FROM assets WHERE project_id=?", [pid])
+    row = db.insert("snapshots", {"project_id": pid, "title": (title or time.strftime("存档 %m-%d %H:%M"))[:80],
+                                  "auto": 1 if auto else 0, "data": data, "meta": _summary(data)})
+    olds = db.query("SELECT id FROM snapshots WHERE project_id=? AND auto=? ORDER BY created_at DESC", [pid, 1 if auto else 0])
+    for o in olds[MAX_AUTO_SNAPSHOTS if auto else MAX_SNAPSHOTS:]:
+        db.execute("DELETE FROM snapshots WHERE id=?", [o["id"]])
+    return {k: v for k, v in row.items() if k != "data"}
+
+
+def restore_snapshot(sid: str) -> dict:
+    snap = db.get("snapshots", sid)
+    if not snap:
+        raise HTTPException(404, "存档点不存在")
+    pid = snap["project_id"]
+    busy = db.query("SELECT COUNT(*) AS n FROM tasks WHERE project_id=? AND status IN ('queued','running')", [pid])[0]["n"]
+    if busy:
+        raise HTTPException(409, f"项目还有 {busy} 个任务在排队或运行，先等它们完成或暂停后再回退")
+    before = take_snapshot(pid, f"回退到「{snap['title']}」前自动存档", auto=True)
+    data = snap["data"] or {}
+    for t in SNAP_TABLES:
+        want = {r["id"]: r for r in data.get(t) or []}
+        have = {r["id"] for r in db.query(f"SELECT id FROM {t} WHERE project_id=?", [pid])}
+        for rid in have - set(want):
+            db.execute(f"DELETE FROM {t} WHERE id=?", [rid])
+        for rid, r in want.items():
+            if rid in have:
+                db.update(t, rid, {k: v for k, v in r.items() if k != "id"})
+            else:
+                db.insert(t, r)
+    have_assets = {r["id"] for r in db.query("SELECT id FROM assets WHERE project_id=?", [pid])}
+    for a in data.get("assets") or []:              # 被删掉的候选记录补回来（文件有存档点保护，不会被清理）
+        if a["id"] not in have_assets:
+            db.insert("assets", a)
+    proj = {k: v for k, v in (data.get("project") or {}).items() if k not in SNAP_SKIP_PROJECT}
+    if proj:
+        db.update("projects", pid, proj)
+    return {"ok": True, "restored": snap["title"], "backup": before, "summary": snap.get("meta") or {}}
+
+
+@router.get("/projects/{project_id}/snapshots")
+async def list_snapshots(project_id: str) -> list[dict]:
+    return db.query("SELECT id, project_id, title, auto, meta, created_at FROM snapshots WHERE project_id=? "
+                    "ORDER BY created_at DESC", [project_id])
+
+
+@router.post("/projects/{project_id}/snapshots")
+async def create_snapshot(project_id: str, body: dict[str, Any]) -> dict:
+    return take_snapshot(project_id, str(body.get("title") or ""), bool(body.get("auto")))
+
+
+@router.post("/snapshots/{sid}/restore")
+async def restore(sid: str) -> dict:
+    return restore_snapshot(sid)
+
+
+@router.patch("/snapshots/{sid}")
+async def rename_snapshot(sid: str, body: dict[str, Any]) -> dict:
+    if not db.get("snapshots", sid):
+        raise HTTPException(404, "存档点不存在")
+    db.execute("UPDATE snapshots SET title=?, auto=0 WHERE id=?", [str(body.get("title") or "存档")[:80], sid])
+    return {"ok": True}
+
+
+@router.delete("/snapshots/{sid}")
+async def delete_snapshot(sid: str) -> dict:
+    db.execute("DELETE FROM snapshots WHERE id=?", [sid])
+    return {"ok": True}
+
+
+# ---------------- 镜头分支：试另一版，满意了再采用 ----------------
+BRANCH_SKIP = {"id", "project_id", "sort", "created_at", "branch_of"}
+
+
+@router.post("/shots/{shot_id}/branch")
+async def branch_shot(shot_id: str, body: dict[str, Any] | None = None) -> dict:
+    shot = db.get("shots", shot_id)
+    if not shot:
+        raise HTTPException(404, "镜头不存在")
+    if shot.get("branch_of"):
+        shot_id, shot = shot["branch_of"], db.get("shots", shot["branch_of"]) or shot   # 分支的分支 = 原镜头的分支
+    keep_media = (body or {}).get("keep_media", True)
+    vals = {k: v for k, v in shot.items() if k not in BRANCH_SKIP}
+    if not keep_media:
+        vals.update({"keyframe": "", "video": "", "end_frame": "", "review": {}})
+    return db.insert("shots", {**vals, "project_id": shot["project_id"], "sort": shot["sort"], "branch_of": shot_id})
+
+
+@router.post("/shots/{shot_id}/adopt")
+async def adopt_branch(shot_id: str) -> dict:
+    """采用分支：内容写回原镜头（原镜头 id、顺序不变），分支的候选图/视频并入原镜头，原来的版本仍可在候选里切回。"""
+    br = db.get("shots", shot_id)
+    if not br or not br.get("branch_of"):
+        raise HTTPException(400, "这不是分支镜头")
+    orig = db.get("shots", br["branch_of"])
+    if not orig:
+        raise HTTPException(404, "原镜头已删除")
+    take_snapshot(br["project_id"], f"采用镜头分支前自动存档", auto=True)
+    db.update("shots", orig["id"], {k: v for k, v in br.items() if k not in BRANCH_SKIP})
+    db.execute("UPDATE assets SET owner_id=? WHERE owner_type='shot' AND owner_id=?", [orig["id"], br["id"]])
+    db.execute("DELETE FROM shots WHERE id=?", [br["id"]])
+    return db.get("shots", orig["id"])

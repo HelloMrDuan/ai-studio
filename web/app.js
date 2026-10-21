@@ -499,7 +499,7 @@ const TABLE_URL = { projects: '/api/projects/', characters: '/api/characters/', 
 function localRow(table, id) {
   if (!S.snap) return null;
   if (table === 'projects') return S.snap.project;
-  return (S.snap[table] || []).find((r) => r.id === id);
+  return (S.snap[table] || []).find((r) => r.id === id) || (table === 'shots' ? (S.snap.branches || []).find((r) => r.id === id) : undefined);
 }
 document.addEventListener('change', async (e) => {
   const el = e.target;

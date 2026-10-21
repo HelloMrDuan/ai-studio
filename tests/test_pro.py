@@ -1007,3 +1007,55 @@ def test_canvas_layout(client, project):
     cl = client.post(f"/api/projects/{pid}/clone", json={"aspect": "1:1"}).json()
     assert client.get(f"/api/projects/{cl['id']}").json()["project"]["canvas"] == {}
     assert client.get("/static/canvas.js").status_code == 200
+
+
+def test_snapshots_and_branches(client, project):
+    from app import db
+    pid = project
+    snap = client.get(f"/api/projects/{pid}").json()
+    shots = snap["shots"]
+    assert len(shots) >= 2 and snap["branches"] == []
+    s0, s1 = shots[0], shots[1]
+    # 存档点 → 改内容 / 删镜头 → 回退
+    sp = client.post(f"/api/projects/{pid}/snapshots", json={"title": "定稿前"}).json()
+    assert sp["meta"]["shots"] == len(shots) and "data" not in sp
+    client.patch(f"/api/shots/{s0['id']}", json={"description": "改坏了"})
+    client.delete(f"/api/shots/{s1['id']}")
+    client.patch(f"/api/projects/{pid}", json={"synopsis": "新简介"})
+    assert len(client.get(f"/api/projects/{pid}").json()["shots"]) == len(shots) - 1
+    tid = db.insert("tasks", {"project_id": pid, "type": "keyframe", "status": "queued", "title": "x", "params": {}})["id"]
+    assert client.post(f"/api/snapshots/{sp['id']}/restore").status_code == 409       # 有任务排队时不让回退
+    db.execute("DELETE FROM tasks WHERE id=?", [tid])
+    r = client.post(f"/api/snapshots/{sp['id']}/restore").json()
+    assert r["ok"] and r["backup"]["auto"] == 1
+    after = client.get(f"/api/projects/{pid}").json()
+    assert [x["id"] for x in after["shots"]] == [x["id"] for x in shots]
+    assert after["shots"][0]["description"] == s0["description"] and after["project"]["synopsis"] == snap["project"]["synopsis"]
+    lst = client.get(f"/api/projects/{pid}/snapshots").json()
+    assert {x["title"] for x in lst} >= {"定稿前"} and any(x["auto"] for x in lst)
+    # 回退前的自动存档可以再回去（撤销回退）
+    client.post(f"/api/snapshots/{r['backup']['id']}/restore")
+    assert client.get(f"/api/projects/{pid}").json()["shots"][0]["description"] == "改坏了"
+    client.post(f"/api/snapshots/{sp['id']}/restore")
+    client.patch(f"/api/snapshots/{sp['id']}", json={"title": "定稿"})
+    assert client.delete(f"/api/snapshots/{lst[-1]['id']}").json()["ok"]
+    # 镜头分支：不进正式镜头列表；出图后采用 → 写回原镜头，候选合并
+    br = client.post(f"/api/shots/{s0['id']}/branch", json={"keep_media": False}).json()
+    assert br["branch_of"] == s0["id"] and not br["keyframe"]
+    cur = client.get(f"/api/projects/{pid}").json()
+    assert br["id"] not in [x["id"] for x in cur["shots"]] and cur["branches"][0]["id"] == br["id"]
+    client.patch(f"/api/shots/{br['id']}", json={"description": "另一版：俯拍雨夜"})
+    wait(client, client.post(f"/api/shots/{br['id']}/keyframe", json={}).json()["id"])
+    kf = client.get(f"/api/projects/{pid}").json()["branches"][0]["keyframe"]
+    assert kf
+    n_assets = len(cur["assets"].get(s0["id"], []))
+    assert client.post(f"/api/shots/{s0['id']}/adopt").status_code == 400
+    got = client.post(f"/api/shots/{br['id']}/adopt").json()
+    assert got["id"] == s0["id"] and got["keyframe"] == kf and got["description"] == "另一版：俯拍雨夜"
+    fin = client.get(f"/api/projects/{pid}").json()
+    assert fin["branches"] == [] and len(fin["assets"][s0["id"]]) > n_assets
+    assert [x["id"] for x in fin["shots"]] == [x["id"] for x in shots]
+    # 删除原镜头时分支一起删
+    b2 = client.post(f"/api/shots/{s1['id']}/branch", json={}).json()
+    assert b2["keyframe"] == s1["keyframe"]
+    client.post(f"/api/snapshots/{sp['id']}/restore")

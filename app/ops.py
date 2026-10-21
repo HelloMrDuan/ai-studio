@@ -138,6 +138,7 @@ def referenced(pid: str) -> set[str]:
     rows = db.query("SELECT * FROM projects WHERE id=?", [pid])
     for t in ("characters", "locations", "props", "outfits", "shots"):
         rows += db.query(f"SELECT * FROM {t} WHERE project_id=?", [pid])
+    rows += db.query("SELECT data FROM snapshots WHERE project_id=?", [pid])      # 存档点里用到的文件也保留
     rows += db.query(f"SELECT params FROM tasks WHERE project_id=? AND status IN ({','.join('?' * len(ACTIVE))})", [pid, *ACTIVE])
     for r in rows:
         refs.update(s for s in _strings(r) if s.startswith(prefix))

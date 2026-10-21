@@ -67,7 +67,13 @@ def props_of(project_id: str) -> list[dict]:
 
 
 def shots_of(project_id: str) -> list[dict]:
-    return db.query("SELECT * FROM shots WHERE project_id=? ORDER BY sort, created_at", [project_id])
+    """正式镜头（不含分支）。"""
+    return db.query("SELECT * FROM shots WHERE project_id=? AND COALESCE(branch_of,'')='' ORDER BY sort, created_at",
+                    [project_id])
+
+
+def branches_of(project_id: str) -> list[dict]:
+    return db.query("SELECT * FROM shots WHERE project_id=? AND COALESCE(branch_of,'')!='' ORDER BY created_at", [project_id])
 
 
 def add_asset(project_id: str, kind: str, path: Path, owner_type: str, owner_id: str, meta: dict) -> dict:
@@ -170,6 +176,9 @@ async def task_storyboard(ctx: TaskContext) -> dict:
     prop_ids = {pr["name"]: pr["id"] for pr in props}
     loc_names = [l["name"] for l in locs]
     loc_ids = {l["name"]: l["id"] for l in locs}
+    if shots_of(project["id"]):
+        from . import canvas
+        canvas.take_snapshot(project["id"], "重新生成分镜表前自动存档", auto=True)
     db.execute("DELETE FROM shots WHERE project_id=?", [project["id"]])
     db.execute("DELETE FROM assets WHERE project_id=? AND owner_type='shot'", [project["id"]])
     for i, r in enumerate(rows):
@@ -446,7 +455,8 @@ async def task_keyframe_edit(ctx: TaskContext) -> dict:
 def prev_shot(shot: dict) -> dict | None:
     shots = shots_of(shot["project_id"])
     ids = [s["id"] for s in shots]
-    i = ids.index(shot["id"]) if shot["id"] in ids else -1
+    key = shot.get("branch_of") or shot["id"]          # 分支镜头的上一镜 = 原镜头的上一镜
+    i = ids.index(key) if key in ids else -1
     return shots[i - 1] if i > 0 else None
 
 

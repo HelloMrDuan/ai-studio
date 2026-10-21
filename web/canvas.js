@@ -19,7 +19,9 @@ function cvItems() {
   s.characters.forEach((c) => out.push({ id: `char:${c.id}`, type: 'char', row: c }));
   s.locations.forEach((l) => out.push({ id: `loc:${l.id}`, type: 'loc', row: l }));
   (s.props || []).forEach((pr) => out.push({ id: `prop:${pr.id}`, type: 'prop', row: pr }));
+  const idx = Object.fromEntries(s.shots.map((x, i) => [x.id, i]));
   s.shots.forEach((x, i) => out.push({ id: `shot:${x.id}`, type: 'shot', row: x, i }));
+  (s.branches || []).forEach((b) => { if (b.branch_of in idx) out.push({ id: `shot:${b.id}`, type: 'shot', row: b, i: idx[b.branch_of], branch: true }); });
   out.push({ id: 'final', type: 'final' });
   cvNotes().forEach((n) => out.push({ id: `note:${n.id}`, type: 'note', row: n }));
   return out;
@@ -39,6 +41,7 @@ function cvEdgeList() {
     if (x.continuous && i) add(`shot:${s.shots[i - 1].id}`, `shot:${x.id}`, 'cont');
     if (x.video) add(`shot:${x.id}`, 'final', 'final');
   });
+  (s.branches || []).forEach((b) => add(`shot:${b.branch_of}`, `shot:${b.id}`, 'branch'));
   return E;
 }
 // 按场景分行（连续同场景的镜头排一行）
@@ -51,6 +54,7 @@ function cvScenes() {
   });
   return rows;
 }
+const cvBranchesOf = (id) => (S.snap.branches || []).filter((b) => b.branch_of === id);
 const cvShotH = (x) => Math.round(CV_W.shot / cvRatio(shotAspect(x))) + 118;
 
 /* 默认布局：剧本 | 角色 / 场景 / 道具 | 镜头（每场一行）| 成片 */
@@ -72,18 +76,35 @@ function cvDefaultLayout() {
   const sx = cx + Math.max(2 * (CV_W.char + 20), CV_W.loc + 20) + 120;
   let sy = 0; let maxCols = 1;
   cvScenes().forEach((row) => {
-    row.shots.forEach((x, j) => { pos[`shot:${x.id}`] = { x: sx + j * (CV_W.shot + 24), y: sy + 28 }; });
+    let rowH = 0;
+    row.shots.forEach((x, j) => {
+      const px = sx + j * (CV_W.shot + 24); let py = sy + 28;
+      pos[`shot:${x.id}`] = { x: px, y: py }; py += H(`shot:${x.id}`, cvShotH(x)) + 36;
+      cvBranchesOf(x.id).forEach((b) => { pos[`shot:${b.id}`] = { x: px, y: py }; py += H(`shot:${b.id}`, cvShotH(b)) + 36; });
+      rowH = Math.max(rowH, py - sy - 28 - 36);
+    });
     maxCols = Math.max(maxCols, row.shots.length);
-    sy += Math.max(...row.shots.map((x) => H(`shot:${x.id}`, cvShotH(x)))) + 28 + 50;
+    sy += rowH + 28 + 50;
   });
   pos.final = { x: sx + maxCols * (CV_W.shot + 24) + 100, y: 0 };
   return pos;
 }
 function cvPositions() {
   const def = cvDefaultLayout(); const saved = cvSaved(); const pos = {};
-  cvItems().forEach((it) => {
+  const items = cvItems();
+  items.forEach((it) => {
     if (it.type === 'note') pos[it.id] = { x: it.row.x, y: it.row.y };
     else pos[it.id] = saved[it.id] ? { x: saved[it.id].x, y: saved[it.id].y } : (def[it.id] || { x: 0, y: 0 });
+  });
+  // 没摆过位置的分支：跟在原镜头（及之前的分支）正下方，原镜头被挪过也不会跑偏
+  const H = (id, row) => (CV.size && CV.size[id] ? CV.size[id][1] : cvShotH(row));
+  items.filter((it) => !it.branch && it.type === 'shot').forEach((it) => {
+    let y = pos[it.id].y + H(it.id, it.row) + 36;
+    cvBranchesOf(it.row.id).forEach((b) => {
+      const k = `shot:${b.id}`;
+      if (!saved[k]) pos[k] = { x: pos[it.id].x, y };
+      y = pos[k].y + H(k, b) + 36;
+    });
   });
   return pos;
 }
@@ -96,7 +117,8 @@ function cvGroups() {
   if (cvPrefs().scene_groups !== false) {
     cvScenes().forEach((row, i) => {
       const id = `scene:${i}:${row.key}`.slice(0, 24); const st = saved.find((g) => g.id === id) || {};
-      out.push({ id, title: row.title || `场景 ${i + 1}`, members: row.shots.map((x) => `shot:${x.id}`), auto: 'scene', collapsed: !!st.collapsed });
+      const members = row.shots.flatMap((x) => [`shot:${x.id}`, ...cvBranchesOf(x.id).map((b) => `shot:${b.id}`)]);
+      out.push({ id, title: row.title || `场景 ${i + 1}`, members, auto: 'scene', collapsed: !!st.collapsed });
     });
   }
   saved.filter((g) => !g.auto).forEach((g) => {
@@ -111,10 +133,11 @@ function cvHidden(groups) {
   groups.filter((g) => g.collapsed).forEach((g) => g.members.forEach((m) => { if (!h[m]) h[m] = g.id; }));
   return h;
 }
-function cvSaveGroups(mutate) {
+function cvSaveGroups(mutate, label = '修改分组') {
+  const before = cvLayout();
   const groups = cvSavedGroups().map((g) => ({ ...g }));
   mutate(groups);
-  cvState().groups = groups; cvSave({ groups });
+  cvState().groups = groups; cvSave({ groups }); cvLayoutOp(label, before);
 }
 
 /* ---------- 过期检测：上游换过图 / 视频后，下游标「需更新」 ---------- */
@@ -140,7 +163,7 @@ function cvStale() {
 }
 function cvThumbs(owner, kind, current, max = 6) {
   const list = assetsOf(owner, kind).slice(0, max); if (list.length < 2) return '';
-  return `<div class="cv-thumbs">${list.map((a) => `<span class="cv-th ${a.path === current ? 'sel' : ''}" data-act="select-asset" data-id="${a.id}" title="设为当前使用"
+  return `<div class="cv-thumbs">${list.map((a) => `<span class="cv-th ${a.path === current ? 'sel' : ''}" data-act="cv-pick" data-id="${a.id}" title="设为当前使用"
     style="${isVideo(a.path) ? '' : `background-image:url('${media(a.path)}')`}">${isVideo(a.path) ? '▶' : ''}</span>`).join('')}</div>`;
 }
 
@@ -179,7 +202,13 @@ const CV_CARD = {
     const play = x.video ? `<span class="cv-play" data-act="zoom" data-src="${media(x.video)}" title="播放视频">▶</span>` : '';
     const st = [x.keyframe ? '<span class="ok">图✓</span>' : '<span class="muted">图</span>', x.video ? '<span class="ok">视频✓</span>' : '<span class="muted">视频</span>'];
     if ((x.dialogue || []).length) st.push(`<span class="muted">台词 ${x.dialogue.length}</span>`);
-    return `<div class="cv-h"><b>#${it.i + 1}</b> <span class="muted small">${esc(x.shot_size || '')} · ${x.duration}s${x.aspect ? ` · ${a}` : ''}</span></div>
+    const nv = assetsOf(x.id, 'keyframe').length + assetsOf(x.id, 'video').length;
+    const extra = it.branch
+      ? `<div class="cv-f"><button class="btn small" data-act="cv-adopt" data-id="${x.id}" title="用这一版替换原镜头（原版本仍在候选里）">采用此版</button>
+          <button class="btn small ghost" data-act="cv-del-branch" data-id="${x.id}">删除分支</button></div>`
+      : `<div class="cv-f"><button class="btn small ghost" data-act="cv-branch" data-id="${x.id}" title="复制一份试另一版，不影响原镜头">分支</button>
+          <button class="btn small ghost" data-act="cv-history" data-id="${x.id}" ${nv ? '' : 'disabled'}>版本 ${nv}</button></div>`;
+    return `<div class="cv-h">${it.branch ? '<span class="cv-tag">分支</span> ' : ''}<b>#${it.i + 1}</b> <span class="muted small">${esc(x.shot_size || '')} · ${x.duration}s${x.aspect ? ` · ${a}` : ''}</span></div>
       ${cvImg(x.keyframe, a.replace(':', '/'), play + busyBox(x.id))}
       ${cvThumbs(x.id, 'keyframe', x.keyframe)}${cvThumbs(x.id, 'video', x.video)}
       ${it.stale ? `<div class="cv-stale small">⚠ ${esc(it.stale.why)}</div>` : ''}
@@ -187,7 +216,9 @@ const CV_CARD = {
       <div class="cv-f small">${st.join(' ')}</div>
       <div class="cv-f"><button class="btn small ${x.keyframe && !(it.stale && it.stale.what === 'keyframe') ? 'ghost' : ''}" data-act="gen-keyframe" data-id="${x.id}">${x.keyframe ? '重出图' : '出图'}</button>
         <button class="btn small ${x.keyframe && (!x.video || (it.stale && it.stale.what === 'video')) ? '' : 'ghost'}" data-act="gen-video" data-id="${x.id}" ${x.keyframe ? '' : 'disabled'}>${x.video ? '重做视频' : '出视频'}</button>
-        <button class="btn small ghost" data-act="cv-open" data-step="${x.keyframe ? 'video' : 'board'}" data-anchor="shot-${x.id}" title="在流程视图里编辑这个镜头的全部设置">编辑</button></div>`;
+        ${it.branch ? '' : `<button class="btn small ghost" data-act="cv-open" data-step="${x.keyframe ? 'video' : 'board'}" data-anchor="shot-${x.id}" title="在流程视图里编辑这个镜头的全部设置">编辑</button>`}</div>
+      ${it.branch ? `<div class="cv-b"><textarea class="cv-desc" data-cv-desc="${x.id}" rows="2" placeholder="这一版的画面描述">${esc(x.description || '')}</textarea></div>` : ''}
+      ${extra}`;
   },
   final() {
     const p = S.snap.project; const n = S.snap.shots.length; const v = S.snap.shots.filter((x) => x.video).length;
@@ -210,6 +241,8 @@ function viewCanvas() {
   return `<div class="cv-root" id="cv-root">
     <div class="cv-world" id="cv-world"><svg class="cv-edges" id="cv-edges"></svg><div id="cv-groups"></div><div id="cv-nodes"></div></div>
     <div class="cv-bar">
+      <button class="btn small ghost" data-act="cv-undo" id="cv-undo" title="撤销（Ctrl+Z）"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/></svg></button><button class="btn small ghost" data-act="cv-redo" id="cv-redo" title="重做（Ctrl+Shift+Z）"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 14 5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/></svg></button>
+      <button class="btn small ghost" data-act="cv-snapshots" title="给整个项目存档 / 回到之前的存档">存档点</button>
       <button class="btn small ghost" data-act="cv-add-note">＋ 便签</button>
       <button class="btn small ghost" data-act="cv-auto" title="按 剧本 → 角色/场景 → 镜头 → 成片 重新排列">自动排列</button>
       <button class="btn small ghost" data-act="cv-fit">适应画布</button>
@@ -244,7 +277,7 @@ function cvRenderNodes() {
     }
   });
   if (moved) cvMeasure();
-  cvDrawGroups(); cvDrawEdges(); cvSelBar(); cvMini();
+  cvDrawGroups(); cvDrawEdges(); cvSelBar(); cvMini(); cvHistBtns();
 }
 function cvMeasure() {
   const old = CV.size || {}; CV.size = {};
@@ -364,7 +397,7 @@ function cvMount() {
   const root = $('#cv-root'); if (!root) return;
   cvRenderNodes();
   if (CV.vpPid !== S.pid) {
-    CV.vpPid = S.pid; CV.sel.clear();
+    CV.vpPid = S.pid; CV.sel.clear(); CV.undo = []; CV.redo = [];
     const v = cvState().viewport;
     if (v && v.z) { CV.vp = { ...v }; cvApplyVp(); } else cvFit();
   } else cvApplyVp();
@@ -413,7 +446,7 @@ function cvDown(e) {
   }
   const nodeEl = e.target.closest('.cv-node');
   if (nodeEl && e.button === 0) {
-    if (e.target.closest('button,input,textarea,select,.cv-x')) return;
+    if (e.target.closest('button,input,textarea,select,.cv-x,.cv-th')) return;
     const id = nodeEl.dataset.node;
     if (e.shiftKey) { if (CV.sel.has(id)) CV.sel.delete(id); else CV.sel.add(id); } else if (!CV.sel.has(id)) { CV.sel.clear(); CV.sel.add(id); }
     cvMarkSel();
@@ -497,6 +530,7 @@ function cvSelBar() {
     <button class="btn small ghost" data-act="cv-sel-clear">取消选择</button>`;
 }
 function cvCommitMove(ids) {
+  const before = cvLayout();
   const nodes = {}; let notes = null;
   ids.forEach((k) => {
     if (k.startsWith('note:')) {
@@ -505,6 +539,7 @@ function cvCommitMove(ids) {
     } else nodes[k] = CV.pos[k];
   });
   cvSave(notes ? { nodes, notes } : { nodes });
+  cvLayoutOp(ids.length > 1 ? `移动 ${ids.length} 张卡片` : '移动卡片', before);
 }
 
 /* ---------- 保存（防抖；未保存的改动先盖在快照上） ---------- */
@@ -532,14 +567,18 @@ window.addEventListener('beforeunload', () => {
 function cvAddNoteAt(e) {
   const p = e ? cvWorldPt(e) : (() => { const r = $('#cv-root'); return { x: (r.clientWidth / 2 - CV.vp.x) / CV.vp.z - 110, y: (r.clientHeight / 2 - CV.vp.y) / CV.vp.z - 60 }; })();
   const n = { id: Math.random().toString(36).slice(2, 12), x: Math.round(p.x), y: Math.round(p.y), w: 220, text: '', color: 'yellow' };
-  const notes = [...cvNotes(), n]; cvState().notes = notes; cvSave({ notes });
+  const before = cvLayout();
+  const notes = [...cvNotes(), n]; cvState().notes = notes; cvSave({ notes }); cvLayoutOp('添加便签', before);
   cvRenderNodes();
   const ta = document.querySelector(`[data-cv-note="${n.id}"]`); if (ta) ta.focus();
 }
 function cvNoteChange(e) {
+  const dsc = e.target.closest('[data-cv-desc]');
+  if (dsc) { const r = localRow('shots', dsc.dataset.cvDesc); if (r) r.description = dsc.value; api('PATCH', `/api/shots/${dsc.dataset.cvDesc}`, { description: dsc.value }).then(() => toast('已保存')); return; }
   const ta = e.target.closest('[data-cv-note]'); if (!ta) return;
+  const before = cvLayout();
   const notes = cvNotes().map((n) => (n.id === ta.dataset.cvNote ? { ...n, text: ta.value } : n));
-  cvState().notes = notes; cvSave({ notes });
+  cvState().notes = notes; cvSave({ notes }); cvLayoutOp('编辑便签', before);
 }
 
 Object.assign(ACTIONS, {
@@ -548,8 +587,9 @@ Object.assign(ACTIONS, {
   'cv-open'(el) { S.anchor = el.dataset.anchor || ''; location.hash = `#/p/${S.pid}/${el.dataset.step}`; },
   'cv-add-note'() { cvAddNoteAt(null); },
   'cv-del-note'(el) {
+    const before = cvLayout();
     const notes = cvNotes().filter((n) => n.id !== el.dataset.id); cvState().notes = notes; CV.sel.delete(`note:${el.dataset.id}`);
-    cvSave({ notes }); cvRenderNodes();
+    cvSave({ notes }); cvRenderNodes(); cvLayoutOp('删除便签', before);
   },
   'cv-fit'() { cvFit(); },
   'cv-zoom'(el) {
@@ -559,9 +599,10 @@ Object.assign(ACTIONS, {
   },
   async 'cv-auto'() {
     if (!confirm('按默认布局重新排列所有卡片？（便签位置不变）')) return;
+    const before = cvLayout();
     clearTimeout(CV.saveT); if (CV.pend) { delete CV.pend.nodes; }
     S.snap.project.canvas = await api('POST', `/api/projects/${S.pid}/canvas/reset`);
-    cvRenderNodes(); cvFit();
+    cvRenderNodes(); cvFit(); cvLayoutOp('自动排列', before);
   },
   'cv-edges'(el) {
     CV.edges = CV.edges === 'all' ? 'sel' : 'all'; localStorage.setItem('ais.cv.edges', CV.edges);
@@ -573,8 +614,9 @@ document.addEventListener('keydown', (e) => {
   if ((e.key === 'Delete' || e.key === 'Backspace') && CV.sel.size) {
     const del = [...CV.sel].filter((k) => k.startsWith('note:')).map((k) => k.slice(5));
     if (!del.length) return;
+    const before = cvLayout();
     const notes = cvNotes().filter((n) => !del.includes(n.id)); cvState().notes = notes; cvSave({ notes });
-    del.forEach((d) => CV.sel.delete(`note:${d}`)); cvRenderNodes();
+    del.forEach((d) => CV.sel.delete(`note:${d}`)); cvRenderNodes(); cvLayoutOp('删除便签', before);
   } else if (e.key === 'Escape') { CV.sel.clear(); cvMarkSel(); }
 });
 
@@ -603,7 +645,9 @@ async function cvLink(d) {
   const idx = S.snap.shots.indexOf(shot) + 1; const name = cvName(src);
   const patch = cvShotPatch(src, shot);
   if (JSON.stringify(patch[Object.keys(patch)[0]]) === JSON.stringify(shot[Object.keys(patch)[0]])) { toast(`${name} 已经在镜头 #${idx} 里`); cvDrawEdges(); return; }
+  const key = Object.keys(patch)[0]; const old = { [key]: shot[key] };
   await api('PATCH', `/api/shots/${shot.id}`, patch);
+  cvPush(`把 ${name} 加入镜头 #${idx}`, () => cvPatchShot(shot.id, old), () => cvPatchShot(shot.id, patch));
   toast(`已把 ${name} 加入镜头 #${idx}${shot.keyframe ? '（分镜图需要重出才会体现）' : ''}`);
   loadSnap(true);
 }
@@ -617,7 +661,9 @@ document.addEventListener('click', async (e) => {
   const shot = localRow('shots', hit.dataset.b.slice(5)); if (!shot) return;
   const idx = S.snap.shots.indexOf(shot) + 1;
   if (!confirm(`把 ${cvName(hit.dataset.a)} 从镜头 #${idx} 中移除？`)) return;
-  await api('PATCH', `/api/shots/${shot.id}`, cvShotPatch(hit.dataset.a, shot, true));
+  const patch = cvShotPatch(hit.dataset.a, shot, true); const key = Object.keys(patch)[0]; const old = { [key]: shot[key] };
+  await api('PATCH', `/api/shots/${shot.id}`, patch);
+  cvPush(`断开 ${cvName(hit.dataset.a)} 与镜头 #${idx}`, () => cvPatchShot(shot.id, old), () => cvPatchShot(shot.id, patch));
   toast('已断开'); loadSnap(true);
 });
 
@@ -684,8 +730,9 @@ Object.assign(ACTIONS, {
   'cv-sel-del-notes'() {
     const del = [...CV.sel].filter((k) => k.startsWith('note:')).map((k) => k.slice(5));
     if (!confirm(`删除 ${del.length} 张便签？`)) return;
+    const before = cvLayout();
     const notes = cvNotes().filter((n) => !del.includes(n.id)); cvState().notes = notes; cvSave({ notes });
-    del.forEach((d) => CV.sel.delete(`note:${d}`)); cvRenderNodes();
+    del.forEach((d) => CV.sel.delete(`note:${d}`)); cvRenderNodes(); cvLayoutOp('删除便签', before);
   },
   'cv-sel-clear'() { CV.sel.clear(); cvMarkSel(); },
 });
@@ -694,4 +741,127 @@ document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
     e.preventDefault(); CV.sel = new Set(Object.keys(CV.pos).filter((k) => !k.startsWith('grp:') && !(CV.hidden || {})[k])); cvMarkSel();
   }
+});
+
+/* ---------- 回溯：撤销 / 重做、版本、存档点、分支 ---------- */
+CV.undo = []; CV.redo = [];
+const cvClone = (o) => JSON.parse(JSON.stringify(o ?? null));
+function cvLayout() { return cvClone({ nodes: cvSaved(), notes: cvNotes(), groups: cvSavedGroups() }); }
+function cvSetLayout(st) {
+  const c = cvState(); c.nodes = cvClone(st.nodes) || {}; c.notes = cvClone(st.notes) || []; c.groups = cvClone(st.groups) || [];
+  clearTimeout(CV.saveT);
+  CV.pend = { ...(CV.pend || {}), nodes: c.nodes, replace_nodes: true, notes: c.notes, groups: c.groups }; CV.pendPid = S.pid;
+  CV.saveT = setTimeout(cvFlush, 300);
+  cvRenderNodes();
+}
+function cvPush(label, undo, redo) {
+  CV.undo.push({ label, undo, redo }); if (CV.undo.length > 100) CV.undo.shift();
+  CV.redo = []; cvHistBtns();
+}
+function cvLayoutOp(label, before) { const after = cvLayout(); cvPush(label, () => cvSetLayout(before), () => cvSetLayout(after)); }
+async function cvPatchShot(id, patch) { await api('PATCH', `/api/shots/${id}`, patch); await loadSnap(true); }
+async function cvSelectAsset(id) { await api('POST', '/api/assets/select', { asset_id: id }); await loadSnap(true); }
+function cvHistBtns() {
+  const u = $('#cv-undo'); const r = $('#cv-redo');
+  if (u) { u.disabled = !CV.undo.length; u.title = CV.undo.length ? `撤销：${CV.undo[CV.undo.length - 1].label}（Ctrl+Z）` : '没有可撤销的操作'; }
+  if (r) { r.disabled = !CV.redo.length; r.title = CV.redo.length ? `重做：${CV.redo[CV.redo.length - 1].label}（Ctrl+Shift+Z）` : '没有可重做的操作'; }
+}
+async function cvUndo() {
+  const op = CV.undo.pop(); if (!op) { toast('没有可撤销的操作'); return; }
+  try { await op.undo(); CV.redo.push(op); toast(`已撤销：${op.label}`); } catch (err) { console.error(err); }
+  cvHistBtns();
+}
+async function cvRedo() {
+  const op = CV.redo.pop(); if (!op) { toast('没有可重做的操作'); return; }
+  try { await op.redo(); CV.undo.push(op); toast(`已重做：${op.label}`); } catch (err) { console.error(err); }
+  cvHistBtns();
+}
+function cvAssetById(id) {
+  for (const list of Object.values(S.snap.assets || {})) { const a = list.find((x) => x.id === id); if (a) return a; }
+  return null;
+}
+function cvCurrentOf(a) {
+  const t = { character: 'characters', location: 'locations', prop: 'props', shot: 'shots' }[a.owner_type];
+  const r = t && localRow(t, a.owner_id); if (!r) return '';
+  return a.owner_type === 'shot' ? (isVideo(a.path) ? r.video : r.keyframe) : r.ref_image;
+}
+const fmtTime = (t) => new Date(t * 1000).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+Object.assign(ACTIONS, {
+  'cv-undo'() { return cvUndo(); },
+  'cv-redo'() { return cvRedo(); },
+  async 'cv-pick'(el) {
+    const a = cvAssetById(el.dataset.id); if (!a) return;
+    const cur = cvCurrentOf(a); const prev = (S.snap.assets[a.owner_id] || []).find((x) => x.path === cur);
+    if (prev && prev.id === a.id) return;
+    closeModal();
+    await cvSelectAsset(a.id);
+    if (prev) cvPush('切换版本', () => cvSelectAsset(prev.id), () => cvSelectAsset(a.id));
+    toast('已切换（Ctrl+Z 可撤销）');
+  },
+  'cv-history'(el) {
+    const x = localRow('shots', el.dataset.id); if (!x) return;
+    const idx = S.snap.shots.indexOf(x) + 1;
+    const block = (kind, label, cur) => {
+      const list = assetsOf(x.id, kind); if (!list.length) return '';
+      return `<label class="f">${label}（${list.length}）</label><div class="cv-hist">${list.map((a) => `<div class="cv-hv ${a.path === cur ? 'sel' : ''}" data-act="cv-pick" data-id="${a.id}" title="${esc((a.meta && (a.meta.edit || a.meta.prompt)) || '')}">
+        <div class="cv-hi" style="${isVideo(a.path) ? '' : `background-image:url('${media(a.path)}')`}">${isVideo(a.path) ? `<video src="${media(a.path)}#t=0.5" muted preload="metadata"></video>` : ''}</div>
+        <div class="small muted">${fmtTime(a.created_at)}${a.path === cur ? ' · <b class="ok">当前</b>' : ''}${a.meta && a.meta.edit ? ' · 改图' : ''}${a.meta && a.meta.upload ? ' · 上传' : ''}</div></div>`).join('')}</div>`;
+    };
+    modal(`<h3>镜头 #${idx} 的版本</h3><p class="muted small">点任意一版设为当前使用；所有版本都保留，随时可以切回。切换后 Ctrl+Z 可撤销。</p>
+      ${block('keyframe', '分镜图', x.keyframe)}${block('video', '视频', x.video)}${block('end_frame', '尾帧图', x.end_frame)}
+      <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost" data-act="close-modal">关闭</button></div>`);
+    $('#modal-box').classList.add('wide');
+  },
+  async 'cv-branch'(el) {
+    const b = await api('POST', `/api/shots/${el.dataset.id}/branch`, { keep_media: true });
+    cvPush('创建分支', async () => { await api('DELETE', `/api/shots/${b.id}`); await loadSnap(true); },
+      async () => { await api('POST', `/api/shots/${el.dataset.id}/branch`, { keep_media: true }); await loadSnap(true); });
+    toast('已创建分支：在下面那张卡片里改描述、出图 / 出视频，满意了点「采用此版」');
+    await loadSnap(true);
+  },
+  async 'cv-adopt'(el) {
+    if (!confirm('采用这一版？原镜头的内容会换成这一版（原来的图和视频仍保留在版本里；也可以在「存档点」回退）')) return;
+    await api('POST', `/api/shots/${el.dataset.id}/adopt`);
+    CV.sel.delete(`shot:${el.dataset.id}`); toast('已采用分支'); await loadSnap(true);
+  },
+  async 'cv-del-branch'(el) {
+    if (!confirm('删除这个分支？')) return;
+    await api('DELETE', `/api/shots/${el.dataset.id}`); CV.sel.delete(`shot:${el.dataset.id}`); await loadSnap(true);
+  },
+  async 'cv-snapshots'() {
+    const list = await api('GET', `/api/projects/${S.pid}/snapshots`);
+    const row = (x) => { const m = x.meta || {};
+      return `<tr><td>${esc(x.title)}${x.auto ? ' <span class="cv-tag">自动</span>' : ''}</td><td class="small muted">${fmtTime(x.created_at)}</td>
+        <td class="small muted">${m.shots || 0} 镜 · 图 ${m.keyframes || 0} · 视频 ${m.videos || 0}${m.final ? ' · 有成片' : ''}</td>
+        <td><button class="btn small" data-act="cv-snap-restore" data-id="${x.id}" data-t="${esc(x.title)}">回到这里</button>
+          <button class="btn small ghost" data-act="cv-snap-del" data-id="${x.id}">删除</button></td></tr>`; };
+    modal(`<h3>存档点</h3>
+      <p class="muted small">存档点记下整个项目此刻的状态（剧本、角色、场景、道具、所有镜头的设置和当前选用的图 / 视频、成片、画布布局）。回到存档点前会自动再存一份，随时可以回来。存档点用到的文件不会被磁盘清理删除。</p>
+      <div class="row"><input type="text" id="cv-snap-title" class="grow" placeholder="存档名称，例如：分镜定稿 / 换女主前"><button class="btn" data-act="cv-snap-new">存档</button></div>
+      ${list.length ? `<table class="tbl" style="margin-top:12px"><tr><th>名称</th><th>时间</th><th>内容</th><th></th></tr>${list.map(row).join('')}</table>` : '<div class="muted small" style="margin-top:12px">还没有存档点</div>'}
+      <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost" data-act="close-modal">关闭</button></div>`);
+    $('#modal-box').classList.add('wide');
+  },
+  async 'cv-snap-new'() {
+    await api('POST', `/api/projects/${S.pid}/snapshots`, { title: val('cv-snap-title') || '' });
+    toast('已存档'); ACTIONS['cv-snapshots']();
+  },
+  async 'cv-snap-restore'(el) {
+    if (!confirm(`回到存档点「${el.dataset.t}」？当前状态会先自动存档，之后还能回来。`)) return;
+    clearTimeout(CV.saveT); CV.pend = null;
+    const r = await api('POST', `/api/snapshots/${el.dataset.id}/restore`);
+    closeModal(); CV.undo = []; CV.redo = []; CV.vpPid = null;
+    toast(`已回到「${r.restored}」`); await loadSnap(true);
+  },
+  async 'cv-snap-del'(el) {
+    if (!confirm('删除这个存档点？')) return;
+    await api('DELETE', `/api/snapshots/${el.dataset.id}`); ACTIONS['cv-snapshots']();
+  },
+});
+document.addEventListener('keydown', (e) => {
+  if (S.step !== 'canvas' || /INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName || '')) return;
+  const k = e.key.toLowerCase();
+  if ((e.ctrlKey || e.metaKey) && k === 'z') { e.preventDefault(); if (e.shiftKey) cvRedo(); else cvUndo(); }
+  else if ((e.ctrlKey || e.metaKey) && k === 'y') { e.preventDefault(); cvRedo(); }
 });

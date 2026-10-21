@@ -65,6 +65,9 @@ CREATE TABLE IF NOT EXISTS series (
 CREATE TABLE IF NOT EXISTS library (
   id TEXT PRIMARY KEY, kind TEXT, name TEXT, data TEXT DEFAULT '{}', images TEXT DEFAULT '{}', created_at REAL
 );
+CREATE TABLE IF NOT EXISTS snapshots (
+  id TEXT PRIMARY KEY, project_id TEXT, title TEXT, auto INTEGER DEFAULT 0, data TEXT DEFAULT '{}', meta TEXT DEFAULT '{}', created_at REAL
+);
 CREATE INDEX IF NOT EXISTS idx_suggest_project ON suggestions(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_shots_project ON shots(project_id, sort);
 CREATE INDEX IF NOT EXISTS idx_assets_owner ON assets(owner_type, owner_id);
@@ -134,7 +137,9 @@ MIGRATIONS = [("characters", "face_image", "TEXT DEFAULT ''"), ("characters", "v
               # 镜头级画幅（留空 = 跟随项目）
               ("shots", "aspect", "TEXT DEFAULT ''"),
               # 无限画布（布局 / 便签 / 分组 / 视口）
-              ("projects", "canvas", "TEXT DEFAULT '{}'")]
+              ("projects", "canvas", "TEXT DEFAULT '{}'"),
+              # 镜头分支（试另一版；不进成片，采用后合并回原镜头）
+              ("shots", "branch_of", "TEXT DEFAULT ''")]
 
 
 def _migrate(c: sqlite3.Connection) -> None:
@@ -218,6 +223,6 @@ def execute(sql: str, params: list[Any] | tuple = ()) -> None:
 
 def delete_project(project_id: str) -> None:
     with _lock:
-        for table in ("characters", "locations", "props", "shots", "assets", "tasks", "suggestions", "outfits"):
+        for table in ("characters", "locations", "props", "shots", "assets", "tasks", "suggestions", "outfits", "snapshots"):
             conn().execute(f"DELETE FROM {table} WHERE project_id=?", [project_id])
         conn().execute("DELETE FROM projects WHERE id=?", [project_id])

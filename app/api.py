@@ -189,7 +189,7 @@ async def project_snapshot(project_id: str) -> dict:
     tasks = db.query("SELECT * FROM tasks WHERE project_id=? ORDER BY created_at DESC LIMIT 200", [project_id])
     return {"project": project, "characters": pipeline.characters_of(project_id),
             "locations": pipeline.locations_of(project_id), "props": pipeline.props_of(project_id),
-            "shots": pipeline.shots_of(project_id),
+            "shots": pipeline.shots_of(project_id), "branches": pipeline.branches_of(project_id),
             "assets": assets, "tasks": tasks, "autopilot": autopilot.status(project_id),
             "writer": writers.status(project), "suggestions": suggest.pending(project_id),
             "outfits": db.query("SELECT * FROM outfits WHERE project_id=? ORDER BY sort, created_at", [project_id]),
@@ -560,7 +560,7 @@ async def update_shot(shot_id: str, body: dict[str, Any]) -> dict:
 @router.delete("/shots/{shot_id}")
 async def delete_shot(shot_id: str) -> dict:
     shot = _get("shots", shot_id, "镜头")
-    db.execute("DELETE FROM shots WHERE id=?", [shot_id])
+    db.execute("DELETE FROM shots WHERE id=? OR branch_of=?", [shot_id, shot_id])
     _renumber(shot["project_id"], [s["id"] for s in pipeline.shots_of(shot["project_id"])])
     return {"ok": True}
 

@@ -48,7 +48,7 @@ app/            后端（FastAPI）
   gpu.py        单卡显存调度        tasks.py     持久化任务队列
 web/            前端（原生 JS 单页）
 deploy/         AutoDL 一键部署脚本
-scripts/preflight.py  部署自检      scripts/qa_check.py  自动质检      scripts/tts_run.py  配音
+scripts/preflight.py  部署自检      docs/ROADMAP.md  优化路线图      scripts/qa_check.py  自动质检      scripts/tts_run.py  配音
 docs/DEPLOY.md  部署手册（必读）
 tests/          端到端测试（模拟模型）
 ```

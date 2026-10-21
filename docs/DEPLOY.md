@@ -186,3 +186,9 @@ tail -f /root/autodl-tmp/logs/studio.log /root/autodl-tmp/logs/comfyui.log
 - **运镜 LoRA**（可选）：把 LoRA 放到 `ComfyUI/models/loras/`，在 `data/camera_loras.json` 写映射，例如 `{"推镜": "h3_push_in.safetensors", "环绕": "h3_orbit.safetensors"}`（或环境变量 `CAMERA_LORAS`）。该运镜的镜头生成视频时自动串在模型链末端。
 - **视频延长**：④视频页「延长」——取当前视频最后一帧续写 N 秒，再拼成一个长镜头（自动去掉重复帧），镜头时长同步更新。
 - **动作参考**（可选）：把支持「参考视频驱动动作」的 ComfyUI 工作流（API 格式导出，如 Wan2.2-Animate / VACE）保存为 `data/workflows/motion.json`，在需要的地方写占位符：`{{IMAGE}}`（分镜图）、`{{VIDEO}}`（参考视频）、`{{PROMPT}}`、`{{WIDTH}}`、`{{HEIGHT}}`、`{{SECONDS}}`、`{{LENGTH}}`、`{{SEED}}`。配置后④视频页可上传参考视频并「按参考动作生成」。
+
+## 视觉审片（P2-6，可选）
+
+- **本地（推荐）**：`bash deploy/08_vlm.sh` —— 下载 Qwen3.6 的视觉投影 mmproj（审片与写剧本共用一个模型，不额外占显存）并装 faster-whisper 做台词核对，自动写入 `.env` 的 `LLM_MMPROJ`、`ASR_PYTHON`。本地模型与 ComfyUI 共享显卡，所以只做**批量审片**（④视频页「整片审片」），不在每次出图后即时审。
+- **接口**：在 `.env` 设置 `VLM_BASE_URL`、`VLM_API_KEY`、`VLM_MODEL`（任何 OpenAI 兼容的视觉模型）。接口模式下出图/出视频后会**即时审**，不合格自动重抽（`VLM_AUTO=false` 可关闭）。
+- 合格线：`VLM_PASS_SCORE`（默认 6 分，且没有严重问题）。审片结果在分镜卡/视频卡上展开查看，「一键返工」会把问题和修正描述写进提示词重抽。

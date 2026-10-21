@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from . import art, autopilot, board, db, videox, director, facefusion, pipeline, prompts, qa, suggest, voice, writers
+from . import art, autopilot, board, db, videox, vlm, director, facefusion, pipeline, prompts, qa, suggest, voice, writers
 from .config import get_settings
 from .gpu import gpu
 from .tasks import queue
@@ -57,7 +57,8 @@ async def meta() -> dict:
             "voice": voice.status(), "auth": bool(get_settings().access_password),
             "genres": {k: v["label"] for k, v in writers.GENRES.items()},
             "views": art.VIEWS, "expressions": list(art.EXPRESSIONS), "variants": list(art.VARIANT_PRESETS), "positions": list(board.POSITIONS),
-            "camera_dirs": {k: list(v) for k, v in videox.DIRECTIONS.items()}, "motion": videox.motion_available()}
+            "camera_dirs": {k: list(v) for k, v in videox.DIRECTIONS.items()}, "motion": videox.motion_available(),
+            "vlm": vlm.available(), "vlm_provider": vlm.provider(), "asr": vlm.asr_available()}
 
 
 def _model_check() -> list[dict]:

@@ -332,7 +332,7 @@ function viewBoard() {
     <div class="idx">${i + 1}<div style="margin-top:8px"><button class="btn small ghost" data-act="move" data-id="${x.id}" data-d="-1">↑</button></div>
       <div style="margin-top:4px"><button class="btn small ghost" data-act="move" data-id="${x.id}" data-d="1">↓</button></div></div>
     <div><div class="frame ${frameClass()}" data-act="zoom" data-src="${media(x.keyframe)}" style="${x.keyframe ? `background-image:url('${media(x.keyframe)}')` : ''}">${x.keyframe ? '' : '暂无分镜图'}${busyBox(x.id)}</div>
-      ${thumbs(x.id, 'keyframe', x.keyframe)}${qaLine(x.id, x.keyframe)}
+      ${thumbs(x.id, 'keyframe', x.keyframe)}${qaLine(x.id, x.keyframe)}${reviewLine(x, 'keyframe')}
       <div class="row" style="margin-top:8px"><select id="kc-${x.id}" style="width:60px">${[1, 2, 4].map((n) => `<option value="${n}">${n}张</option>`).join('')}</select>
         <button class="btn small" data-act="gen-keyframe" data-id="${x.id}">出图</button>
         <button class="btn small ghost" data-act="edit-keyframe" data-id="${x.id}" ${x.keyframe ? '' : 'disabled'}>改图</button>
@@ -431,7 +431,7 @@ function viewVideo() {
       <button class="btn small ghost" data-act="face-fix" data-id="${x.id}" data-target="video" ${x.video && x.character_ids.length ? '' : 'disabled'} title="用角色脸部特写对视频换脸，修正走样的人脸">人脸修正</button>
       <button class="btn small ghost" data-act="ff-enhance" data-id="${x.id}" ${x.video ? '' : 'disabled'} title="只做面部清晰度增强，不换脸">修脸</button>
       <button class="btn small ghost" data-act="dub" data-id="${x.id}" ${x.video && (x.dialogue || []).length ? '' : 'disabled'} title="用角色固定音色重新配音，并对口型">配音</button>
-      <button class="btn small ghost" data-act="upload-shot" data-id="${x.id}">上传</button></div>${videoExtras(x)}</div>`).join('');
+      <button class="btn small ghost" data-act="upload-shot" data-id="${x.id}">上传</button></div>${reviewLine(x, 'video')}${videoExtras(x)}</div>`).join('');
   return `<div class="toolbar"><span class="title">④ 视频 <span class="muted small">MiniMax H3 · 自带对白配音与音效</span></span>
       ${sel([['draft', '草稿 480p（快）'], ['final', '成品 768p']], 'draft', 'id="bv-q"')}
       ${sel(modes, 'auto', 'id="bv-m" style="width:200px"')}
@@ -441,7 +441,7 @@ function viewVideo() {
       <button class="btn ghost" data-go="#/p/${s.project.id}/final">下一步：成片 →</button></div>
     <p class="muted small">建议先用「草稿 + Turbo」快速过一遍节奏，满意后再对关键镜头用「成品」重生成。${S.meta.qa ? '每段视频生成后会<b>自动质检</b>（多余字幕、人脸不像），不合格自动换种子重抽一次，候选里带 ⚠ 的是没通过的版本。' : ''}
       ${s.project.dub_mode ? '已开启<b>固定音色配音</b>：视频只生成环境音，生成后自动用角色音色配音并对口型。' : '台词由 H3 直接配音（每个镜头的声音可能不一样）；想要全片同一个声音，到①开启「固定音色配音」。'}</p>
-    ${cards ? `<div class="vgrid">${cards}</div>` : '<div class="empty">还没有分镜</div>'}`;
+    ${reviewPanel()}${cards ? `<div class="vgrid">${cards}</div>` : '<div class="empty">还没有分镜</div>'}`;
 }
 
 function viewFinal() {

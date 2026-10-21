@@ -305,3 +305,29 @@ Object.assign(ACTIONS, {
   async 'motion-upload'(el) { const f = await pickFile('video/*'); if (f) { await upload(`/api/shots/${el.dataset.id}/motion`, f); loadSnap(true); } },
   async 'motion-gen'(el) { submitted(await api('POST', `/api/shots/${el.dataset.id}/video/motion`, { quality: val(`vq-${el.dataset.id}`) || 'draft' })); },
 });
+
+/* ---------------- 视觉审片：整片报告、逐镜结果、一键返工 ---------------- */
+const scoreCls = (v) => (v >= 8 ? 'ok' : v >= 6 ? 'warn' : 'bad');
+function reviewPanel() {
+  const p = S.snap.project; const rep = p.review_report || {}; const on = S.meta.vlm; const busy = (S.active || []).find((t) => t.type === 'film_review' && t.project_id === p.id);
+  const labels = { count: '人数', identity: '角色', action: '动作表情', anatomy: '肢体畸形', artifact: '画面崩坏', props: '道具', text: '乱码文字', flicker: '闪烁跳变', camera: '运镜', audio: '音画' };
+  const issues = Object.entries(rep.issues || {}).map(([k, v]) => `${labels[k] || k} ${v}`).join(' · ');
+  return `<div class="panel" style="margin-bottom:16px"><div class="row between"><h3>视觉审片 ${rep.at ? `<span class="small ${scoreCls(rep.avg || 0)}">平均 ${rep.avg ?? '-'} 分 · 审了 ${rep.reviewed}/${rep.shots} 镜 · ${(rep.bad || []).length ? `不合格 #${rep.bad.join('、#')}` : '全部合格'}</span>` : ''}</h3>
+    <span class="row"><button class="btn small ghost" data-act="rework" ${(rep.bad || []).length ? '' : 'disabled'} title="把审片指出的问题和修正描述写进提示词，重抽不合格的镜头">一键返工</button>
+      <button class="btn small" data-act="film-review" ${on && !busy ? '' : 'disabled'}>${busy ? '审片中…' : '整片审片'}</button></span></div>
+    <p class="muted small">${on ? `视觉模型（${S.meta.vlm_provider === 'api' ? '接口' : '本地 Qwen3.6 + 视觉投影'}）逐镜检查：人数、角色、动作表情、手指肢体、画面崩坏、道具、乱码文字${S.meta.asr ? '、台词音画核对' : ''}；视频抽 6 帧看闪烁和人脸突变。${S.meta.vlm_provider === 'api' ? '出图/出视频后也会即时审，不合格自动重抽。' : ''}` : '未配置视觉模型：bash deploy/08_vlm.sh（本地）或在 .env 设置 VLM_BASE_URL（接口），见 docs/DEPLOY.md'}</p>
+    ${issues ? `<div class="small">问题分布：${issues}</div>` : ''}</div>`;
+}
+function reviewLine(x, target) {
+  const r = x.review || {};
+  if (!r.at || r.target !== target || r.path !== x[target]) return '';
+  return `<details class="small" style="margin-top:4px"><summary><span class="${scoreCls(r.score)}">审片 ${r.score} 分${r.ok ? ' ✓' : ' ⚠ 需返工'}</span>${(r.issues || []).length ? ` · ${r.issues.length} 个问题` : ''}</summary>
+    <ul class="issues">${(r.issues || []).map((i) => `<li class="${i.severity === 'high' ? 'warn' : 'muted'}">【${esc(i.label)}】${esc(i.detail)}</li>`).join('')}</ul>
+    ${r.fix ? `<div class="muted">建议：${esc(r.fix)}</div>` : ''}${r.heard ? `<div class="muted">识别到的台词：${esc(r.heard)}</div>` : ''}
+    <div class="row" style="margin-top:4px"><button class="btn small ghost" data-act="rework-one" data-id="${x.id}">按审片意见重做</button></div></details>`;
+}
+Object.assign(ACTIONS, {
+  async 'film-review'() { submitted(await api('POST', `/api/projects/${S.pid}/review`, {}), '已提交整片审片'); },
+  async rework() { const r = await api('POST', `/api/projects/${S.pid}/review/rework`, {}); toast(`已提交 ${r.tasks.length} 个返工任务`); loadSnap(true); },
+  async 'rework-one'(el) { const r = await api('POST', `/api/projects/${S.pid}/review/rework`, { shot_ids: [el.dataset.id] }); toast(`已提交 ${r.tasks.length} 个返工任务`); loadSnap(true); },
+});

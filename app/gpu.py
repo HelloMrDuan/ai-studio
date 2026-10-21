@@ -15,6 +15,7 @@ import os
 import signal
 import subprocess
 import time
+from pathlib import Path
 from typing import AsyncIterator
 
 import httpx
@@ -171,6 +172,8 @@ class GPUManager:
             "-c", str(s.llm_ctx), "-ngl", "999", "--jinja",
             "--alias", s.llm_model, "-np", "1",
         ]
+        if s.llm_mmproj and Path(s.llm_mmproj).is_file():
+            cmd += ["--mmproj", s.llm_mmproj]
         log.info("启动 llama-server：%s", " ".join(cmd))
         self._llm_proc = subprocess.Popen(cmd, stdout=logf, stderr=subprocess.STDOUT,
                                           start_new_session=True)

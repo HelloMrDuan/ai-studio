@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import comfy, db, facefusion, llm, media, prompts, qa, videox, voice
+from . import comfy, db, facefusion, llm, media, prompts, qa, videox, vlm, voice
 from .config import get_settings
 from .gpu import gpu
 from .tasks import TaskContext, handler, queue
@@ -396,11 +396,12 @@ async def task_keyframe(ctx: TaskContext) -> dict:
     files = await _generate_images(ctx, prompt, aspect, plan["refs"], ctx.params.get("count", 1), out_dir)
 
     async def check(f: Path) -> dict | None:
-        return await qa.check(f, faces=_qa_faces(plan["chars"]), check_text=not _expects_text(shot),
-                              style=plan["project"].get("style") or "")
+        r = await qa.check(f, faces=_qa_faces(plan["chars"]), check_text=not _expects_text(shot),
+                           style=plan["project"].get("style") or "")
+        return vlm.merge_qa(r, await vlm.quick_check(shot, f))
 
     results = [(f, await check(f)) for f in files]
-    retries = get_settings().qa_keyframe_retry if qa.available() else 0
+    retries = get_settings().qa_keyframe_retry if qa.available() or vlm.auto_enabled() else 0
     while retries > 0 and all(r and not r.get("ok") for _, r in results):
         retries -= 1
         await ctx.log("分镜图质检未通过（" + qa.summary(results[-1][1]) + "），自动重抽")
@@ -611,7 +612,7 @@ async def task_video(ctx: TaskContext) -> dict:
     end_frame = absolute(shot["end_frame"]) if exists(shot.get("end_frame")) and plan["mode"] == "i2v" else None
     if end_frame and not src and not (ctx.params.get("prompt") or "").strip():
         prompt = video_plan({**shot, "_end_frame": True}, "i2v")["prompt"]
-    attempts = 1 + (max(0, get_settings().qa_video_retry) if qa.available() else 0)
+    attempts = 1 + (max(0, get_settings().qa_video_retry) if qa.available() or vlm.auto_enabled() else 0)
     results: list[tuple[dict, dict | None]] = []
     for attempt in range(attempts):
         tag = f"（第 {attempt + 1} 次）" if attempt else ""
@@ -637,6 +638,7 @@ async def task_video(ctx: TaskContext) -> dict:
         await ctx.log("自动质检中…")
         result = await qa.check(videos[0], reference=reference, faces=_qa_faces(chars), check_text=True,
                                 style=project.get("style") or "")
+        result = vlm.merge_qa(result, await vlm.quick_check(shot, videos[0]))
         asset = add_asset(project["id"], "video", videos[0], "shot", shot["id"],
                           {"prompt": prompt, "mode": plan["mode"], "quality": quality, "seconds": seconds,
                            "turbo": turbo, "qa": result, "attempt": attempt + 1,

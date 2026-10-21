@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import art, autopilot, board, db, videox, director, pipeline, suggest, writers  # noqa: F401  (pipeline/writers 注册任务处理器)
+from . import art, autopilot, board, db, videox, vlm, director, pipeline, suggest, writers  # noqa: F401  (pipeline/writers 注册任务处理器)
 from .api import router
 from .config import ROOT, get_settings
 from .gpu import gpu
@@ -48,7 +48,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="AI Studio v3", lifespan=lifespan)
 app.include_router(router)
-for _r in (writers.router, suggest.router, director.router, art.router, board.router, videox.router):
+for _r in (writers.router, suggest.router, director.router, art.router, board.router, videox.router, vlm.router):
     app.include_router(_r)
 app.mount("/media", StaticFiles(directory=str(get_settings().media_dir)), name="media")
 app.mount("/static", StaticFiles(directory=str(WEB)), name="static")

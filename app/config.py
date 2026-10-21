@@ -22,6 +22,15 @@ class Settings(BaseSettings):
     llm_ctx: int = 32768
     llama_server_bin: Path = Path("/root/autodl-tmp/llama.cpp/build/bin/llama-server")
     llm_timeout: int = 600
+    llm_mmproj: str = ""                   # 视觉投影 GGUF（mmproj）；设置后 llama-server 带视觉，审片用同一个模型
+    vlm_provider: str = "auto"             # auto | llm（本地 llama-server + mmproj）| api（独立的视觉模型接口）| off
+    vlm_base_url: str = ""
+    vlm_api_key: str = "none"
+    vlm_model: str = ""
+    vlm_auto: bool = True                  # 视觉接口是远程 API 时，出图/出视频后自动审（本地模型只做批量审片，避免频繁切换显存）
+    vlm_pass_score: int = 6                # 低于此分判为不合格
+    asr_python: str = ""                   # 装了 faster-whisper 的 Python（音画核对）；空 = 不做
+    asr_model: str = "small"
     llm_start_timeout: int = 300
 
     comfyui_dir: Path = Path("/root/autodl-tmp/ComfyUI")

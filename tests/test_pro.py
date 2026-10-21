@@ -272,3 +272,56 @@ def test_video_tools(client, project, monkeypatch, tmp_path):
 def asyncio_run(coro):
     import asyncio
     return asyncio.new_event_loop().run_until_complete(coro)
+
+
+def test_vlm_review(client, project, monkeypatch):
+    import httpx
+    from app import vlm
+    from app.config import get_settings
+    s = get_settings()
+    monkeypatch.setattr(s, "vlm_base_url", "http://vlm.test/v1")
+    monkeypatch.setattr(s, "vlm_model", "qwen-vl")
+    assert vlm.provider() == "api" and vlm.auto_enabled() and client.get("/api/meta").json()["vlm"]
+    seen = []
+    answers = [{"score": 3, "people": 2, "issues": [{"type": "anatomy", "severity": "high", "detail": "左手六根手指"}],
+                "fix": "陈默双手自然下垂，五指正常"}]
+    real_post = httpx.AsyncClient.post
+
+    async def fake_post(self, url, *a, **kw):
+        if "vlm.test" not in str(url):
+            return await real_post(self, url, *a, **kw)
+        body = kw["json"]
+        seen.append(body)
+        content = body["messages"][1]["content"]
+        assert content[0]["image_url"]["url"].startswith("data:image/jpeg;base64,") and "应有画面" in content[-1]["text"]
+        ans = answers.pop(0) if answers else {"score": 9, "people": 1, "issues": [], "fix": ""}
+        return httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(ans, ensure_ascii=False)}}]},
+                              request=httpx.Request("POST", url))
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    pid = project
+    shot = client.get(f"/api/projects/{pid}").json()["shots"][0]
+    # 出图后即时审：第一张六指 → 自动重抽 → 选合格的那张
+    wait(client, client.post(f"/api/shots/{shot['id']}/keyframe", json={"count": 1, "auto_select": True}).json()["id"])
+    cmp = client.get(f"/api/shots/{shot['id']}/compare").json()["items"][-2:]
+    assert cmp[0]["qa_ok"] is False and "六根手指" in cmp[0]["qa"][0] and cmp[1]["qa_ok"] and cmp[1]["current"]
+    # 整片审片（视频抽帧网格）+ 报告
+    wait(client, client.post(f"/api/shots/{shot['id']}/video", json={}).json()["id"])
+    answers.append({"score": 4, "issues": [{"type": "flicker", "severity": "high", "detail": "第3帧人脸变成另一个人"}], "fix": "人物保持同一张脸"})
+    n0 = len(seen)
+    r = wait(client, client.post(f"/api/projects/{pid}/review", json={}).json()["id"])
+    snap = client.get(f"/api/projects/{pid}").json()
+    rep = snap["project"]["review_report"]
+    assert rep["reviewed"] >= 1 and 1 in rep["bad"] and rep["issues"]["flicker"] == 1
+    rv = snap["shots"][0]["review"]
+    assert rv["target"] == "video" and not rv["ok"] and len(seen) > n0
+    # 一键返工：问题写进提示词
+    tasks = client.post(f"/api/projects/{pid}/review/rework", json={}).json()["tasks"]
+    assert len(tasks) == 1
+    t = next(x for x in client.get("/api/tasks?limit=500").json() if x["id"] == tasks[0])
+    assert t["type"] == "video" and "第3帧人脸变成另一个人" in t["params"]["prompt"] and "同一张脸" in t["params"]["prompt"]
+    wait(client, tasks[0])
+    # 音画核对
+    sh = {"dialogue": [{"speaker": "陈默", "line": "我回来了，你还好吗？"}]}
+    assert vlm.dialogue_match(sh, "我回来了你还好吗") is None
+    assert vlm.dialogue_match(sh, "今天天气不错")["type"] == "audio"
+    assert vlm.normalize({"score": "12", "issues": [{"type": "x", "detail": "d"}]})["score"] == 10

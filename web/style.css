@@ -104,3 +104,4 @@ pre.prompt{white-space:pre-wrap;background:var(--panel2);padding:10px;border-rad
 .qa-line { font-size: 12px; margin-top: 4px; }
 .voice-box audio { width: 100%; height: 32px; margin-top: 6px; }
 .ref.prop { width: 140px; height: 140px; }
+.anim .tl-item{width:176px}.anim .tl-item input{width:54px;padding:4px 6px;flex:0 0 auto}.anim .tl-item .row{flex-wrap:nowrap}.anim .tl-item .btn.small{padding:3px 7px}

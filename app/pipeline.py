@@ -693,6 +693,118 @@ async def task_assemble(ctx: TaskContext) -> dict:
     return {"path": asset["path"], "seconds": round(t, 1), "skipped": skipped}
 
 
+# ---------------- 动态分镜预览：分镜图 + 推拉摇移 + 台词字幕（可选配音试听），出视频前先看节奏 ----------------
+CHARS_PER_SEC = 4.5          # 估算中文台词语速（没有配音试听时用来提示“台词塞不进镜头”）
+SPEECH_LEAD, SPEECH_GAP, SPEECH_TAIL = 0.3, 0.25, 0.3
+
+
+def estimate_speech(text: str) -> float:
+    n = len(re.sub(r"[\s，。！？、；：,.!?;:…—“”\"'（）()]", "", text or ""))
+    pauses = len(re.findall(r"[，。！？、；,.!?;…]", text or ""))
+    return round(n / CHARS_PER_SEC + pauses * 0.15, 2)
+
+
+def _shot_label(i: int, shot: dict, dur: float) -> str:
+    return f"#{i + 1}  {shot.get('shot_size') or ''} · {shot.get('camera_move') or '固定'} · {dur:.1f}s"
+
+
+async def _animatic_tts(ctx: TaskContext, project: dict, shots: list[dict]) -> dict[tuple[str, int], Path]:
+    """为有音色样本的台词合成试听语音（按 文字+音色+情绪 缓存，改了哪句才重配哪句）。"""
+    import hashlib
+    cache = project_dir(project["id"], "animatic") / "tts"
+    cache.mkdir(parents=True, exist_ok=True)
+    out: dict[tuple[str, int], Path] = {}
+    todo = []
+    for shot in shots:
+        voiced = {id(d): c for d, c in dub_lines(shot)[0]}
+        for j, d in enumerate(shot.get("dialogue") or []):
+            c = voiced.get(id(d))
+            if not c:
+                continue
+            key = hashlib.sha1(f"{c['voice_ref']}|{d.get('emotion') or ''}|{d['line']}".encode()).hexdigest()[:16]
+            wav = cache / f"{key}.wav"
+            out[(shot["id"], j)] = wav
+            if not wav.is_file():
+                todo.append({"text": d["line"], "voice": str(absolute(c["voice_ref"])), "emo": d.get("emotion") or "",
+                             "out": str(wav)})
+    if todo:
+        await ctx.progress(5, f"配音试听：合成 {len(todo)} 句台词…")
+        async with gpu.use("voice", ctx.task.get("title") or "预览配音"):
+            await voice.synthesize(todo, ctx.log)
+    return out
+
+
+@handler("animatic")
+async def task_animatic(ctx: TaskContext) -> dict:
+    project = need("projects", ctx.project_id, "项目")
+    shots = shots_of(project["id"])
+    if not shots:
+        raise ValueError("还没有分镜")
+    t_start = time.monotonic()
+    width, height = VIDEO_SIZES["draft"].get(project["aspect_ratio"], VIDEO_SIZES["draft"]["16:9"])
+    use_tts = bool(ctx.params.get("tts")) and voice.tts_available()
+    prefer_video = bool(ctx.params.get("prefer_video"))
+    wavs = await _animatic_tts(ctx, project, shots) if use_tts else {}
+
+    out_dir = project_dir(project["id"], "animatic")
+    work = out_dir / f"work_{ctx.id}"
+    work.mkdir(parents=True, exist_ok=True)
+    segments, speech, subs, labels, timing = [], [], [], [], []
+    t = 0.0
+    try:
+        for i, shot in enumerate(shots):
+            planned = float(shot.get("duration") or 5)
+            lines = [d for d in (shot.get("dialogue") or []) if str(d.get("line") or "").strip()]
+            durs = []
+            for j, d in enumerate(shot.get("dialogue") or []):
+                if not str(d.get("line") or "").strip():
+                    continue
+                wav = wavs.get((shot["id"], j))
+                durs.append(((await media.probe(wav))["duration"], wav) if wav else (estimate_speech(d["line"]), None))
+            need_len = (SPEECH_LEAD + sum(x for x, _ in durs) + SPEECH_GAP * (len(durs) - 1) + SPEECH_TAIL) if durs else 0
+            dur = max(planned, need_len) if use_tts else planned     # 有试听声音时画面跟着声音延长，免得台词被截断
+            # 字幕 / 声音按句排开；没有试听声音时按估算时长排，超出镜头的部分压缩到镜头内
+            scale = min(1.0, dur / need_len) if need_len else 1.0
+            cur = t + SPEECH_LEAD * scale
+            for d, (sec, wav) in zip(lines, durs):
+                seg = sec * scale
+                speaker = d.get("speaker") or ""
+                subs.append((cur, cur + seg, f"{speaker}：{d['line']}" if speaker and speaker != "旁白" else d["line"]))
+                if wav:
+                    speech.append((wav, cur))
+                cur += seg + SPEECH_GAP * scale
+            labels.append((t, t + dur, _shot_label(i, shot, dur) + ("（缺分镜图）" if not exists(shot.get("keyframe")) and
+                                                                     not (prefer_video and exists(shot.get("video"))) else "")))
+            target = work / f"s{i:04d}.mp4"
+            if prefer_video and exists(shot.get("video")):
+                await media.video_clip(absolute(shot["video"]), target, dur, width, height)
+                source = "video"
+            elif exists(shot.get("keyframe")):
+                await media.still_clip(absolute(shot["keyframe"]), target, dur, width, height,
+                                       shot.get("camera_move") or "固定")
+                source = "keyframe"
+            else:
+                await media.card_clip(target, dur, width, height)
+                source = "card"
+            segments.append(target)
+            timing.append({"shot_id": shot["id"], "index": i + 1, "planned": planned, "duration": round(dur, 2),
+                           "speech": round(need_len, 2), "over": need_len > planned + 0.05, "source": source,
+                           "estimated": not any(w for _, w in durs)})
+            t += dur
+            await ctx.progress(10 + int(80 * (i + 1) / len(shots)), f"预览片段 {i + 1}/{len(shots)}")
+        await ctx.progress(92, "拼接预览…")
+        output = out_dir / f"animatic_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+        await media.animatic(segments, output, work, t, speech or None, media.ass_from(subs, labels, width, height))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    over = [x["index"] for x in timing if x["over"]]
+    meta = {"seconds": round(t, 1), "shots": len(shots), "tts": use_tts, "timing": timing, "over": over,
+            "missing_keyframes": [x["index"] for x in timing if x["source"] == "card"],
+            "build_seconds": round(time.monotonic() - t_start, 1)}
+    asset = add_asset(project["id"], "animatic", output, "project", project["id"], meta)
+    return {"asset": asset["id"], "path": asset["path"], **meta}
+
+
 # ---------------- 人脸修正：用角色脸部特写对镜头做 FaceFusion 换脸 ----------------
 def face_fix_plan(shot: dict, items: list[dict] | None = None) -> list[dict]:
     """items: [{"character_id", "position": "auto" | 0.. | "skip"}]；缺省时按出镜角色自动编排：

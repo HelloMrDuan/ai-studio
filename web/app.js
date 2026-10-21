@@ -304,7 +304,44 @@ function viewBoard() {
       <button class="btn ghost" data-act="batch-keyframes" ${s.shots.length ? '' : 'disabled'}>批量出分镜图（仅缺失）</button>
       <button class="btn ghost" data-act="add-shot">＋ 镜头</button>
       <button class="btn ghost" data-go="#/p/${s.project.id}/video">下一步：视频 →</button></div>
+    ${animaticPanel()}
     ${shots || '<div class="empty">还没有分镜。先完成①剧本和②角色，再点击「AI 生成分镜表」</div>'}`;
+}
+
+/* 动态分镜预览：分镜图 + 推拉摇移 + 台词字幕（可配音试听），在这里直接调时长和顺序 */
+function speechEst(x) {
+  const lines = (x.dialogue || []).map((d) => String(d.line || '').trim()).filter(Boolean);
+  if (!lines.length) return 0;
+  const sec = lines.reduce((a, l) => a + l.replace(/[\s，。！？、；：,.!?;:…—“”"'（）()]/g, '').length / 4.5 + (l.match(/[，。！？、；,.!?;…]/g) || []).length * 0.15, 0);
+  return 0.3 + sec + 0.25 * (lines.length - 1) + 0.3;
+}
+function animaticPanel() {
+  const s = S.snap; const p = s.project; const busy = busyOf(`${p.id}:animatic`);
+  if (!s.shots.length) return '';
+  const a = assetsOf(p.id, 'animatic')[0]; const m = (a && a.meta) || {};
+  const tim = Object.fromEntries((m.timing || []).map((t) => [t.shot_id, t]));
+  const sig = (list) => list.join('|');
+  const stale = a && sig((m.timing || []).map((t) => `${t.shot_id}:${t.planned}`)) !== sig(s.shots.map((x) => `${x.id}:${x.duration}`));
+  const tts = (S.meta.voice || {}).tts;
+  const items = s.shots.map((x, i) => {
+    const t = tim[x.id]; const sp = t && !t.estimated && !stale ? t.speech : speechEst(x);
+    const over = sp > (x.duration || 0) + 0.05;
+    return `<div class="tl-item ${x.keyframe ? '' : 'miss'}"><div class="t" style="${x.keyframe ? `background-image:url('${media(x.keyframe)}')` : ''}">${x.keyframe ? '' : '缺分镜图'}</div>
+      <div class="row small" style="gap:4px;margin-top:4px"><b>#${i + 1}</b>
+        <input type="number" step="0.5" min="1" max="20" data-num="1" data-rerender="1" data-save="shots:${x.id}:duration" value="${x.duration}" title="镜头时长（秒）">s
+        <button class="btn small ghost" data-act="move" data-id="${x.id}" data-d="-1" title="前移">←</button><button class="btn small ghost" data-act="move" data-id="${x.id}" data-d="1" title="后移">→</button></div>
+      <div class="small ${over ? 'bad' : 'muted'}">${sp ? `台词约 ${sp.toFixed(1)}s${over ? ' ⚠ 超出' : ''}` : '无台词'} · ${esc(x.camera_move || '固定')}</div></div>`;
+  }).join('');
+  return `<div class="panel anim" style="margin-bottom:16px"><div class="row between"><h3>动态分镜预览</h3>
+      <div class="row small"><label class="row"><input type="checkbox" id="an-tts" ${tts ? '' : 'disabled'}> 配音试听${tts ? '' : '（未安装）'}</label>
+        <label class="row"><input type="checkbox" id="an-vid"> 已有视频的镜头用视频</label>
+        <button class="btn small" data-act="animatic" ${busy ? 'disabled' : ''}>${busy ? '生成中… ' + busy.progress + '%' : (a ? '重新生成预览' : '生成预览')}</button></div></div>
+    <p class="muted small">用分镜图加推拉摇移动画、台词字幕，按镜头时长拼成预览片，几十秒就能看节奏，满意了再出视频。下面可以直接改时长、调顺序；勾选「配音试听」会用角色音色读台词（需要音色样本，首次较慢）。</p>
+    <div class="timeline">${items}</div>
+    ${a ? `<div class="row between small" style="margin-top:6px"><span>${stale ? '<span class="bad">镜头时长或顺序已调整，点「重新生成预览」更新</span>' : `预览 ${m.seconds}s · ${m.shots} 个镜头${m.tts ? ' · 含配音试听' : ''} · 生成用时 ${m.build_seconds}s`}
+        ${(m.over || []).length ? ` · <span class="bad">台词超出镜头时长：#${m.over.join('、#')}</span>` : ''}${(m.missing_keyframes || []).length ? ` · 缺分镜图：#${m.missing_keyframes.join('、#')}` : ''}</span>
+      <a class="btn small ghost" href="${media(a.path)}" download>下载</a></div>
+      <video src="${media(a.path)}" controls style="width:100%;max-height:420px;margin-top:6px;background:#000"></video>` : ''}</div>`;
 }
 
 function viewVideo() {
@@ -491,6 +528,7 @@ const ACTIONS = {
     submitted(await api('POST', `/api/projects/${S.pid}/storyboard/generate`));
   },
   async 'batch-keyframes'() { const r = await api('POST', `/api/projects/${S.pid}/batch/keyframes`, { only_missing: true, count: Number(val('batch-kc')) || 1 }); submitted(r, `已提交 ${r.submitted} 个出图任务`); },
+  async animatic() { submitted(await api('POST', `/api/projects/${S.pid}/animatic`, { tts: val('an-tts'), prefer_video: val('an-vid') }), '已开始生成动态分镜预览'); },
   async 'batch-videos'() { const r = await api('POST', `/api/projects/${S.pid}/batch/videos`, { only_missing: true, quality: val('bv-q'), mode: val('bv-m'), turbo: val('bv-t') }); submitted(r, `已提交 ${r.submitted} 个视频任务`); },
   async 'add-shot'(el) { await api('POST', `/api/projects/${S.pid}/shots`, { after_id: el.dataset.id || null, description: '' }); loadSnap(true); },
   async 'del-shot'(el) { if (confirm('删除这个镜头？')) { await api('DELETE', '/api/shots/' + el.dataset.id); loadSnap(true); } },
@@ -653,6 +691,8 @@ async function pollTasks() {
     document.querySelectorAll('.busy-slot').forEach((el) => { el.innerHTML = busyInner(el.dataset.owner); });
     const tb = document.querySelector('[data-act=assemble]');
     if (tb && busyOf(`${S.pid}:assemble`)) tb.textContent = `合成中… ${busyOf(`${S.pid}:assemble`).progress}%`;
+    const ab = document.querySelector('[data-act=animatic]');
+    if (ab && busyOf(`${S.pid}:animatic`)) ab.textContent = `生成中… ${busyOf(`${S.pid}:animatic`).progress}%`;
   }
   if (S.drawer) renderTasks(await api('GET', '/api/tasks?limit=80'));
 }

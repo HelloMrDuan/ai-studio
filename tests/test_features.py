@@ -270,3 +270,53 @@ def test_batch_pause_resume(client, project, monkeypatch):
     assert "elapsed" in rows[0]["result"] and rows[0]["message"].startswith("完成")
     st = client.get("/api/system/status").json()
     assert "switches" in st["gpu"] and "paused" in st["queue"]
+
+
+def test_animatic(client, project):
+    pid = project
+    shots = client.get(f"/api/projects/{pid}").json()["shots"]
+    long_line = "这是一句非常非常长的台词，" * 6
+    client.patch(f"/api/shots/{shots[0]['id']}", json={"duration": 2, "dialogue": [{"speaker": "林晚", "line": long_line, "emotion": ""}]})
+    t = wait(client, client.post(f"/api/projects/{pid}/animatic", json={}).json()["id"])
+    r = t["result"]
+    shots = client.get(f"/api/projects/{pid}").json()["shots"]
+    assert r["shots"] == len(shots) and len(r["timing"]) == len(shots)
+    assert abs(r["seconds"] - sum(s["duration"] for s in shots)) < 0.2        # 无试听声音时严格按镜头时长
+    assert r["over"] == [1] and r["timing"][0]["estimated"]
+    from app import pipeline, media
+    path = pipeline.absolute(r["path"])
+    info = asyncio.run(media.probe(path))
+    assert abs(info["duration"] - r["seconds"]) < 0.3 and info["has_audio"]
+    snap = client.get(f"/api/projects/{pid}").json()
+    assert snap["assets"][pid][0]["kind"] == "animatic"
+    # 调顺序后再生成，预览按新顺序
+    ids = [s["id"] for s in shots][::-1]
+    client.post(f"/api/projects/{pid}/shots/reorder", json={"ids": ids})
+    r2 = wait(client, client.post(f"/api/projects/{pid}/animatic", json={}).json()["id"])["result"]
+    assert [x["shot_id"] for x in r2["timing"]] == ids
+
+
+def test_animatic_tts(client, project, monkeypatch):
+    synth = []
+
+    async def fake_synth(items, log_cb=None):
+        synth.append(items)
+        for it in items:
+            await asyncio.to_thread(media_file, Path(it["out"]), 4.0, False)
+
+    monkeypatch.setattr(voice, "tts_available", lambda: True)
+    monkeypatch.setattr(voice, "synthesize", fake_synth)
+    from app import db, pipeline
+    snap = client.get(f"/api/projects/{project}").json()
+    lin = next(c for c in snap["characters"] if c["name"] == "林晚")
+    ref = pipeline.project_dir(project, "voices") / "lin_test.wav"
+    media_file(ref, 3.0, False)
+    db.update("characters", lin["id"], {"voice_ref": pipeline.rel(ref)})
+    long_shot = next(s for s in snap["shots"] if s["duration"] == 2)
+    r = wait(client, client.post(f"/api/projects/{project}/animatic", json={"tts": True}).json()["id"])["result"]
+    assert r["tts"] and synth
+    t = next(x for x in r["timing"] if x["shot_id"] == long_shot["id"])
+    assert not t["estimated"] and t["over"] and abs(t["duration"] - 4.6) < 0.1     # 画面跟着试听声音延长
+    n = len(synth)
+    wait(client, client.post(f"/api/projects/{project}/animatic", json={"tts": True}).json()["id"])
+    assert len(synth) == n                                                            # 台词没改 → 用缓存，不再合成

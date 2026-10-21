@@ -150,3 +150,99 @@ async def mux(video: Path, tracks: list[tuple[Path, float]], out: Path, duration
              "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", str(out)]
     await _run(*args)
     return out
+
+
+# ---------------- 动态分镜预览（Animatic） ----------------
+_C = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
+_PAN_X, _PAN_Y = "(iw-iw/zoom)*{p}", "(ih-ih/zoom)*{p}"
+# 运镜 → (zoom, x, y)；{p} 为 0→1 的进度
+KEN_BURNS = {
+    "固定": ("1.0+0.05*{p}", *_C),
+    "推镜": ("1.0+0.3*{p}", *_C),
+    "拉镜": ("1.3-0.3*{p}", *_C),
+    "摇镜": ("1.2", _PAN_X, _C[1]),
+    "移镜": ("1.2", _PAN_X.replace("{p}", "(1-{p})"), _C[1]),
+    "跟拍": ("1.1+0.1*{p}", _PAN_X, _C[1]),
+    "环绕": ("1.25-0.05*{p}", _PAN_X.replace("{p}", "(1-{p})"), _C[1]),
+    "升降": ("1.2", _C[0], _PAN_Y.replace("{p}", "(1-{p})")),
+}
+PREVIEW_FPS = 24
+
+
+async def still_clip(image: Path, out: Path, dur: float, width: int, height: int, move: str = "固定") -> Path:
+    """静态分镜图 + 推拉摇移（Ken Burns），无声，固定 24fps。"""
+    frames = max(1, round(dur * PREVIEW_FPS))
+    z, x, y = (e.replace("{p}", f"(on/{frames})") for e in KEN_BURNS.get(move, KEN_BURNS["固定"]))
+    vf = (f"scale={width * 2}:{height * 2}:force_original_aspect_ratio=increase,crop={width * 2}:{height * 2},"
+          f"zoompan=z='{z}':x='{x}':y='{y}':d={frames}:s={width}x{height}:fps={PREVIEW_FPS},format=yuv420p")
+    await _run("ffmpeg", "-y", "-v", "error", "-i", str(image), "-vf", vf, "-frames:v", str(frames), "-an",
+               "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-r", str(PREVIEW_FPS), str(out))
+    return out
+
+
+async def video_clip(video: Path, out: Path, dur: float, width: int, height: int) -> Path:
+    """已有镜头视频：缩放到预览尺寸，裁/定格到 dur 秒，无声。"""
+    vf = (f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,"
+          f"fps={PREVIEW_FPS},tpad=stop_mode=clone:stop_duration={dur:.3f},format=yuv420p")
+    await _run("ffmpeg", "-y", "-v", "error", "-i", str(video), "-vf", vf, "-t", f"{dur:.3f}", "-an",
+               "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-r", str(PREVIEW_FPS), str(out))
+    return out
+
+
+async def card_clip(out: Path, dur: float, width: int, height: int) -> Path:
+    """缺分镜图的镜头：灰底占位卡片（镜头说明由字幕层画在左上角）。"""
+    await _run("ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+               f"color=c=0x2b2f36:s={width}x{height}:r={PREVIEW_FPS}:d={dur:.3f}", "-vf", "format=yuv420p", "-an",
+               "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", str(out))
+    return out
+
+
+def _ass_ts(sec: float) -> str:
+    cs = int(round(max(0.0, sec) * 100))
+    h, cs = divmod(cs, 360000)
+    m, cs = divmod(cs, 6000)
+    s, cs = divmod(cs, 100)
+    return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
+
+
+def ass_from(subs: list[tuple[float, float, str]], labels: list[tuple[float, float, str]], width: int, height: int,
+             font: str = "Noto Sans CJK SC") -> str:
+    """预览用 ASS 字幕：底部台词 + 左上角镜头标签（#序号 景别·运镜·时长）。不依赖 drawtext。"""
+    size, lsize = max(16, height // 18), max(12, height // 30)
+
+    def esc(t: str) -> str:
+        return t.replace("\\", "＼").replace("{", "（").replace("}", "）").replace("\n", " ")
+
+    head = (f"[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\nWrapStyle: 0\n\n"
+            "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
+            "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
+            "MarginL, MarginR, MarginV, Encoding\n"
+            f"Style: Sub,{font},{size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,0,2,20,20,{height // 20},1\n"
+            f"Style: Label,{font},{lsize},&H00FFFFFF,&H00FFFFFF,&H00000000,&H78000000,0,0,0,0,100,100,0,0,3,4,0,7,14,14,12,1\n\n"
+            "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
+    rows = [f"Dialogue: 0,{_ass_ts(a)},{_ass_ts(max(a + 0.2, b))},Sub,,0,0,0,,{esc(t)}" for a, b, t in subs]
+    rows += [f"Dialogue: 1,{_ass_ts(a)},{_ass_ts(b)},Label,,0,0,0,,{esc(t)}" for a, b, t in labels]
+    return head + "\n".join(rows) + "\n"
+
+
+async def animatic(segments: list[Path], output: Path, work: Path, total: float,
+                   speech: list[tuple[Path, float]] | None = None, ass: str = "") -> Path:
+    """拼接预览片段（同编码，直接 copy），再一次性加声音（台词试听或静音）和字幕。"""
+    lst = work / "list.txt"
+    lst.write_text("".join(f"file '{p.as_posix()}'\n" for p in segments), encoding="utf-8")
+    joined = work / "joined.mp4"
+    await _run("ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0", "-i", str(lst), "-c", "copy", str(joined))
+    audio = await speech_track(speech, total, work / "speech.wav") if speech else None
+    args = ["ffmpeg", "-y", "-v", "error", "-i", str(joined)]
+    args += ["-i", str(audio)] if audio else ["-f", "lavfi", "-t", f"{total:.3f}", "-i", "anullsrc=r=44100:cl=stereo"]
+    if ass.strip():
+        ass_path = work / "subs.ass"
+        ass_path.write_text(ass, encoding="utf-8")
+        args += ["-vf", f"ass={ass_path.as_posix()}", "-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]
+    else:
+        args += ["-c:v", "copy"]
+    args += ["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "128k", "-t", f"{total:.3f}",
+             "-movflags", "+faststart", str(output)]
+    output.parent.mkdir(parents=True, exist_ok=True)
+    await _run(*args)
+    return output

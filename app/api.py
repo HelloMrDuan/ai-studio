@@ -208,6 +208,17 @@ class AssembleIn(BaseModel):
     quality: str = "final"
 
 
+class AnimaticIn(BaseModel):
+    tts: bool = False              # 用角色音色合成台词试听（需要配音组件和音色样本）
+    prefer_video: bool = False     # 已有镜头视频的用视频，其余用分镜图
+
+
+@router.post("/projects/{project_id}/animatic")
+async def gen_animatic(project_id: str, body: AnimaticIn) -> dict:
+    _get("projects", project_id, "项目")
+    return _submit("animatic", "动态分镜预览", project_id, "project", project_id + ":animatic", body.model_dump())
+
+
 @router.post("/projects/{project_id}/assemble")
 async def gen_assemble(project_id: str, body: AssembleIn) -> dict:
     _get("projects", project_id, "项目")

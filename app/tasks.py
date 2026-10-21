@@ -116,10 +116,21 @@ class TaskQueue:
 
     def start(self) -> None:
         self.wake = asyncio.Event()      # 绑定当前事件循环（测试里会多次启动）
-        for t in db.query("SELECT * FROM tasks WHERE status IN ('running','cancelling')"):
-            db.update("tasks", t["id"], {"status": "failed", "message": "服务重启，任务中断，可点击重试"})
+        self.recover_interrupted()
         self.wake.set()
         self.worker = asyncio.create_task(self._loop())
+
+    @staticmethod
+    def recover_interrupted() -> None:
+        """服务重启时：上次正在跑的任务自动重新排队（每个任务最多 2 次，防止反复把服务搞崩）。"""
+        for t in db.query("SELECT * FROM tasks WHERE status IN ('running','cancelling')"):
+            n = int((t.get("params") or {}).get("_restarts") or 0)
+            if t["status"] == "running" and n < 2 and get_settings().auto_recover:   # 服务重启：中断的任务自动重新排队
+                db.update("tasks", t["id"], {"status": "queued", "progress": 0, "message": "服务重启，已自动重新排队",
+                                             "params": {**(t.get("params") or {}), "_restarts": n + 1}})
+            else:
+                db.update("tasks", t["id"], {"status": "failed" if t["status"] == "running" else "cancelled",
+                                             "message": "服务重启，任务中断，可点击重试" if t["status"] == "running" else "已取消"})
 
     def _notify(self) -> None:
         self.wake.set()
@@ -196,6 +207,24 @@ class TaskQueue:
                         "ORDER BY created_at, rowid")
         return pick_next(rows, gpu.current_group())
 
+    async def _recover(self, ctx: TaskContext, task: dict, exc: Exception, attempt: int, notes: list[str]) -> bool:
+        """能自动处理的错误：修复环境（释放显存 / 重启 ComfyUI / 重启文字模型）后返回 True 重试。"""
+        from .recovery import MAX_AUTO_RETRY, degrade, diagnose, recover
+        if not get_settings().auto_recover or attempt > MAX_AUTO_RETRY:
+            return False
+        d = diagnose(task["type"], str(exc))
+        if not d.retry:
+            return False
+        log.warning("任务 %s 第 %d 次自动恢复（%s）：%s", task["title"], attempt, d.kind, str(exc)[:300])
+        db.update("tasks", ctx.id, {"message": f"出错了，正在自动恢复（第 {attempt} 次）…"})
+        msg = await recover(d, attempt)
+        if d.kind == "oom" and attempt >= 2:
+            ctx.params = degrade(task["type"], ctx.params)
+            db.update("tasks", ctx.id, {"params": ctx.params})
+        notes.append(f"{msg}（{d.kind}）")
+        db.update("tasks", ctx.id, {"message": f"{msg}（第 {attempt} 次）", "progress": 1})
+        return True
+
     async def _loop(self) -> None:
         while True:
             task = self.next_task()
@@ -209,17 +238,36 @@ class TaskQueue:
             db.update("tasks", task_id, {"status": "running", "progress": 1, "message": "开始执行"})
             ctx = TaskContext(db.get("tasks", task_id))
             t0 = time.monotonic()
+            notes: list[str] = []
             try:
-                result = await HANDLERS[task["type"]](ctx)
+                attempt = 0
+                while True:
+                    try:
+                        result = await HANDLERS[task["type"]](ctx)
+                        break
+                    except Cancelled:
+                        raise
+                    except Exception as exc:  # noqa: BLE001
+                        attempt += 1
+                        if not await self._recover(ctx, task, exc, attempt, notes):
+                            raise
                 cost = round(time.monotonic() - t0, 1)
-                db.update("tasks", task_id, {"status": "done", "progress": 100, "message": f"完成（用时 {_fmt(cost)}）",
-                                             "result": {**(result or {}), "elapsed": cost}})
+                result = {**(result or {}), "elapsed": cost}
+                if notes:
+                    result["recovered"] = notes
+                db.update("tasks", task_id, {"status": "done", "progress": 100,
+                                             "message": f"完成（用时 {_fmt(cost)}" + (f"，自动恢复 {len(notes)} 次）" if notes else "）"),
+                                             "result": result})
                 log.info("任务完成 %s [%s/%s] 用时 %.1fs", task["title"], task["type"], task_group(task["type"]), cost)
             except Cancelled:
                 db.update("tasks", task_id, {"status": "cancelled", "message": "已取消"})
             except Exception as exc:  # noqa: BLE001
+                from .recovery import diagnose, explain
                 log.error("任务失败 %s: %s\n%s", task_id, exc, traceback.format_exc())
-                db.update("tasks", task_id, {"status": "failed", "message": str(exc)[:500]})
+                d = diagnose(task["type"], str(exc))
+                db.update("tasks", task_id, {"status": "failed", "message": explain(task["type"], str(exc)),
+                                             "result": {"error": str(exc)[:2000], "error_kind": d.kind,
+                                                        "recovered": notes}})
             finally:
                 self.current = None
             for hook in AFTER_HOOKS:

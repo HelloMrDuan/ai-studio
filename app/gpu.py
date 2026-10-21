@@ -31,6 +31,7 @@ class GPUManager:
         self.detail = ""
         self._llm_proc: subprocess.Popen | None = None
         self.comfy_kind = ""
+        self.restarts = 0                 # 自动重启 ComfyUI 次数
         self.switches = 0                 # 启动以来大模型切换次数（出图↔视频、文字模型启停、整体释放）
         self.recent: list[dict] = []      # 最近的切换记录（显示在系统状态里）
 
@@ -60,6 +61,7 @@ class GPUManager:
             "comfyui": {"running": await self.comfy_alive()},
             "group": self.current_group(),
             "switches": self.switches,
+            "restarts": self.restarts,
             "recent_switches": self.recent[-5:],
         }
 
@@ -113,6 +115,9 @@ class GPUManager:
                 await self._prepare_llm()
             elif workspace in {"comfyui", "facefusion", "voice"}:
                 await self._stop_llm()
+                if workspace == "comfyui":
+                    from .recovery import ensure_comfy
+                    await ensure_comfy()
                 if workspace != "comfyui":      # FaceFusion / 配音 / 对口型 需要 ComfyUI 先让出显存
                     await self.free_comfy()
             self.owner = workspace

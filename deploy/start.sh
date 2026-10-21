@@ -4,15 +4,7 @@ set -euo pipefail
 source "$(dirname "$0")/env.sh"
 running() { [ -f "$RUN_DIR/$1.pid" ] && kill -0 "$(cat "$RUN_DIR/$1.pid")" 2>/dev/null; }
 
-if running comfyui; then log "ComfyUI 已在运行"; else
-  log "启动 ComfyUI → 127.0.0.1:8188（日志 $LOG_DIR/comfyui.log）"
-  cd "$COMFY_DIR"
-  nohup "$COMFY_PY" main.py --listen 127.0.0.1 --port 8188 --disable-auto-launch \
-    --output-directory "$BASE/data/comfy-output" >> "$LOG_DIR/comfyui.log" 2>&1 &
-  echo $! > "$RUN_DIR/comfyui.pid"
-fi
-for i in $(seq 1 90); do curl -sf http://127.0.0.1:8188/system_stats >/dev/null && break; sleep 2; done
-curl -sf http://127.0.0.1:8188/system_stats >/dev/null && log "ComfyUI 就绪" || echo "⚠️ ComfyUI 尚未就绪，请查看 $LOG_DIR/comfyui.log"
+bash "$(dirname "$0")/start_comfyui.sh" || true
 
 SP=$(studio_port)
 if running studio; then log "AI Studio 已在运行"; else

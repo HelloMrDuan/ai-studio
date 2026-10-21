@@ -372,7 +372,7 @@ def test_autopilot_review_stops_and_retry(client, monkeypatch):
     async def flaky(workflow, out_dir, progress=None):
         if any(n["class_type"] == "SaveVideo" for n in workflow.values()) and fails["n"] < 1:
             fails["n"] += 1
-            raise RuntimeError("模拟显存不足")
+            raise RuntimeError("模拟编码器异常")
         return await real(workflow, out_dir, progress)
 
     monkeypatch.setattr(comfy, "run", flaky)
@@ -402,3 +402,120 @@ def test_autopilot_stop_and_fail(client, monkeypatch):
     assert ap_wait(client, pid)["status"] == "done"
     st = client.post(f"/api/projects/{pid}/autopilot/stop").json()
     assert st["status"] == "done"            # 已完成的不受停止影响
+
+
+# ---------------- P1-4 失败自动恢复 ----------------
+def test_diagnose_rules():
+    from app.recovery import diagnose, explain
+    assert diagnose("video", "ComfyUI 执行失败：KSampler: CUDA out of memory. Tried to allocate").kind == "oom"
+    assert diagnose("keyframe", "httpx.ConnectError: All connection attempts failed").kind == "comfy_down"
+    assert diagnose("script", "All connection attempts failed").kind == "llm_down"
+    d = diagnose("video", "ComfyUI 拒绝工作流：{'type': 'value_not_in_list'}")
+    assert d.kind == "config" and not d.retry
+    assert not diagnose("keyframe", "请先生成角色的定妆照").retry
+    assert not diagnose("assemble", "OSError: [Errno 28] No space left on device").retry
+    assert "preflight" in explain("video", "value_not_in_list") and "原始错误" in explain("video", "value_not_in_list")
+
+
+def _shot_video_task(client, pid):
+    import time
+    shot = client.get(f"/api/projects/{pid}").json()["shots"][0]
+    tid = client.post(f"/api/shots/{shot['id']}/video", json={"quality": "final", "turbo": False}).json()["id"]
+    for _ in range(300):
+        t = next(x for x in client.get("/api/tasks?limit=500").json() if x["id"] == tid)
+        if t["status"] in {"done", "failed", "cancelled"}:
+            return t
+        time.sleep(0.1)
+    raise AssertionError(t)
+
+
+def test_recover_oom_degrades(client, project, monkeypatch):
+    real, seen = comfy.run, []
+
+    async def oom_twice(workflow, out_dir, progress=None):
+        if any(n["class_type"] == "SaveVideo" for n in workflow.values()):
+            seen.append(json.dumps(workflow))
+            if len(seen) <= 2:
+                raise RuntimeError("ComfyUI 执行失败：SamplerCustom: CUDA out of memory")
+        return await real(workflow, out_dir, progress)
+
+    monkeypatch.setattr(comfy, "run", oom_twice)
+    t = _shot_video_task(client, project)
+    assert t["status"] == "done", t["message"]
+    assert len(t["result"]["recovered"]) == 2 and "自动恢复 2 次" in t["message"]
+    assert t["params"]["_degraded"] and t["params"]["quality"] == "draft" and t["params"]["turbo"] is True
+
+
+def test_recover_comfy_crash_restarts(client, project, monkeypatch):
+    from app import recovery
+    import httpx
+    restarts, calls = [], {"n": 0}
+    real = comfy.run
+
+    async def crash_once(workflow, out_dir, progress=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("All connection attempts failed")
+        return await real(workflow, out_dir, progress)
+
+    async def fake_restart(reason=""):
+        restarts.append(reason)
+        return True
+
+    monkeypatch.setattr(comfy, "run", crash_once)
+    monkeypatch.setattr(recovery, "restart_comfy", fake_restart)
+    t = _shot_video_task(client, project)
+    assert t["status"] == "done" and len(restarts) == 1 and "ComfyUI 已重启" in t["result"]["recovered"][0]
+
+
+def test_recover_gives_up_with_advice(client, project, monkeypatch):
+    calls = {"n": 0}
+
+    async def bad(workflow, out_dir, progress=None):
+        calls["n"] += 1
+        raise RuntimeError("ComfyUI 拒绝工作流：value_not_in_list unet_name")
+
+    monkeypatch.setattr(comfy, "run", bad)
+    t = _shot_video_task(client, project)
+    assert t["status"] == "failed" and calls["n"] == 1                         # 配置错误不重试
+    assert t["message"].startswith("模型文件或节点缺失") and t["result"]["error_kind"] == "config"
+
+    async def always_oom(workflow, out_dir, progress=None):
+        calls["n"] += 1
+        raise RuntimeError("CUDA out of memory")
+
+    calls["n"] = 0
+    monkeypatch.setattr(comfy, "run", always_oom)
+    t = _shot_video_task(client, project)
+    assert t["status"] == "failed" and calls["n"] == 3 and t["message"].startswith("显存/内存不足")   # 1 次 + 自动 2 次
+
+
+def test_ensure_comfy_before_use(client, project, monkeypatch):
+    from app import recovery
+    from app.gpu import gpu
+    state = {"alive": False, "restarts": 0}
+
+    async def alive():
+        return state["alive"]
+
+    async def fake_restart(reason=""):
+        state["restarts"] += 1
+        state["alive"] = True
+        return True
+
+    monkeypatch.setattr(gpu, "comfy_alive", alive)
+    monkeypatch.setattr(recovery, "restart_comfy", fake_restart)
+    t = _shot_video_task(client, project)
+    assert t["status"] == "done" and state["restarts"] == 1
+
+
+def test_service_restart_requeues():
+    from app import db
+    from app.tasks import queue
+    t = db.insert("tasks", {"type": "animatic", "project_id": "", "title": "中断", "status": "running", "params": {}})
+    queue.recover_interrupted()
+    t = db.get("tasks", t["id"])
+    assert t["status"] == "queued" and t["params"]["_restarts"] == 1
+    db.update("tasks", t["id"], {"status": "running", "params": {"_restarts": 2}})
+    queue.recover_interrupted()
+    assert db.get("tasks", t["id"])["status"] == "failed"

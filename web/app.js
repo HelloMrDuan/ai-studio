@@ -705,7 +705,7 @@ async function renderSystem() {
         <tr><td>ffmpeg</td><td>${yes(s.ffmpeg)}</td></tr></table></div>
       <div class="panel"><h3>磁盘与队列</h3><div>数据盘剩余 <b>${s.disk.free_gb} GB</b> / ${s.disk.total_gb} GB</div>
         <div class="muted small" style="margin-top:6px">排队任务：${s.queue.waiting}${s.queue.paused ? `，已暂停 ${s.queue.paused}` : ''}${s.queue.current ? '，正在执行 1 个' : ''}</div>
-        <div class="muted small" style="margin-top:6px">当前显存模型：${esc({ image: '出图', video: '视频', llm: '文字模型', voice: '配音/对口型', facefusion: 'FaceFusion' }[g.group] || '无')}，启动以来切换 ${g.switches || 0} 次${(g.recent_switches || []).length ? '（最近：' + g.recent_switches.map((r) => `${esc(r.from)}→${esc(r.to)} ${r.seconds}s`).join('，') + '）' : ''}</div></div></div>
+        <div class="muted small" style="margin-top:6px">当前显存模型：${esc({ image: '出图', video: '视频', llm: '文字模型', voice: '配音/对口型', facefusion: 'FaceFusion' }[g.group] || '无')}，启动以来切换 ${g.switches || 0} 次${g.restarts ? `，自动重启 ComfyUI ${g.restarts} 次` : ''}${(g.recent_switches || []).length ? '（最近：' + g.recent_switches.map((r) => `${esc(r.from)}→${esc(r.to)} ${r.seconds}s`).join('，') + '）' : ''}</div></div></div>
     <div class="panel" style="margin-top:16px"><h3>模型文件</h3><table><tr><th>文件</th><th>目录</th><th>大小</th><th>状态</th></tr>
       ${s.models.map((m) => `<tr><td>${esc(m.name)}</td><td>${esc(m.folder)}</td><td>${m.size_gb ? m.size_gb + ' GB' : '-'}</td><td>${m.ok ? '<span class="ok">✓</span>' : m.optional ? '<span class="muted">可选，未下载</span>' : '<span class="bad">✗ 缺失</span>'}</td></tr>`).join('')}
     </table><p class="muted small">缺失的模型可运行 <code>bash deploy/download_models.sh</code> 补齐（参考生视频模型加 <code>--r2v</code>）。</p></div></div>`;

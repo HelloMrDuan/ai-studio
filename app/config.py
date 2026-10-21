@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     comfyui_dir: Path = Path("/root/autodl-tmp/ComfyUI")
     comfyui_url: str = "http://127.0.0.1:8188"
     comfyui_timeout: int = 3600
+    comfyui_restart_cmd: str = ""      # 自动恢复时重启 ComfyUI 的命令，默认 deploy/start_comfyui.sh --restart
+    auto_recover: bool = True          # 失败自动恢复重试（显存不足/服务崩溃/超时）
 
     image_unet: str = "qwen_image_2.1_turbo_int8_convrot.safetensors"
     image_clip: str = "qwen3vl_8b_int8_convrot.safetensors"

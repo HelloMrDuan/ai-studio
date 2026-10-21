@@ -472,3 +472,17 @@ POST_SECTIONS.push(() => {
       <span class="small">成片帧率 ${sel([[24, '24'], [30, '30'], [48, '48'], [60, '60']], jget('post', 'fps', 24), 'data-jsave="post.fps" data-num="1" style="width:70px"')}</span>
       <span class="muted small">已处理过的镜头自动跳过；建议先配音再增强；超分后成片选「输出 1080p/1440p」</span></div></div>`;
 });
+
+/* ---------------- 导出工程：剪映草稿 / FCPXML / EDL ---------------- */
+function exportPanel() {
+  const p = S.snap.project; const ex = assetsOf(p.id, 'export'); const busy = busyOf(`${p.id}:export`);
+  const ok = S.snap.shots.some((x) => x.video);
+  const tr = (m) => Object.entries({ video: '画面', dialogue: '对白', narration: '旁白', ambient: '环境音', sfx: '音效', bgm: '配乐', subs: '字幕' })
+    .filter(([k]) => (m.tracks || {})[k]).map(([k, v]) => `${v}${m.tracks[k]}`).join(' · ');
+  return `<div class="panel" style="margin-top:16px"><div class="row between"><h3>导出工程 <span class="muted small">剪映草稿（分轨）· FCPXML（达芬奇/FCP）· EDL · SRT，打包成 zip</span></h3>
+    <button class="btn small" data-act="export-project" ${ok && !busy ? '' : 'disabled'}>${busy ? '打包中… ' + busy.progress + '%' : '导出剪映草稿 / 工程'}</button></div>
+    <div class="muted small">解压后双击「修复素材路径.bat」，再把「剪映草稿」里的文件夹复制到剪映草稿目录。有配音分轨的镜头画面已静音，对白/环境音在单独轨道上。</div>
+    ${ex.length ? `<table style="margin-top:8px">${ex.slice(0, 5).map((a) => `<tr><td>${new Date(a.created_at * 1000).toLocaleString()}</td><td class="small">${tr(a.meta)}</td><td>${a.meta.seconds || ''}s · ${a.meta.size_mb || ''}MB</td>
+      <td class="row"><a class="btn small ghost" href="${media(a.path)}" download>下载</a><button class="btn small danger" data-act="del-asset" data-id="${a.id}">删除</button></td></tr>`).join('')}</table>` : ''}</div>`;
+}
+Object.assign(ACTIONS, { async 'export-project'() { submitted(await api('POST', `/api/projects/${S.pid}/export`, {})); } });

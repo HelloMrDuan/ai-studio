@@ -81,7 +81,7 @@ def _source(shot: dict) -> tuple[Path, dict]:
 
 def _inherit(meta: dict) -> dict:
     """新版本继承配音/口型/字幕时间等信息，成片字幕仍按配音时间对齐。"""
-    keep = ("dub", "lipsync", "dub_source", "lines", "timing", "prompt", "mode", "quality", "seconds", "enhanced")
+    keep = ("dub", "lipsync", "dub_source", "lines", "timing", "prompt", "mode", "quality", "seconds", "enhanced", "stems")
     out = {k: meta[k] for k in keep if k in meta}
     out["enhanced"] = list(out.get("enhanced") or [])
     return out

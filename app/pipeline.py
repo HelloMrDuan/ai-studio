@@ -807,14 +807,28 @@ async def task_dub(ctx: TaskContext) -> dict:
             notes.append("多人或远景镜头，未做对口型（可手动强制）")
         final_dur = (await media.probe(video))["duration"] or total
         await ctx.progress(92, "混音…")
-        out = project_dir(project["id"], "videos") / f"dub_{shot['id']}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
+        stamp = time.strftime('%Y%m%d_%H%M%S')
+        out = project_dir(project["id"], "videos") / f"dub_{shot['id']}_{stamp}.mp4"
         await media.mux(video, tracks, out, min(final_dur, total))
+        # 分轨素材（导出剪映草稿 / FCPXML 时对白、环境音各占一轨）
+        stems: dict = {}
+        try:
+            sp = project_dir(project["id"], "dub") / f"speech_{shot['id']}_{stamp}.wav"
+            shutil.copy(speech, sp)
+            stems["speech"] = rel(sp)
+            if len(tracks) > 1:
+                amb = project_dir(project["id"], "dub") / f"ambient_{shot['id']}_{stamp}.wav"
+                await sound.place_track([{"path": p, "start": 0.0, "volume": v} for p, v in tracks[1:]],
+                                        min(final_dur, total), amb)
+                stems["ambient"] = rel(amb)
+        except Exception as exc:  # noqa: BLE001
+            notes.append(f"分轨素材保存失败（不影响成片）：{exc}"[:160])
     finally:
         shutil.rmtree(work, ignore_errors=True)
     asset = add_asset(project["id"], "video", out, "shot", shot["id"],
                       {"dub": True, "lipsync": lips, "dub_source": rel(src_video), "lines": len(voiced),
                        "speed": round(factor, 2), "notes": notes, "missing_voice": missing,
-                       "timing": timing})
+                       "timing": timing, "stems": stems})
     db.update("shots", shot["id"], {"video": asset["path"]})
     if missing:
         notes.append(f"角色「{'、'.join(missing)}」没有音色样本，其台词未配音")

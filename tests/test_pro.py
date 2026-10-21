@@ -525,3 +525,54 @@ def test_enhance(client, project, monkeypatch):
     fin = [x for x in client.get(f"/api/projects/{pid}").json()["assets"][pid] if x["kind"] == "final"][0]
     info = asyncio_run(enhance.video_info(pipeline.absolute(fin["path"])))
     assert fin["meta"]["fps"] == 30 and abs(info["fps"] - 30) < 0.01 and min(info["width"], info["height"]) == 1080, info
+
+
+def test_export_project(client, project, tmp_path):
+    import subprocess
+    import sys
+    import zipfile
+    import xml.etree.ElementTree as ET
+    from app import db, pipeline
+    pid = project
+    snap = client.get(f"/api/projects/{pid}").json()
+    for s in snap["shots"][:2]:
+        if not s["video"]:
+            wait(client, client.post(f"/api/shots/{s['id']}/video", json={}).json()["id"])
+    snap = client.get(f"/api/projects/{pid}").json()
+    s0 = next(s for s in snap["shots"] if s["video"])
+    # 模拟配音分轨（对白 + 环境音）
+    stems = {}
+    for k in ("speech", "ambient"):
+        p = pipeline.project_dir(pid, "dub") / f"{k}_test.wav"
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=d=2", str(p)], check=True)
+        stems[k] = pipeline.rel(p)
+    row = db.query("SELECT id, meta FROM assets WHERE path=?", [s0["video"]])[0]
+    db.update("assets", row["id"], {"meta": {**(row["meta"] or {}), "stems": stems}})
+    client.patch(f"/api/shots/{s0['id']}", json={"dialogue": [{"speaker": "陈默", "line": "是你吗"}]})
+    r = wait(client, client.post(f"/api/projects/{pid}/export", json={"fps": 30}).json()["id"])
+    tr = r["result"]["tracks"]
+    assert tr["dialogue"] == 1 and tr["ambient"] == 1 and tr["subs"] >= 1, tr
+    zp = pipeline.absolute(r["result"]["path"])
+    with zipfile.ZipFile(zp) as z:
+        names = z.namelist()
+        draft_name = next(n for n in names if n.endswith("draft_content.json"))
+        draft = json.loads(z.read(draft_name))
+        fcp = z.read(next(n for n in names if n.endswith(".fcpxml"))).decode()
+        edl = z.read(next(n for n in names if n.endswith(".edl"))).decode()
+        z.extractall(tmp_path / "x")
+    assert any(n.startswith("media/v01_") for n in names) and "修复素材路径.bat" in names
+    kinds = {t["name"]: t["type"] for t in draft["tracks"]}
+    assert kinds["画面"] == "video" and kinds["对白"] == "audio" and kinds["环境音"] == "audio" and kinds["字幕"] == "text"
+    vt = next(t for t in draft["tracks"] if t["type"] == "video")["segments"]
+    assert vt[0]["volume"] == 0.0                                       # 有分轨的镜头画面静音
+    ends = [sg["target_timerange"]["start"] + sg["target_timerange"]["duration"] for sg in vt]
+    assert all(abs(vt[i + 1]["target_timerange"]["start"] - ends[i]) <= 1 for i in range(len(vt) - 1))  # 首尾相接
+    assert abs(ends[-1] - draft["duration"]) <= 1
+    mat_ids = {m["id"] for k in ("videos", "audios", "texts") for m in draft["materials"][k]}
+    assert all(sg["material_id"] in mat_ids for t in draft["tracks"] for sg in t["segments"])
+    root = ET.fromstring(fcp.split("\n", 2)[2])
+    assert len(root.findall(".//spine/asset-clip")) == len(vt)
+    assert edl.count("FROM CLIP NAME") == len(vt)
+    subprocess.run([sys.executable, str(tmp_path / "x" / "fix_paths.py")], check=True, capture_output=True)
+    fixed = (tmp_path / "x" / draft_name).read_text("utf-8")
+    assert "__MEDIA_ROOT__" not in fixed and (tmp_path / "x" / "media").as_posix() in fixed

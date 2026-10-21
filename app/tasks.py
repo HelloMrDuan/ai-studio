@@ -67,7 +67,7 @@ GROUP = {
 # 依赖阶段：同一项目里，先提交的低阶段任务没做完，后提交的高阶段任务不会抢跑（如分镜图 → 视频 → 配音 → 合成）。
 STAGE = {"portrait": 1, "face_ref": 1, "location_image": 1, "prop_image": 1,
          "keyframe": 2, "keyframe_edit": 2, "end_frame": 2, "video": 3, "voice_sample": 3,
-         "animatic": 3, "dub": 4, "face_fix": 4, "facefusion": 4, "narration": 4, "bgm": 4, "upscale": 4, "interpolate": 4, "assemble": 5}
+         "animatic": 3, "dub": 4, "face_fix": 4, "facefusion": 4, "narration": 4, "bgm": 4, "upscale": 4, "interpolate": 4, "assemble": 5, "export": 5}
 BARRIER = {"script", "extract", "storyboard"}      # 改动项目结构的文字任务：与同项目其它任务严格按提交顺序
 
 

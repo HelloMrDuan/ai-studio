@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from . import art, autopilot, board, db, videox, vlm, director, facefusion, pipeline, prompts, qa, suggest, voice, writers
+from . import art, autopilot, board, db, grade, videox, vlm, director, facefusion, pipeline, prompts, qa, suggest, voice, writers
 from .config import get_settings
 from .gpu import gpu
 from .tasks import queue
@@ -58,7 +58,7 @@ async def meta() -> dict:
             "genres": {k: v["label"] for k, v in writers.GENRES.items()},
             "views": art.VIEWS, "expressions": list(art.EXPRESSIONS), "variants": list(art.VARIANT_PRESETS), "positions": list(board.POSITIONS),
             "camera_dirs": {k: list(v) for k, v in videox.DIRECTIONS.items()}, "motion": videox.motion_available(),
-            "vlm": vlm.available(), "vlm_provider": vlm.provider(), "asr": vlm.asr_available()}
+            "luts": grade.STYLE_LUTS, "vlm": vlm.available(), "vlm_provider": vlm.provider(), "asr": vlm.asr_available()}
 
 
 def _model_check() -> list[dict]:
@@ -121,7 +121,8 @@ class ProjectIn(BaseModel):
 
 
 PROJECT_FIELDS = {"title", "source_type", "source_text", "aspect_ratio", "style", "style_note", "target_seconds",
-                  "script", "synopsis", "dub_mode", "genre", "style_ref", "style_lora", "style_lora_strength"}
+                  "script", "synopsis", "dub_mode", "genre", "style_ref", "style_lora", "style_lora_strength",
+                  "grade", "post"}
 
 
 def _check_project(values: dict) -> None:

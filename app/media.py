@@ -48,7 +48,9 @@ def build_srt(items: list[tuple[float, float, list[dict]]]) -> str:
 
 
 async def assemble(clips: list[Path], output: Path, width: int, height: int, work: Path,
-                   srt: str = "", bgm: Path | None = None, bgm_volume: float = 0.25) -> Path:
+                   srt: str = "", bgm: Path | None = None, bgm_volume: float = 0.25,
+                   pre: list[str] | None = None) -> Path:
+    """pre：每个片段额外的视频滤镜（调色 LUT / 去闪烁），在缩放前执行。"""
     if not shutil.which("ffmpeg"):
         raise RuntimeError("系统没有安装 ffmpeg")
     work.mkdir(parents=True, exist_ok=True)
@@ -56,7 +58,8 @@ async def assemble(clips: list[Path], output: Path, width: int, height: int, wor
     for i, clip in enumerate(clips):
         info = await probe(clip)
         target = work / f"n{i:04d}.mp4"
-        vf = (f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        extra = (pre[i] + ",") if pre and i < len(pre) and pre[i] else ""
+        vf = (extra + f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
               f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,fps=24,format=yuv420p")
         args = ["ffmpeg", "-y", "-i", str(clip)]
         if not info["has_audio"]:

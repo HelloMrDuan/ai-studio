@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import comfy, db, facefusion, llm, media, prompts, qa, videox, vlm, voice
+from . import comfy, db, facefusion, llm, media, prompts, qa, videox, vlm, voice, grade
 from .config import get_settings
 from .gpu import gpu
 from .tasks import TaskContext, handler, queue
@@ -841,15 +841,26 @@ async def task_assemble(ctx: TaskContext) -> dict:
     safe_title = "".join(ch for ch in (project["title"] or "final") if ch not in '\\/:*?"<>|')[:40]
     output = out_dir / f"{safe_title}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
     work = out_dir / f"work_{ctx.id}"
+    g = {**(project.get("grade") or {}), **(ctx.params.get("grade") or {})}
+    grade_info: dict = {}
     try:
+        pre = None
+        if g.get("enabled") and (g.get("match", True) or g.get("lut") or g.get("deflicker")):
+            await ctx.progress(6, "调色统一：分析各镜头色调…")
+            gp = await grade.plan(clips, shots, work, strength=float(g.get("strength", 0.7)), lut=g.get("lut") or "",
+                                  base_shot=g.get("base_shot") or "", per_scene=g.get("per_scene", True),
+                                  match=g.get("match", True))
+            pre = [grade.filters(c, bool(g.get("deflicker"))) for c in gp["cubes"]]
+            grade_info = {"before": gp["before"], "after": gp["after"], "bases": gp["bases"], "lut": g.get("lut") or ""}
+            await ctx.log(f"调色统一：相邻镜头平均色差 ΔE {gp['before']} → {gp['after']}")
         await media.assemble(clips, output, width, height, work,
                              srt=srt if ctx.params.get("subtitles", True) else "",
-                             bgm=bgm, bgm_volume=float(ctx.params.get("bgm_volume", 0.25)))
+                             bgm=bgm, bgm_volume=float(ctx.params.get("bgm_volume", 0.25)), pre=pre)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     skipped = len(all_shots) - len(shots)
     asset = add_asset(project["id"], "final", output, "project", project["id"],
-                      {"shots": len(clips), "seconds": round(t, 1), "skipped": skipped})
+                      {"shots": len(clips), "seconds": round(t, 1), "skipped": skipped, "grade": grade_info})
     db.update("projects", project["id"], {"final_video": asset["path"]})
     return {"path": asset["path"], "seconds": round(t, 1), "skipped": skipped}
 

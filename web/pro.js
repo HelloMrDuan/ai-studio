@@ -331,3 +331,28 @@ Object.assign(ACTIONS, {
   async rework() { const r = await api('POST', `/api/projects/${S.pid}/review/rework`, {}); toast(`已提交 ${r.tasks.length} 个返工任务`); loadSnap(true); },
   async 'rework-one'(el) { const r = await api('POST', `/api/projects/${S.pid}/review/rework`, { shot_ids: [el.dataset.id] }); toast(`已提交 ${r.tasks.length} 个返工任务`); loadSnap(true); },
 });
+
+/* ---------------- ⑤ 后期：调色 / 字幕包装 / 声音 / 画质（每个分区一个函数，按顺序拼起来） ---------------- */
+const POST_SECTIONS = [];
+function postPanel() { return `<div class="panel" style="margin-top:16px"><h3>后期设置 <span class="muted small">合成成片时生效，改完点「合成成片」</span></h3>${POST_SECTIONS.map((f) => f()).join('')}</div>`; }
+const jget = (field, key, dflt) => { const o = S.snap.project[field] || {}; return o[key] === undefined ? dflt : o[key]; };
+const jchk = (field, key, dflt, label, tip = '') => `<label class="row small" title="${esc(tip)}"><input type="checkbox" data-jsave="${field}.${key}" ${jget(field, key, dflt) ? 'checked' : ''}> ${label}</label>`;
+document.addEventListener('change', async (e) => {
+  const el = e.target; if (!el.dataset.jsave) return;
+  const [field, key] = el.dataset.jsave.split('.'); const p = S.snap.project;
+  let v = el.type === 'checkbox' ? el.checked : el.value; if (el.dataset.num) v = Number(v);
+  const obj = { ...(p[field] || {}), [key]: v };
+  Object.assign(p, await api('PATCH', `/api/projects/${p.id}`, { [field]: obj })); toast('已保存');
+  if (el.dataset.rerender || key === 'enabled') renderProject();
+});
+POST_SECTIONS.push(() => {
+  const s = S.snap; const on = jget('grade', 'enabled', false);
+  const luts = Object.entries(S.meta.luts || { '': '不用' });
+  return `<div class="post-sec"><div class="row between"><b>调色统一 / 去闪烁</b>${jchk('grade', 'enabled', false, '启用', '每个场次以基准镜头做色彩匹配，全片色调统一')}</div>
+    <div class="grid4 ${on ? '' : 'dim'}" style="margin-top:6px">
+      <div>${jchk('grade', 'match', true, '镜头间色彩匹配')}${jchk('grade', 'per_scene', true, '按场次分组匹配', '日景夜景不会被拉成一样')}</div>
+      <div><label class="f">基准镜头</label>${sel([['', '自动（组内最接近平均色调）'], ...s.shots.map((x, i) => [x.id, `#${i + 1} ${x.scene || ''}`])], jget('grade', 'base_shot', ''), 'data-jsave="grade.base_shot"')}</div>
+      <div><label class="f">风格 LUT</label>${sel(luts.map(([k, v]) => [k, k ? `${k}（${v}）` : v]), jget('grade', 'lut', ''), 'data-jsave="grade.lut"')}</div>
+      <div><label class="f">匹配强度 ${jget('grade', 'strength', 0.7)}</label><input type="range" min="0.2" max="1" step="0.1" value="${jget('grade', 'strength', 0.7)}" data-jsave="grade.strength" data-num="1" data-rerender="1">
+        ${jchk('grade', 'deflicker', false, '时域去闪烁')}</div></div></div>`;
+});

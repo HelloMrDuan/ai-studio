@@ -325,3 +325,34 @@ def test_vlm_review(client, project, monkeypatch):
     assert vlm.dialogue_match(sh, "我回来了你还好吗") is None
     assert vlm.dialogue_match(sh, "今天天气不错")["type"] == "audio"
     assert vlm.normalize({"score": "12", "issues": [{"type": "x", "detail": "d"}]})["score"] == 10
+
+
+def test_color_grade(client, project, tmp_path):
+    import subprocess
+    import time as _t
+    from app import grade, pipeline
+
+    def solid(path, color):
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", f"color=c={color}:s=160x90:d=1:r=24",
+                        "-f", "lavfi", "-i", "sine=d=1", "-shortest", "-pix_fmt", "yuv420p", str(path)], check=True)
+        return path
+    a, b, c = solid(tmp_path / "a.mp4", "0x806040"), solid(tmp_path / "b.mp4", "0x4060a0"), solid(tmp_path / "c.mp4", "0x7a5a44")
+    shots = [{"id": "1", "sort": 0, "scene": "S1"}, {"id": "2", "sort": 1, "scene": "S1"}, {"id": "3", "sort": 2, "scene": "S1"}]
+    t0 = _t.time()
+    gp = asyncio_run(grade.plan([a, b, c], shots, tmp_path / "w", strength=1.0, base_shot="1"))
+    assert _t.time() - t0 < 20
+    assert gp["before"] > 15 and gp["after"] < gp["before"] / 3, gp
+    assert gp["cubes"][0] is None and gp["cubes"][1].read_text().startswith('TITLE')
+    # 风格 LUT 对所有镜头生效；黑白 LUT 把彩色变灰
+    fn = grade.style_fn("黑白")
+    r, g, b2 = fn(0.8, 0.2, 0.1)
+    assert abs(r - g) < 1e-6 and abs(g - b2) < 1e-6
+    # 成片：开启调色统一
+    pid = project
+    shot = client.get(f"/api/projects/{pid}").json()["shots"][0]
+    if not shot["video"]:
+        wait(client, client.post(f"/api/shots/{shot['id']}/video", json={}).json()["id"])
+    client.patch(f"/api/projects/{pid}", json={"grade": {"enabled": True, "lut": "电影", "deflicker": True}})
+    wait(client, client.post(f"/api/projects/{pid}/assemble", json={}).json()["id"])
+    fin = [x for x in client.get(f"/api/projects/{pid}").json()["assets"][pid] if x["kind"] == "final"][0]
+    assert fin["meta"]["grade"]["lut"] == "电影" and pipeline.exists(fin["path"])

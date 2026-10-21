@@ -59,6 +59,8 @@ async function route() {
   if ((m = h.match(/^#\/p\/([^/]+)(?:\/(\w+))?/))) {
     S.view = 'project'; S.pid = m[1]; S.step = m[2] || 'script';
     await loadSnap(true);
+  } else if ((m = h.match(/^#\/s\/([^/]+)/))) {
+    S.view = 'series'; S.pid = null; S.sid = m[1]; $('[data-nav=home]').classList.add('active'); await renderSeries(m[1]);
   } else if (h.startsWith('#/toolbox')) {
     S.view = 'toolbox'; S.pid = null; $('[data-nav=toolbox]').classList.add('active'); await renderToolbox();
   } else if (h.startsWith('#/system')) {
@@ -76,7 +78,8 @@ document.addEventListener('click', (e) => {
 /* ---------------- 首页 ---------------- */
 async function renderHome() {
   const list = await api('GET', '/api/projects');
-  const cards = list.map((p) => `
+  const series = await api('GET', '/api/series').catch(() => []);
+  const cards = list.filter((p) => !p.series_id).map((p) => `
     <div class="card click" data-go="#/p/${p.id}/${p.videos ? 'video' : p.shots ? 'board' : 'script'}">
       <div class="cover" style="${p.cover ? `background-image:url('${media(p.cover)}')` : ''}">${p.cover ? '' : '🎞️'}</div>
       <div class="card-body">
@@ -87,7 +90,7 @@ async function renderHome() {
         <button class="btn small danger" data-act="del-project" data-id="${p.id}">删除</button></div>
       </div>
     </div>`).join('');
-  $('#view').innerHTML = `<div class="page"><h2>我的项目</h2><div class="cards">
+  $('#view').innerHTML = `<div class="page">${seriesCards(series)}<h2>我的项目</h2><div class="cards">
     <div class="card click new-card" data-act="new-project"><b>＋</b>新建项目<span class="small">从创意 / 小说 / 剧本开始</span></div>${cards}</div></div>`;
 }
 
@@ -204,6 +207,7 @@ function viewScript() {
         <label class="f">项目名称</label><input type="text" data-save="projects:${p.id}:title" value="${esc(p.title)}">
         <label class="f">素材类型</label>${sel([['idea', '一句话创意'], ['novel', '小说原文'], ['script', '已有剧本']], p.source_type, `data-save="projects:${p.id}:source_type"`)}
         <label class="f">素材内容</label><textarea rows="12" data-save="projects:${p.id}:source_text">${esc(p.source_text)}</textarea>
+        ${seriesBox(p)}
         <div class="grid3"><div><label class="f">画幅</label>${sel(S.meta.aspects, p.aspect_ratio, `data-save="projects:${p.id}:aspect_ratio" data-rerender="1"`)}</div>
         <div><label class="f">风格</label>${sel(Object.entries(S.meta.styles), p.style, `data-save="projects:${p.id}:style" data-rerender="1"`)}</div>
         <div><label class="f">目标时长（秒）</label><input type="number" data-save="projects:${p.id}:target_seconds" data-num="1" value="${p.target_seconds}"></div></div>
@@ -781,6 +785,7 @@ async function pollTasks() {
     recent.filter((t) => finished.includes(t.id) && t.status === 'failed').forEach((t) => toast(`任务失败：${t.title} — ${t.message}`, true));
     if (S.view === 'project') await loadSnap();
     if (S.view === 'toolbox') renderToolbox(true);
+    if (S.view === 'series' && !document.activeElement.closest('[data-sv]')) renderSeries(S.sid);
   } else if (progressChanged && S.view === 'project') {
     document.querySelectorAll('.busy-slot').forEach((el) => { el.innerHTML = busyInner(el.dataset.owner); });
     const tb = document.querySelector('[data-act=assemble]');

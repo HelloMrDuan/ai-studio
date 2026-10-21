@@ -576,3 +576,58 @@ def test_export_project(client, project, tmp_path):
     subprocess.run([sys.executable, str(tmp_path / "x" / "fix_paths.py")], check=True, capture_output=True)
     fixed = (tmp_path / "x" / draft_name).read_text("utf-8")
     assert "__MEDIA_ROOT__" not in fixed and (tmp_path / "x" / "media").as_posix() in fixed
+
+
+def test_series(client, monkeypatch):
+    from PIL import Image
+    from app import db, pipeline, series
+    from test_features import LLM_EXTRA
+    sid = client.post("/api/series", json={"title": "重生之逆袭", "source_text": "长篇小说……" * 50, "genre": "revenge"}).json()["id"]
+    plan = {"bible": "林晚：被陷害的千金，冷静隐忍。陈默：她的青梅竹马。",
+            "episodes": [{"title": "雨夜", "synopsis": "林晚被赶出家门", "source": "雨夜，林晚被继母赶出家门……", "hook": "陌生人递来一把伞"},
+                         {"title": "重逢", "synopsis": "陈默出现", "source": "撑伞的人竟是陈默……", "hook": "他手里有她母亲的遗书"},
+                         {"title": "遗书", "synopsis": "真相初现", "source": "遗书里写着……", "hook": "继母的电话打来"}]}
+    monkeypatch.setitem(LLM_EXTRA, series.PLAN_SYSTEM, lambda m: json.dumps(plan, ensure_ascii=False))
+    r = wait(client, client.post(f"/api/series/{sid}/plan", json={"seconds": 90}).json()["id"])
+    assert r["result"]["episodes"] == 3 and r["result"]["created"] == 3
+    st = client.get(f"/api/series/{sid}").json()
+    assert [e["episode"] for e in st["episodes"]] == [1, 2, 3] and st["series"]["bible"].startswith("林晚")
+    ep1, ep2 = st["episodes"][0]["id"], st["episodes"][1]["id"]
+    # 第一集定好角色（带定妆图、服装）→ 新一集继承，文件复制到新项目
+    img = pipeline.project_dir(ep1, "images") / "lin.png"
+    Image.new("RGB", (32, 32), (200, 50, 50)).save(img)
+    c = db.insert("characters", {"project_id": ep1, "name": "林晚", "ref_image": pipeline.rel(img), "locked": 1,
+                                 "sheet": {"front": pipeline.rel(img)}})
+    db.insert("outfits", {"project_id": ep1, "character_id": c["id"], "name": "白裙", "ref_image": pipeline.rel(img)})
+    client.patch(f"/api/projects/{ep1}", json={"style": "anime", "post": {"subtitle": {"preset": "短剧"}}})
+    ep4 = client.post(f"/api/series/{sid}/episodes", json={"source_text": "第四集", "copy_from": ep1}).json()
+    assert ep4["episode"] == 4 and ep4["copied"]["characters"] == 1 and ep4["copied"]["outfits"] == 1
+    p4 = client.get(f"/api/projects/{ep4['id']}").json()
+    ch = p4["characters"][0]
+    assert ch["ref_image"].startswith(ep4["id"] + "/") and pipeline.exists(ch["ref_image"]) and ch["sheet"]["front"] == ch["ref_image"]
+    assert p4["project"]["style"] == "anime" and p4["project"]["post"]["subtitle"]["preset"] == "短剧"
+    o = db.query("SELECT * FROM outfits WHERE project_id=?", [ep4["id"]])[0]
+    assert o["character_id"] == ch["id"]
+    # 前情摘要 → 写进第 2 集的剧本提示词
+    db.update("projects", ep1, {"script": "## 场景1\n林晚被赶出家门。陌生人递来一把伞。"})
+    monkeypatch.setitem(LLM_EXTRA, series.RECAP_SYSTEM, lambda m: json.dumps({"recap": "林晚被继母赶出家门。", "last_hook": "陌生人递伞"}, ensure_ascii=False))
+    assert client.post(f"/api/series/{sid}/recap", json={}).json()["submitted"] == 3
+    drain(client, ep2)
+    assert "陌生人递伞" in client.get(f"/api/projects/{ep2}").json()["project"]["recap"]
+    seen = {}
+
+    def script_cb(messages):
+        seen["user"] = messages[1]["content"]
+        return json.dumps({"title": "", "synopsis": "重逢", "script": "## 场景1\n陈默撑伞。"}, ensure_ascii=False)
+    monkeypatch.setitem(LLM_EXTRA, prompts.SCRIPT_SYSTEM, script_cb)
+    wait(client, client.post(f"/api/projects/{ep2}/script/generate").json()["id"])
+    u = seen["user"]
+    assert "第 2 集" in u and "【前情摘要】" in u and "陌生人递伞" in u and "他手里有她母亲的遗书" in u and "青梅竹马" in u
+    # 批量一键成片：没有素材的集报错但不影响其它集
+    empty = client.post(f"/api/series/{sid}/episodes", json={}).json()
+    r = client.post(f"/api/series/{sid}/autopilot", json={"episode_ids": [empty["id"]]}).json()
+    assert empty["id"] in r["errors"] and not r["started"]
+    assert client.get("/api/series").json()[0]["episodes"] == 5
+    # 删除系列：各集保留为独立项目
+    client.delete(f"/api/series/{sid}")
+    assert client.get(f"/api/projects/{ep2}").json()["project"]["series_id"] == ""

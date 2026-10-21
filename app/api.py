@@ -125,7 +125,7 @@ class ProjectIn(BaseModel):
 
 PROJECT_FIELDS = {"title", "source_type", "source_text", "aspect_ratio", "style", "style_note", "target_seconds",
                   "script", "synopsis", "dub_mode", "genre", "style_ref", "style_lora", "style_lora_strength",
-                  "grade", "post", "cover", "bgm"}
+                  "grade", "post", "cover", "bgm", "recap"}
 
 
 def _check_project(values: dict) -> None:
@@ -147,7 +147,7 @@ async def list_projects() -> list[dict]:
         if not cover:
             cover = next((c["ref_image"] for c in pipeline.characters_of(p["id"]) if c["ref_image"]), "")
         out.append({**{k: p[k] for k in ("id", "title", "aspect_ratio", "style", "synopsis", "updated_at",
-                                         "final_video", "source_type")},
+                                         "final_video", "source_type", "series_id", "episode")},
                     "cover": cover, "shots": len(shots),
                     "keyframes": sum(1 for s in shots if s["keyframe"]),
                     "videos": sum(1 for s in shots if s["video"])})

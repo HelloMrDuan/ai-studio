@@ -58,6 +58,10 @@ CREATE TABLE IF NOT EXISTS outfits (
   id TEXT PRIMARY KEY, project_id TEXT, character_id TEXT, name TEXT DEFAULT '', appearance TEXT DEFAULT '',
   ref_image TEXT DEFAULT '', sort INTEGER DEFAULT 0, created_at REAL
 );
+CREATE TABLE IF NOT EXISTS series (
+  id TEXT PRIMARY KEY, title TEXT DEFAULT '', synopsis TEXT DEFAULT '', bible TEXT DEFAULT '', source_text TEXT DEFAULT '',
+  style TEXT DEFAULT '', aspect_ratio TEXT DEFAULT '9:16', genre TEXT DEFAULT '', plan TEXT DEFAULT '[]', created_at REAL
+);
 CREATE TABLE IF NOT EXISTS library (
   id TEXT PRIMARY KEY, kind TEXT, name TEXT, data TEXT DEFAULT '{}', images TEXT DEFAULT '{}', created_at REAL
 );
@@ -67,7 +71,7 @@ CREATE INDEX IF NOT EXISTS idx_assets_owner ON assets(owner_type, owner_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
 """
 
-JSON_FIELDS = {"sfx", "grade", "post", "review", "review_report", "positions", "character_ids", "prop_ids", "dialogue", "meta", "params", "result", "autopilot", "old_value", "new_value",
+JSON_FIELDS = {"plan", "sfx", "grade", "post", "review", "review_report", "positions", "character_ids", "prop_ids", "dialogue", "meta", "params", "result", "autopilot", "old_value", "new_value",
                "beats", "writer", "sheet", "variants", "outfits", "data", "images"}
 LIST_FIELDS = {"character_ids", "prop_ids", "dialogue", "beats"}
 _lock = threading.RLock()
@@ -120,7 +124,10 @@ MIGRATIONS = [("characters", "face_image", "TEXT DEFAULT ''"), ("characters", "v
               ("projects", "cover", "TEXT DEFAULT ''"),
               # P3-5 声音后期
               ("shots", "narration", "TEXT DEFAULT ''"), ("shots", "narration_audio", "TEXT DEFAULT ''"),
-              ("shots", "sfx", "TEXT DEFAULT '[]'"), ("projects", "bgm", "TEXT DEFAULT ''")]
+              ("shots", "sfx", "TEXT DEFAULT '[]'"), ("projects", "bgm", "TEXT DEFAULT ''"),
+              # P4-2 多集与系列
+              ("projects", "series_id", "TEXT DEFAULT ''"), ("projects", "episode", "INTEGER DEFAULT 0"),
+              ("projects", "recap", "TEXT DEFAULT ''")]
 
 
 def _migrate(c: sqlite3.Connection) -> None:

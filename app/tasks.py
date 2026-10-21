@@ -63,6 +63,7 @@ GROUP = {
     "assemble": "cpu", "animatic": "cpu",
     "narration": "voice", "narration_write": "llm", "bgm": "music",
     "upscale": "enhance", "interpolate": "enhance",
+    "series_plan": "llm", "recap": "llm",
 }
 # 依赖阶段：同一项目里，先提交的低阶段任务没做完，后提交的高阶段任务不会抢跑（如分镜图 → 视频 → 配音 → 合成）。
 STAGE = {"portrait": 1, "face_ref": 1, "location_image": 1, "prop_image": 1,

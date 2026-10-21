@@ -486,3 +486,102 @@ function exportPanel() {
       <td class="row"><a class="btn small ghost" href="${media(a.path)}" download>下载</a><button class="btn small danger" data-act="del-asset" data-id="${a.id}">删除</button></td></tr>`).join('')}</table>` : ''}</div>`;
 }
 Object.assign(ACTIONS, { async 'export-project'() { submitted(await api('POST', `/api/projects/${S.pid}/export`, {})); } });
+
+/* ---------------- 多集与系列 ---------------- */
+function seriesCards(list) {
+  const cards = (list || []).map((x) => `<div class="card click" data-go="#/s/${x.id}">
+      <div class="cover" style="${x.cover ? `background-image:url('${media(x.cover)}')` : ''}">${x.cover ? '' : '📚'}</div>
+      <div class="card-body"><div class="card-title">${esc(x.title)}</div>
+        <div class="muted small">系列 · ${x.episodes} 集 · 已出成片 ${x.finished}</div>
+        <div class="muted small" style="margin-top:4px">${esc((x.synopsis || x.bible || '').slice(0, 40))}</div></div></div>`).join('');
+  return `<h2>我的系列 <span class="muted small">多集短剧：角色和设定在各集之间继承，自动写前情摘要</span></h2><div class="cards" style="margin-bottom:24px">
+    <div class="card click new-card" data-act="new-series"><b>＋</b>新建系列<span class="small">把长篇小说规划成多集</span></div>${cards}</div>`;
+}
+function seriesBox(p) {
+  if (!p.series_id) return `<details style="margin-top:8px"><summary class="muted small">加入系列（多集短剧）</summary><div class="row" style="margin-top:6px">
+    <select id="js-sid" class="grow"><option value="">加载中…</option></select><label class="row small"><input type="checkbox" id="js-copy" checked> 继承上一集角色</label>
+    <button class="btn small ghost" data-act="join-series">加入</button></div></details>`;
+  return `<div class="panel" style="margin-top:10px;padding:10px"><div class="row between"><b>系列 · 第 ${p.episode} 集</b><a href="#/s/${p.series_id}" class="small">打开系列 →</a></div>
+    <label class="f">前情摘要（会写进本集剧本提示词）</label><textarea rows="3" data-save="projects:${p.id}:recap" placeholder="${p.episode > 1 ? '可点「生成前情摘要」' : '第一集不需要'}">${esc(p.recap || '')}</textarea>
+    ${p.episode > 1 ? `<button class="btn small ghost" data-act="ep-recap">生成前情摘要</button>` : ''}</div>`;
+}
+document.addEventListener('toggle', async (e) => {
+  const sel_ = e.target.querySelector && e.target.querySelector('#js-sid');
+  if (!sel_ || !e.target.open || sel_.dataset.loaded) return;
+  const list = await api('GET', '/api/series'); sel_.dataset.loaded = 1;
+  sel_.innerHTML = list.length ? list.map((x) => `<option value="${x.id}">${esc(x.title)}（${x.episodes} 集）</option>`).join('') : '<option value="">还没有系列，先在首页新建</option>';
+}, true);
+async function renderSeries(sid) {
+  let d; try { d = await api('GET', `/api/series/${sid}`); } catch { location.hash = '#/'; return; }
+  S.series = d; const s = d.series; const plan = s.plan || [];
+  const busy = S.active.find((t) => t.owner_id === sid);
+  const rows = d.episodes.map((e) => {
+    const ap = e.autopilot || {}; const pl = plan.find((x) => x.episode === e.episode) || {};
+    return `<tr><td><b>${e.episode}</b></td><td><a href="#/p/${e.id}/${e.videos ? 'video' : e.shots ? 'board' : 'script'}">${esc(e.title)}</a>
+      <div class="muted small">${esc((e.synopsis || '').slice(0, 60))}${pl.hook ? ` · 钩子：${esc(pl.hook)}` : ''}</div></td>
+      <td class="small">${e.has_script ? '<span class="ok">剧本✓</span>' : '<span class="muted">无剧本</span>'} · 视频 ${e.videos}/${e.shots}${e.final_video ? ' · <span class="ok">已出成片</span>' : ''}</td>
+      <td class="small">${e.episode > 1 ? (e.recap ? '<span class="ok">有前情</span>' : '<span class="muted">无前情</span>') : ''}</td>
+      <td class="small">${ap.status ? `${esc(ap.status)} ${esc(ap.stage || '')}` : ''}</td>
+      <td><label class="row small"><input type="checkbox" class="ep-pick" value="${e.id}" ${e.final_video ? '' : 'checked'}></label></td></tr>`;
+  }).join('');
+  $('#view').innerHTML = `<div class="page"><div class="row between"><h2>📚 <input type="text" data-sv="title" value="${esc(s.title)}" style="width:320px;font-size:20px"></h2>
+      <div class="row"><button class="btn small danger" data-act="del-series">删除系列（保留各集）</button></div></div>
+    <div class="two">
+      <div class="panel"><h3>系列设定</h3>
+        <label class="f">一句话简介</label><input type="text" data-sv="synopsis" value="${esc(s.synopsis || '')}">
+        <label class="f">世界观 / 人物圣经（写进每一集的剧本提示词）</label><textarea rows="8" data-sv="bible" placeholder="主要人物姓名、身份、性格、关系；世界观规则">${esc(s.bible || '')}</textarea>
+        <label class="f">长篇素材（小说 / 大纲，用于 AI 分集）</label><textarea rows="8" data-sv="source_text">${esc(s.source_text || '')}</textarea>
+        <div class="row" style="margin-top:8px">集数 <input type="number" id="sp-n" value="${plan.length || 0}" min="0" max="60" style="width:70px" title="0 = 自动">
+          每集 <input type="number" id="sp-sec" value="60" min="20" max="300" style="width:70px"> 秒
+          <button class="btn small" data-act="series-plan" ${busy ? 'disabled' : ''}>${busy ? '规划中… ' + busy.progress + '%' : 'AI 分集规划'}</button></div>
+        <div class="muted small">规划后自动创建还没有的各集（已有的集不会被覆盖）；系列设定为空时由 AI 一并整理。</div></div>
+      <div class="panel"><div class="row between"><h3>分集（${d.episodes.length}）</h3>
+        <div class="row"><button class="btn small ghost" data-act="ep-new">＋ 新建一集</button><button class="btn small ghost" data-act="series-recap">生成前情摘要</button></div></div>
+        ${rows ? `<table><tr><th>集</th><th>标题</th><th>进度</th><th>前情</th><th>一键成片</th><th>批量</th></tr>${rows}</table>` : '<div class="empty">还没有分集：填写长篇素材后点「AI 分集规划」，或手动新建一集</div>'}
+        <div class="row" style="margin-top:10px">${sel([['ap', '关键步骤停下审核'], ['ap-full', '全自动']], 'ap', 'id="sb-mode" style="width:170px"')}
+          <button class="btn" data-act="series-autopilot" ${d.episodes.length ? '' : 'disabled'}>批量一键成片（勾选的集）</button></div>
+        <div class="muted small">新建的集继承上一集的风格、后期设置和全部角色/场景/道具/服装（连同定妆图和音色），角色长相各集一致。</div></div></div></div>`;
+}
+document.addEventListener('change', async (e) => {
+  const el = e.target; if (!el.dataset.sv || !S.sid) return;
+  await api('PATCH', `/api/series/${S.sid}`, { [el.dataset.sv]: el.value }); toast('已保存');
+});
+Object.assign(ACTIONS, {
+  async 'new-series'() {
+    modal(`<h3>新建系列</h3><label class="f">系列名称</label><input type="text" id="ns-title" placeholder="如：重生之逆袭">
+      <label class="f">长篇素材（小说 / 大纲，可稍后填写）</label><textarea id="ns-src" rows="8"></textarea>
+      <div class="grid2"><div><label class="f">画幅</label><select id="ns-aspect">${S.meta.aspects.map((a) => `<option ${a === '9:16' ? 'selected' : ''}>${a}</option>`).join('')}</select></div>
+      <div><label class="f">风格</label>${sel(Object.entries(S.meta.styles), '', 'id="ns-style"')}</div></div>
+      <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn" data-act="create-series">创建</button></div>`);
+  },
+  async 'create-series'() {
+    const r = await api('POST', '/api/series', { title: val('ns-title') || '未命名系列', source_text: val('ns-src'), aspect_ratio: val('ns-aspect'), style: val('ns-style') });
+    closeModal(); location.hash = `#/s/${r.id}`;
+  },
+  async 'series-plan'() { await api('POST', `/api/series/${S.sid}/plan`, { episodes: Number(val('sp-n')) || 0, seconds: Number(val('sp-sec')) || 60 }); toast('已开始规划分集'); await pollTasks(); renderSeries(S.sid); },
+  async 'series-recap'() { const r = await api('POST', `/api/series/${S.sid}/recap`, {}); toast(r.submitted ? `已提交 ${r.submitted} 集` : '各集都已有前情摘要'); },
+  async 'ep-new'() {
+    const eps = (S.series || {}).episodes || [];
+    modal(`<h3>新建一集</h3><label class="f">标题（可空）</label><input type="text" id="ne-title">
+      <label class="f">本集素材</label><textarea id="ne-src" rows="6" placeholder="本集剧情梗概或原文片段"></textarea>
+      <label class="f">继承角色与设定自</label>${sel([['', '上一集（默认）'], ...eps.map((e) => [e.id, `第${e.episode}集 ${e.title}`])], '', 'id="ne-from"')}
+      <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn" data-act="create-episode">创建</button></div>`);
+  },
+  async 'create-episode'() {
+    const r = await api('POST', `/api/series/${S.sid}/episodes`, { title: val('ne-title'), source_text: val('ne-src'), copy_from: val('ne-from') });
+    closeModal(); toast(`已创建第 ${r.episode} 集，继承角色 ${(r.copied || {}).characters || 0} 个`); renderSeries(S.sid);
+  },
+  async 'series-autopilot'() {
+    const ids = [...document.querySelectorAll('.ep-pick:checked')].map((x) => x.value);
+    if (!ids.length) return toast('先勾选要批量成片的集');
+    const r = await api('POST', `/api/series/${S.sid}/autopilot`, { episode_ids: ids, options: val('sb-mode') === 'ap-full' ? { stops: [] } : {} });
+    const errs = Object.values(r.errors || {});
+    toast(`已启动 ${r.started.length} 集${errs.length ? `，${errs.length} 集失败：${errs[0]}` : ''}`); await pollTasks(); renderSeries(S.sid);
+  },
+  async 'del-series'() { if (!confirm('删除系列？各集会保留为独立项目')) return; await api('DELETE', `/api/series/${S.sid}`); location.hash = '#/'; },
+  async 'ep-recap'() { submitted(await api('POST', `/api/projects/${S.pid}/recap`)); },
+  async 'join-series'() {
+    const sid = val('js-sid'); if (!sid) return toast('先选择系列');
+    Object.assign(S.snap.project, await api('POST', `/api/projects/${S.pid}/series`, { series_id: sid, copy_cast: !!val('js-copy') })); toast('已加入系列'); loadSnap(true);
+  },
+});

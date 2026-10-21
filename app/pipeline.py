@@ -90,6 +90,9 @@ async def task_script(ctx: TaskContext) -> dict:
     await ctx.progress(5, "文字模型编写剧本中…")
     from . import writers
     user = prompts.script_user(project) + "\n\n" + writers.genre_text(project)
+    from . import series
+    if project.get("series_id"):
+        user += "\n\n" + series.series_text(project)
     if project.get("beats"):
         user += "\n\n【节拍表】（剧本必须按这些节拍展开，时间点对齐）\n" + writers.beats_text(project["beats"])
     chars = characters_of(project["id"])
@@ -877,8 +880,9 @@ async def task_assemble(ctx: TaskContext) -> dict:
         n_intro = 0
         if tc.get("enabled"):
             d = float(tc.get("seconds") or 2.5)
+            ep_sub = f"第 {project['episode']} 集" if project.get("series_id") and project.get("episode") else ""
             img = package.card_image(work / "title.png", width, height, tc.get("text") or project["title"] or "",
-                                     tc.get("subtitle") or "", bg)
+                                     tc.get("subtitle") or ep_sub, bg)
             seq_clips.insert(0, await package.card_clip(img, work / "title.mp4", d, width, height))
             seq_shots.insert(0, {"id": "_title", "transition": ""})
             seq_durs.insert(0, d)

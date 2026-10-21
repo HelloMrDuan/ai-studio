@@ -221,3 +221,54 @@ def test_board_tools(client, project):
     assert len(cmp) >= 2 and any(x["current"] and x["edit"] == "把杯子换成红色" and x["region"] for x in cmp)
     inner, outer = board.crop_box(1000, 500, [0.9, 0.9, 0.5, 0.5])
     assert outer[2] <= 1000 and outer[3] <= 500 and inner[0] == 900
+
+
+def test_video_tools(client, project, monkeypatch, tmp_path):
+    import json as _j
+    from test_features import CALLS
+    from app import pipeline, videox
+    from app.config import get_settings
+    pid = project
+    shot = client.get(f"/api/projects/{pid}").json()["shots"][0]
+    client.patch(f"/api/shots/{shot['id']}", json={"camera_move": "摇镜", "camera_dir": "左"})
+    prompt = client.get(f"/api/shots/{shot['id']}/plan").json()["video"]["prompt"]
+    assert "[左摇]" in prompt and "向左" in prompt
+    # 运镜 LoRA：串在模型链末端
+    (get_settings().data_dir / "camera_loras.json").write_text(_j.dumps({"摇镜": "pan.safetensors"}), "utf-8")
+    if not client.get(f"/api/projects/{pid}").json()["shots"][0]["keyframe"]:
+        wait(client, client.post(f"/api/shots/{shot['id']}/keyframe", json={"count": 1}).json()["id"])
+    CALLS.clear()
+    wait(client, client.post(f"/api/shots/{shot['id']}/video", json={}).json()["id"])
+    wf = next(w for w in CALLS if any(n["class_type"] == "SaveVideo" for n in w.values()))
+    assert wf["8"]["inputs"]["lora_name"] == "pan.safetensors" and wf["20"]["inputs"]["model"] == ["8", 0]
+    # 视频延长：尾帧续写 + 拼接，时长变长
+    cur = client.get(f"/api/projects/{pid}").json()["shots"][0]
+    before = asyncio_run(pipeline.media.probe(pipeline.absolute(cur["video"])))["duration"]
+    t = wait(client, client.post(f"/api/shots/{shot['id']}/video/extend", json={"seconds": 3, "instruction": "他转身离开"}).json()["id"])
+    assert t["status"] == "done", t
+    cur = client.get(f"/api/projects/{pid}").json()["shots"][0]
+    after = asyncio_run(pipeline.media.probe(pipeline.absolute(cur["video"])))["duration"]
+    assert after > before + 2 and cur["duration"] >= after - 0.2
+    cmp = client.get(f"/api/shots/{shot['id']}/compare?kind=video").json()["items"]
+    assert any(x["mode"] == "extend" and x["current"] for x in cmp)
+    # 动作参考：没配置工作流时明确报错；配置后按占位符填充
+    assert client.post(f"/api/shots/{shot['id']}/video/motion").status_code == 400
+    wfdir = get_settings().data_dir / "workflows"
+    wfdir.mkdir(exist_ok=True)
+    (wfdir / "motion.json").write_text(_j.dumps({"1": {"class_type": "LoadImage", "inputs": {"image": "{{IMAGE}}"}},
+                                                 "2": {"class_type": "LoadVideo", "inputs": {"file": "{{VIDEO}}", "w": "{{WIDTH}}"}},
+                                                 "9": {"class_type": "SaveVideo", "inputs": {"t": "提示：{{PROMPT}}"}}}), "utf-8")
+    with pipeline.absolute(cur["video"]).open("rb") as f:
+        assert client.post(f"/api/shots/{shot['id']}/motion", files={"file": ("m.mp4", f, "video/mp4")}).json()["motion_ref"]
+    CALLS.clear()
+    t = wait(client, client.post(f"/api/shots/{shot['id']}/video/motion", json={}).json()["id"])
+    assert t["status"] == "done", t
+    assert isinstance(CALLS[0]["2"]["inputs"]["w"], int) and CALLS[0]["9"]["inputs"]["t"].startswith("提示：")
+    assert videox.fill({"a": ["{{X}}", "x{{X}}"]}, {"X": 3}) == {"a": [3, "x3"]}
+    (wfdir / "motion.json").unlink()
+    (get_settings().data_dir / "camera_loras.json").unlink()
+
+
+def asyncio_run(coro):
+    import asyncio
+    return asyncio.new_event_loop().run_until_complete(coro)

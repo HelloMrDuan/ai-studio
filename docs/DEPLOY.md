@@ -179,3 +179,10 @@ tail -f /root/autodl-tmp/logs/studio.log /root/autodl-tmp/logs/comfyui.log
 
 - 网页访问密码：`05_app.sh` 首次运行会在 `.env` 写入随机的 `ACCESS_PASSWORD` 并打印，`start.sh` 启动时也会显示。修改后重启生效；留空表示不需要密码（不建议在开放公网端口时这样做）。
 - 配音 / 对口型 / 质检 OCR：`bash deploy/06_voice.sh`（可加 `--no-lipsync`）。约占 25GB 磁盘，可在无卡模式下安装，自检需要 GPU 模式。装完重启服务，「系统状态」里会显示各组件是否就绪。
+
+## 视频增强（P2-5，可选）
+
+- **运镜**：默认用「方括号运镜指令 + 画面变化描述」的提示词模板（推进/拉远/摇/移/跟随/环绕/升降，可在分镜卡上选方向和速度），不需要额外模型。
+- **运镜 LoRA**（可选）：把 LoRA 放到 `ComfyUI/models/loras/`，在 `data/camera_loras.json` 写映射，例如 `{"推镜": "h3_push_in.safetensors", "环绕": "h3_orbit.safetensors"}`（或环境变量 `CAMERA_LORAS`）。该运镜的镜头生成视频时自动串在模型链末端。
+- **视频延长**：④视频页「延长」——取当前视频最后一帧续写 N 秒，再拼成一个长镜头（自动去掉重复帧），镜头时长同步更新。
+- **动作参考**（可选）：把支持「参考视频驱动动作」的 ComfyUI 工作流（API 格式导出，如 Wan2.2-Animate / VACE）保存为 `data/workflows/motion.json`，在需要的地方写占位符：`{{IMAGE}}`（分镜图）、`{{VIDEO}}`（参考视频）、`{{PROMPT}}`、`{{WIDTH}}`、`{{HEIGHT}}`、`{{SECONDS}}`、`{{LENGTH}}`、`{{SEED}}`。配置后④视频页可上传参考视频并「按参考动作生成」。

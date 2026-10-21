@@ -342,7 +342,8 @@ def video_prompt(project: dict, shot: dict, chars_by_name: dict[str, dict], loc:
         parts = [f"{style_text(project)}。"]
         if loc:
             parts.append(f"场景：{loc['name']}。")
-        parts.append(f"镜头：{shot.get('shot_size')}，{shot.get('camera_angle')}，镜头运动：{shot.get('camera_move')}。")
+        from .videox import camera_text
+        parts.append(f"镜头：{shot.get('shot_size')}，{shot.get('camera_angle')}。运镜：{camera_text(shot)}。")
         parts.append("画面：" + (shot.get("description") or ""))
         if shot.get("action"):
             parts.append("动作：" + shot["action"])

@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import comfy, db, facefusion, llm, media, prompts, qa, voice
+from . import comfy, db, facefusion, llm, media, prompts, qa, videox, voice
 from .config import get_settings
 from .gpu import gpu
 from .tasks import TaskContext, handler, queue
@@ -625,6 +625,9 @@ async def task_video(ctx: TaskContext) -> dict:
             else:
                 wf = video_i2v_workflow(prompt, uploaded[0] if uploaded else None, project["aspect_ratio"], seconds,
                                         quality, turbo, last_frame=up_end, seed=s_)
+            cam_lora = videox.camera_loras().get(shot.get("camera_move") or "")
+            if cam_lora:
+                videox.chain_lora(wf, cam_lora)
             span = 94 // attempts
             files = await comfy.run(wf, out_dir, progress_slice(ctx, 3 + attempt * span, 3 + (attempt + 1) * span,
                                                                  "生成视频" + tag))

@@ -109,7 +109,10 @@ MIGRATIONS = [("characters", "face_image", "TEXT DEFAULT ''"), ("characters", "v
               ("shots", "location_variant", "TEXT DEFAULT ''"), ("projects", "style_ref", "TEXT DEFAULT ''"),
               ("projects", "style_lora", "TEXT DEFAULT ''"), ("projects", "style_lora_strength", "REAL DEFAULT 0.8"),
               # P2-4 分镜增强
-              ("shots", "positions", "TEXT DEFAULT '{}'"), ("shots", "pose_ref", "TEXT DEFAULT ''")]
+              ("shots", "positions", "TEXT DEFAULT '{}'"), ("shots", "pose_ref", "TEXT DEFAULT ''"),
+              # P2-5 视频增强
+              ("shots", "camera_dir", "TEXT DEFAULT ''"), ("shots", "camera_speed", "TEXT DEFAULT ''"),
+              ("shots", "motion_ref", "TEXT DEFAULT ''")]
 
 
 def _migrate(c: sqlite3.Connection) -> None:

@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from . import art, autopilot, board, db, director, facefusion, pipeline, prompts, qa, suggest, voice, writers
+from . import art, autopilot, board, db, videox, director, facefusion, pipeline, prompts, qa, suggest, voice, writers
 from .config import get_settings
 from .gpu import gpu
 from .tasks import queue
@@ -56,7 +56,8 @@ async def meta() -> dict:
             "camera_moves": prompts.CAMERA_MOVES, "transitions": director.TRANSITIONS, "r2v": pipeline.r2v_available(), "qa": qa.available(),
             "voice": voice.status(), "auth": bool(get_settings().access_password),
             "genres": {k: v["label"] for k, v in writers.GENRES.items()},
-            "views": art.VIEWS, "expressions": list(art.EXPRESSIONS), "variants": list(art.VARIANT_PRESETS), "positions": list(board.POSITIONS)}
+            "views": art.VIEWS, "expressions": list(art.EXPRESSIONS), "variants": list(art.VARIANT_PRESETS), "positions": list(board.POSITIONS),
+            "camera_dirs": {k: list(v) for k, v in videox.DIRECTIONS.items()}, "motion": videox.motion_available()}
 
 
 def _model_check() -> list[dict]:
@@ -470,7 +471,7 @@ async def upload_location(loc_id: str, file: UploadFile = File(...)) -> dict:
 # ================= 分镜 =================
 SHOT_FIELDS = {"scene", "location_id", "shot_size", "camera_angle", "camera_move", "description", "action",
                "character_ids", "prop_ids", "dialogue", "sound", "duration", "image_prompt", "video_prompt", "keyframe", "video",
-               "continuous", "end_frame", "performance", "transition", "outfits", "location_variant", "positions", "pose_ref"}
+               "continuous", "end_frame", "performance", "transition", "outfits", "location_variant", "positions", "pose_ref", "camera_dir", "camera_speed", "motion_ref"}
 
 
 def _renumber(project_id: str, ids: list[str]) -> None:
@@ -688,8 +689,8 @@ async def select_asset(body: SelectIn) -> dict:
         return db.update("locations", asset["owner_id"], {"ref_image": asset["path"]})
     if asset["owner_type"] == "shot":
         field = "keyframe" if facefusion.is_image(Path(asset["path"])) else "video"
-        if asset["kind"] in ("end_frame", "pose"):
-            field = {"end_frame": "end_frame", "pose": "pose_ref"}[asset["kind"]]
+        if asset["kind"] in ("end_frame", "pose", "motion"):
+            field = {"end_frame": "end_frame", "pose": "pose_ref", "motion": "motion_ref"}[asset["kind"]]
         return db.update("shots", asset["owner_id"], {field: asset["path"]})
     if asset["owner_type"] == "project" and asset["kind"] == "final":
         return db.update("projects", asset["owner_id"], {"final_video": asset["path"]})

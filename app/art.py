@@ -218,6 +218,7 @@ def forget(path: str) -> None:
     db.execute("UPDATE outfits SET ref_image='' WHERE ref_image=?", [path])
     db.execute("UPDATE projects SET style_ref='' WHERE style_ref=?", [path])
     db.execute("UPDATE shots SET pose_ref='' WHERE pose_ref=?", [path])
+    db.execute("UPDATE shots SET motion_ref='' WHERE motion_ref=?", [path])
 
 
 # ---------------- 素材库（跨项目复用） ----------------

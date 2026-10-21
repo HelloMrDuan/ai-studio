@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     # 自动质检：每次出分镜图/视频后检查「多余字幕文字」和「人脸是否像角色」，不合格自动换种子重抽
     qa_enabled: bool = True
     qa_python: Path | None = None          # 默认复用 FaceFusion 的环境（有 onnxruntime + opencv）
+    camera_loras: str = ""                 # 运镜 LoRA，JSON：{"推镜": "push_in.safetensors", ...}（放 ComfyUI/models/loras）
+    motion_workflow: str = ""              # 动作参考工作流（ComfyUI API JSON，含 {{PROMPT}} {{IMAGE}} {{VIDEO}} 等占位符）
     qa_video_retry: int = 1                # 视频不合格时额外重抽次数（每次约 2~3 分钟）
     qa_keyframe_retry: int = 1
     qa_face_threshold: float = 0.25        # ArcFace 余弦相似度，低于它判为「不像」

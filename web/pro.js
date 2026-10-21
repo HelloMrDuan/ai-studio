@@ -282,3 +282,26 @@ Object.assign(ACTIONS, {
     closeModal(); submitted(await api('POST', `/api/shots/${el.dataset.id}/keyframe/region`, { instruction: ins, box: S.rgBox, character_ids: ids, count: Number(val('rg-n')) }));
   },
 });
+
+/* ---------------- ④ 视频增强：运镜方向/速度、视频延长、动作参考 ---------------- */
+function cameraFields(x) {
+  const dirs = (S.meta.camera_dirs || {})[x.camera_move];
+  if (!dirs && (x.camera_move || '固定') === '固定') return '';
+  return `<div class="row small" style="margin-top:6px;gap:10px">${dirs ? `<span>运镜方向 ${sel([['', '默认'], ...dirs.map((d) => [d, d])], x.camera_dir || '', `data-save="shots:${x.id}:camera_dir" style="width:80px"`)}</span>` : ''}
+    <span>运镜速度 ${sel([['', '缓慢'], ['快', '快速']], x.camera_speed || '', `data-save="shots:${x.id}:camera_speed" style="width:80px"`)}</span></div>`;
+}
+function videoExtras(x) {
+  const m = S.meta.motion;
+  return `<details style="margin-top:6px"><summary class="muted small">延长 / 动作参考${x.motion_ref ? ' · <span class="ok">已有动作参考</span>' : ''}</summary>
+    <div class="row" style="margin-top:6px"><input type="text" class="grow" id="ve-ins-${x.id}" placeholder="接下来的动作（可空），如：他转身走向门口">
+      ${sel([[3, '+3秒'], [4, '+4秒'], [6, '+6秒'], [8, '+8秒']], 4, `id="ve-s-${x.id}" style="width:80px"`)}
+      <button class="btn small" data-act="video-extend" data-id="${x.id}" ${x.video ? '' : 'disabled'} title="取当前视频最后一帧续写，再拼成一个长镜头">延长</button></div>
+    <div class="row" style="margin-top:6px">${x.motion_ref ? `<video src="${media(x.motion_ref)}" muted preload="metadata" style="width:90px;border-radius:4px"></video>` : ''}
+      <button class="btn small ghost" data-act="motion-upload" data-id="${x.id}" title="上传一段动作参考视频（舞蹈、打斗、手势…）">${x.motion_ref ? '换参考视频' : '上传动作参考视频'}</button>
+      <button class="btn small ghost" data-act="motion-gen" data-id="${x.id}" ${m && x.motion_ref && x.keyframe ? '' : 'disabled'} title="${m ? '用参考视频驱动分镜图里的人物动作' : '未配置动作参考工作流（data/workflows/motion.json）'}">按参考动作生成</button></div></details>`;
+}
+Object.assign(ACTIONS, {
+  async 'video-extend'(el) { const id = el.dataset.id; submitted(await api('POST', `/api/shots/${id}/video/extend`, { instruction: val(`ve-ins-${id}`), seconds: Number(val(`ve-s-${id}`)), quality: val(`vq-${id}`) || 'draft', turbo: !!val(`vt-${id}`) })); },
+  async 'motion-upload'(el) { const f = await pickFile('video/*'); if (f) { await upload(`/api/shots/${el.dataset.id}/motion`, f); loadSnap(true); } },
+  async 'motion-gen'(el) { submitted(await api('POST', `/api/shots/${el.dataset.id}/video/motion`, { quality: val(`vq-${el.dataset.id}`) || 'draft' })); },
+});

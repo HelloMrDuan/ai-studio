@@ -351,7 +351,7 @@ function viewBoard() {
       <div class="row" style="margin-top:8px"><div style="width:200px"><label class="f">场景</label>${sel([['', '（未指定）'], ...s.locations.map((l) => [l.id, l.name])], x.location_id, `data-save="shots:${x.id}:location_id"`)}</div>
         <div class="grow"><label class="f">出镜角色（点击切换，顺序即参考图顺序）</label><div class="chips">${s.characters.map((c) => `<span class="chip ${x.character_ids.includes(c.id) ? 'on' : ''}" data-act="toggle-char" data-id="${x.id}" data-c="${c.id}">${esc(c.name)}${c.ref_image ? '' : ' ⚠'}</span>`).join('') || '<span class="muted small">先在②添加角色</span>'}</div></div></div>
       ${(s.props || []).length ? `<label class="f">画面中的道具</label><div class="chips">${s.props.map((pr) => `<span class="chip ${(x.prop_ids || []).includes(pr.id) ? 'on' : ''}" data-act="toggle-prop" data-id="${x.id}" data-p="${pr.id}">${esc(pr.name)}${pr.ref_image ? '' : ' ⚠'}</span>`).join('')}</div>` : ''}
-      ${shotArtFields(x)}${shotLayoutFields(x)}
+      ${shotArtFields(x)}${shotLayoutFields(x)}${cameraFields(x)}
       ${i ? `<label class="row small" style="margin-top:8px" title="同一场景、动作直接接着上一镜时勾选：视频首帧取上一镜视频的最后一帧，动作不跳变"><input type="checkbox" data-save="shots:${x.id}:continuous" data-rerender="1" ${x.continuous ? 'checked' : ''}> 与上一镜连续动作（首帧取上一镜最后一帧）</label>` : ''}
       <label class="f">画面描述（首帧：站位、姿态、表情、环境、光线）</label><textarea rows="3" data-save="shots:${x.id}:description">${esc(x.description)}</textarea>
       <label class="f">镜头内动作（给视频模型）</label><textarea rows="2" data-save="shots:${x.id}:action">${esc(x.action)}</textarea>
@@ -431,7 +431,7 @@ function viewVideo() {
       <button class="btn small ghost" data-act="face-fix" data-id="${x.id}" data-target="video" ${x.video && x.character_ids.length ? '' : 'disabled'} title="用角色脸部特写对视频换脸，修正走样的人脸">人脸修正</button>
       <button class="btn small ghost" data-act="ff-enhance" data-id="${x.id}" ${x.video ? '' : 'disabled'} title="只做面部清晰度增强，不换脸">修脸</button>
       <button class="btn small ghost" data-act="dub" data-id="${x.id}" ${x.video && (x.dialogue || []).length ? '' : 'disabled'} title="用角色固定音色重新配音，并对口型">配音</button>
-      <button class="btn small ghost" data-act="upload-shot" data-id="${x.id}">上传</button></div></div>`).join('');
+      <button class="btn small ghost" data-act="upload-shot" data-id="${x.id}">上传</button></div>${videoExtras(x)}</div>`).join('');
   return `<div class="toolbar"><span class="title">④ 视频 <span class="muted small">MiniMax H3 · 自带对白配音与音效</span></span>
       ${sel([['draft', '草稿 480p（快）'], ['final', '成品 768p']], 'draft', 'id="bv-q"')}
       ${sel(modes, 'auto', 'id="bv-m" style="width:200px"')}

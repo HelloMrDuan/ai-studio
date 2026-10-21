@@ -88,6 +88,35 @@ function cvPositions() {
   return pos;
 }
 
+/* ---------- 分组：按场景自动分组 + 手动分组；可折叠 ---------- */
+const cvSavedGroups = () => (CV.pend && CV.pend.groups) || cvState().groups || [];
+const cvPrefs = () => ({ ...(cvState().prefs || {}), ...((CV.pend && CV.pend.prefs) || {}) });
+function cvGroups() {
+  const saved = cvSavedGroups(); const out = []; const exists = new Set(cvItems().map((x) => x.id));
+  if (cvPrefs().scene_groups !== false) {
+    cvScenes().forEach((row, i) => {
+      const id = `scene:${i}:${row.key}`.slice(0, 24); const st = saved.find((g) => g.id === id) || {};
+      out.push({ id, title: row.title || `场景 ${i + 1}`, members: row.shots.map((x) => `shot:${x.id}`), auto: 'scene', collapsed: !!st.collapsed });
+    });
+  }
+  saved.filter((g) => !g.auto).forEach((g) => {
+    const members = (g.members || []).filter((m) => exists.has(m));
+    if (members.length) out.push({ ...g, members });
+  });
+  return out;
+}
+// 被折叠分组藏起来的节点 → 分组 id
+function cvHidden(groups) {
+  const h = {};
+  groups.filter((g) => g.collapsed).forEach((g) => g.members.forEach((m) => { if (!h[m]) h[m] = g.id; }));
+  return h;
+}
+function cvSaveGroups(mutate) {
+  const groups = cvSavedGroups().map((g) => ({ ...g }));
+  mutate(groups);
+  cvState().groups = groups; cvSave({ groups });
+}
+
 /* ---------- 过期检测：上游换过图 / 视频后，下游标「需更新」 ---------- */
 const cvT = (owner, path) => { if (!path) return 0; const a = (S.snap.assets[owner] || []).find((x) => x.path === path); return a ? a.created_at : 0; };
 function cvStale() {
@@ -189,16 +218,20 @@ function viewCanvas() {
       <button class="btn small ghost" data-act="cv-batch" data-k="videos" title="给有分镜图、还没有视频的镜头出视频">批量出视频</button>
       <button class="btn small warn hidden" id="cv-stale-btn" data-act="cv-next-stale" title="依次定位到需要更新的卡片">⚠ 需更新</button>
       <button class="btn small ghost" data-act="cv-edges">${CV.edges === 'all' ? '连线：全部' : '连线：仅选中'}</button>
+      <button class="btn small ghost" data-act="cv-scene-groups">${cvPrefs().scene_groups === false ? '场景分组：关' : '场景分组：开'}</button>
     </div>
-    <div class="cv-hint muted small">拖空白处平移 · 滚轮 / 双指缩放 · 拖卡片移动（Shift 多选）· 把角色 / 场景 / 道具拖到镜头上即加入该镜头 · 点连线可断开 · 双击空白加便签</div></div>`;
+    <div class="cv-bar cv-selbar hidden" id="cv-selbar"></div>
+    <canvas class="cv-mini" id="cv-mini" width="220" height="150" title="小地图：点击或拖动跳转"></canvas>
+    <div class="cv-hint muted small">拖空白处平移 · 滚轮 / 双指缩放 · 拖卡片移动（Shift 点选 / 框选多张）· 把角色 / 场景 / 道具拖到镜头上即加入该镜头 · 点连线可断开 · 双击空白加便签</div></div>`;
 }
 function cvRenderNodes() {
   const pos = cvPositions(); CV.pos = pos;
   const stale = cvStale(); CV_CARD._stale = stale; CV.stale = stale;
   const sb = $('#cv-stale-btn'); if (sb) { const n = Object.keys(stale).length; sb.classList.toggle('hidden', !n); sb.textContent = `⚠ 需更新 ${n}`; }
+  CV.groups = cvGroups(); CV.hidden = cvHidden(CV.groups);
   $('#cv-nodes').innerHTML = cvItems().map((it) => {
     const p = pos[it.id]; it.stale = stale[it.id];
-    return `<div class="cv-node cv-${it.type} ${CV.sel.has(it.id) ? 'sel' : ''} ${it.stale ? 'stale' : ''} ${it.type === 'note' ? `nc-${it.row.color}` : ''}" data-node="${esc(it.id)}"
+    return `<div class="cv-node cv-${it.type} ${CV.sel.has(it.id) ? 'sel' : ''} ${it.stale ? 'stale' : ''} ${CV.hidden[it.id] ? 'hidden' : ''} ${it.type === 'note' ? `nc-${it.row.color}` : ''}" data-node="${esc(it.id)}"
       style="left:${p.x}px;top:${p.y}px;width:${(it.type === 'note' && it.row.w) || CV_W[it.type]}px">${CV_CARD[it.type](it)}</div>`;
   }).join('');
   cvMeasure();
@@ -211,16 +244,53 @@ function cvRenderNodes() {
     }
   });
   if (moved) cvMeasure();
-  cvDrawEdges();
+  cvDrawGroups(); cvDrawEdges(); cvSelBar(); cvMini();
 }
 function cvMeasure() {
-  CV.size = {};
-  document.querySelectorAll('#cv-nodes .cv-node').forEach((el) => { CV.size[el.dataset.node] = [el.offsetWidth, el.offsetHeight]; });
+  const old = CV.size || {}; CV.size = {};
+  document.querySelectorAll('#cv-nodes .cv-node').forEach((el) => {
+    const k = el.dataset.node;
+    CV.size[k] = el.offsetWidth ? [el.offsetWidth, el.offsetHeight] : (old[k] || [CV_W[k.split(':')[0]] || 220, 240]);   // 折叠隐藏的沿用旧尺寸
+  });
+}
+const GP = 16;                                           // 分组框内边距
+function cvDrawGroups() {
+  const box = $('#cv-groups'); if (!box) return;
+  const html = []; const H = CV.hidden || {};
+  // 先画折叠的（展开的分组如果包含被折叠的卡片，框住折叠块）
+  const order = [...(CV.groups || [])].sort((a, b) => Number(b.collapsed) - Number(a.collapsed));
+  order.forEach((g) => {
+    const key = `grp:${g.id}`;
+    const ids = g.collapsed ? g.members : [...new Set(g.members.map((m) => (H[m] && H[m] !== g.id ? `grp:${H[m]}` : m)))];
+    if (!g.collapsed && ids.some((k) => k.startsWith('grp:'))) ids.forEach((k) => { if (k.startsWith('grp:') && !CV.size[k]) CV.size[k] = [260, 96]; });
+    const b = cvBounds(ids); if (!b) return;
+    if (g.collapsed) {
+      const thumbs = g.members.map((m) => localRow('shots', m.slice(5))).filter((x) => x && x.keyframe).slice(0, 4);
+      CV.pos[key] = { x: b.x0, y: b.y0 };
+      html.push(`<div class="cv-gbox ${g.auto ? 'auto' : ''} ${CV.sel.has(key) ? 'sel' : ''}" data-group="${esc(g.id)}" style="left:${b.x0}px;top:${b.y0}px">
+        <div class="cv-gt"><span class="cv-gtt">${esc(g.title)}</span><span class="muted small">${g.members.length} 张卡片</span>
+          <span class="cv-gb" data-act="cv-group-toggle" data-id="${esc(g.id)}" title="展开">▸</span>${g.auto ? '' : `<span class="cv-gb" data-act="cv-group-del" data-id="${esc(g.id)}" title="解散分组">✕</span>`}</div>
+        <div class="cv-gthumbs">${thumbs.map((x) => `<span style="background-image:url('${media(x.keyframe)}')"></span>`).join('') || '<span class="muted small">（无图）</span>'}</div></div>`);
+    } else {
+      delete CV.pos[key];
+      const gp = g.auto ? GP : GP + 22;                   // 手动分组框套在场景分组外面，标题不重叠
+      html.push(`<div class="cv-group ${g.auto ? 'auto' : ''} ${g.color ? `gc-${g.color}` : ''}" data-group="${esc(g.id)}" style="left:${b.x0 - gp}px;top:${b.y0 - gp - 26 - (g.auto ? 0 : 26)}px;width:${b.x1 - b.x0 + gp * 2}px;height:${b.y1 - b.y0 + gp * 2 + 26 + (g.auto ? 0 : 26)}px">
+        <div class="cv-gt"><span class="cv-gtt" title="拖动标题可整组移动">${esc(g.title)}</span>${g.auto ? '' : `<span class="cv-gb" data-act="cv-group-rename" data-id="${esc(g.id)}" title="改名">✎</span>`}
+          <span class="cv-gb" data-act="cv-group-toggle" data-id="${esc(g.id)}" title="折叠">▾</span>${g.auto ? '' : `<span class="cv-gb" data-act="cv-group-del" data-id="${esc(g.id)}" title="解散分组">✕</span>`}</div></div>`);
+    }
+  });
+  box.innerHTML = html.join('');
+  box.querySelectorAll('.cv-gbox').forEach((el) => { CV.size[`grp:${el.dataset.group}`] = [el.offsetWidth, el.offsetHeight]; });
 }
 function cvDrawEdges() {
   const svg = $('#cv-edges'); if (!svg) return;
   const hot = CV.sel;
-  const paths = cvEdgeList().map(([a, b, k]) => {
+  const H = CV.hidden || {}; const vis = (id) => (H[id] ? `grp:${H[id]}` : id);
+  const seen = new Set();
+  const paths = cvEdgeList().map(([a0, b0, k]) => {
+    const a = vis(a0); const b = vis(b0);
+    if (a === b) return '';
+    if (a !== a0 || b !== b0) { const key = `${a}>${b}>${k}`; if (seen.has(key)) return ''; seen.add(key); }
     const pa = CV.pos[a]; const pb = CV.pos[b]; const sa = CV.size[a]; const sb = CV.size[b];
     if (!pa || !pb || !sa || !sb) return '';
     const on = hot.has(a) || hot.has(b);
@@ -230,7 +300,7 @@ function cvDrawEdges() {
     if (x2 < x1 - 20) { x1 = pa.x; x2 = pb.x + sb[0]; }
     const dx = Math.max(40, Math.abs(x2 - x1) / 2) * (x2 >= x1 ? 1 : -1);
     const d = `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
-    const cut = ['char', 'loc', 'prop'].includes(k) ? `<path class="e-hit" d="${d}" data-a="${esc(a)}" data-b="${esc(b)}"><title>点击断开</title></path>` : '';
+    const cut = ['char', 'loc', 'prop'].includes(k) && a === a0 && b === b0 ? `<path class="e-hit" d="${d}" data-a="${esc(a)}" data-b="${esc(b)}"><title>点击断开</title></path>` : '';
     return `<path class="e-${k} ${on ? 'hot' : ''}" d="${d}"/>${cut}`;
   });
   svg.innerHTML = paths.join('');
@@ -241,10 +311,43 @@ function cvApplyVp() {
   const zl = $('#cv-zl'); if (zl) zl.textContent = `${Math.round(CV.vp.z * 100)}%`;
   const r = $('#cv-root'); if (r) r.style.backgroundPosition = `${CV.vp.x}px ${CV.vp.y}px`;
   if (r) r.style.backgroundSize = `${24 * CV.vp.z}px ${24 * CV.vp.z}px`;
+  cvMini();
+}
+/* ---------- 小地图 ---------- */
+let cvMiniRaf = 0;
+function cvMini() {
+  if (cvMiniRaf) return;
+  cvMiniRaf = requestAnimationFrame(() => {
+    cvMiniRaf = 0;
+    const c = $('#cv-mini'); const r = $('#cv-root'); if (!c || !r || !CV.vp) return;
+    const b = cvBounds(); if (!b) return;
+    const view = { x0: -CV.vp.x / CV.vp.z, y0: -CV.vp.y / CV.vp.z, x1: (r.clientWidth - CV.vp.x) / CV.vp.z, y1: (r.clientHeight - CV.vp.y) / CV.vp.z };
+    const all = { x0: Math.min(b.x0, view.x0), y0: Math.min(b.y0, view.y0), x1: Math.max(b.x1, view.x1), y1: Math.max(b.y1, view.y1) };
+    const pad = 6; const k = Math.min((c.width - pad * 2) / (all.x1 - all.x0 || 1), (c.height - pad * 2) / (all.y1 - all.y0 || 1));
+    const ox = pad - all.x0 * k + ((c.width - pad * 2) - (all.x1 - all.x0) * k) / 2; const oy = pad - all.y0 * k + ((c.height - pad * 2) - (all.y1 - all.y0) * k) / 2;
+    CV.miniT = { k, ox, oy };
+    const g = c.getContext('2d'); g.clearRect(0, 0, c.width, c.height);
+    const COL = { script: '#8b93a7', char: '#6c8cff', loc: '#3ecf8e', prop: '#f5a524', shot: '#c5cad6', final: '#9b6cff', note: '#f7e08a', grp: '#6c8cff' };
+    Object.entries(CV.pos).forEach(([id, p]) => {
+      if ((CV.hidden || {})[id]) return;
+      const sz = CV.size[id] || [200, 200]; const t = id.split(':')[0];
+      g.fillStyle = (CV.stale || {})[id] ? '#f5a524' : COL[t] || '#8b93a7'; g.globalAlpha = CV.sel.has(id) ? 1 : 0.55;
+      g.fillRect(ox + p.x * k, oy + p.y * k, Math.max(2, sz[0] * k), Math.max(2, sz[1] * k));
+    });
+    g.globalAlpha = 1; g.strokeStyle = '#fff'; g.lineWidth = 1;
+    g.strokeRect(ox + view.x0 * k, oy + view.y0 * k, (view.x1 - view.x0) * k, (view.y1 - view.y0) * k);
+  });
+}
+function cvMiniJump(e) {
+  const c = $('#cv-mini'); const r = $('#cv-root'); const t = CV.miniT; if (!c || !t) return;
+  const rc = c.getBoundingClientRect();
+  const wx = (e.clientX - rc.left - t.ox) / t.k; const wy = (e.clientY - rc.top - t.oy) / t.k;
+  CV.vp.x = r.clientWidth / 2 - wx * CV.vp.z; CV.vp.y = r.clientHeight / 2 - wy * CV.vp.z;
+  cvApplyVp(); cvSaveVp();
 }
 function cvBounds(ids) {
   let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
-  (ids || Object.keys(CV.pos)).forEach((id) => {
+  (ids || Object.keys(CV.pos).filter((k) => !k.startsWith('grp:') && !(CV.hidden || {})[k])).forEach((id) => {
     const p = CV.pos[id]; const s = CV.size[id] || [200, 200]; if (!p) return;
     x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x + s[0]); y1 = Math.max(y1, p.y + s[1]);
   });
@@ -266,6 +369,13 @@ function cvMount() {
     if (v && v.z) { CV.vp = { ...v }; cvApplyVp(); } else cvFit();
   } else cvApplyVp();
   root.addEventListener('pointerdown', cvDown);
+  const mini = $('#cv-mini');
+  mini.addEventListener('pointerdown', (e) => {
+    e.stopPropagation(); cvMiniJump(e);
+    const mv = (ev) => cvMiniJump(ev);
+    window.addEventListener('pointermove', mv);
+    window.addEventListener('pointerup', () => window.removeEventListener('pointermove', mv), { once: true });
+  });
   root.addEventListener('wheel', cvWheel, { passive: false });
   root.addEventListener('dblclick', (e) => { if (!e.target.closest('.cv-node')) cvAddNoteAt(e); });
   root.addEventListener('change', cvNoteChange);
@@ -291,6 +401,16 @@ function cvWheel(e) {
 function cvDown(e) {
   if (e.button !== 0 && e.button !== 1) return;
   if (e.target.closest('.e-hit')) return;                 // 点连线：交给 click 处理断开
+  if (e.target.closest('.cv-mini')) return;
+  const gEl = e.target.closest('.cv-gt, .cv-gbox');
+  if (gEl && e.button === 0) {                             // 拖分组标题 = 整组移动
+    if (e.target.closest('[data-act]')) return;
+    const g = (CV.groups || []).find((x) => x.id === gEl.closest('[data-group]').dataset.group); if (!g) return;
+    const ids = g.members.filter((k) => CV.pos[k]);
+    CV.drag = { kind: 'node', group: g.id, sx: e.clientX, sy: e.clientY, ids, start: Object.fromEntries(ids.map((k) => [k, { ...CV.pos[k] }])), moved: false };
+    window.addEventListener('pointermove', cvMove); window.addEventListener('pointerup', cvUp, { once: true });
+    return;
+  }
   const nodeEl = e.target.closest('.cv-node');
   if (nodeEl && e.button === 0) {
     if (e.target.closest('button,input,textarea,select,.cv-x')) return;
@@ -300,8 +420,13 @@ function cvDown(e) {
     const ids = [...CV.sel].filter((k) => CV.pos[k]);
     CV.drag = { kind: 'node', sx: e.clientX, sy: e.clientY, ids, start: Object.fromEntries(ids.map((k) => [k, { ...CV.pos[k] }])), moved: false };
   } else if (!e.target.closest('.cv-bar')) {
-    if (!e.shiftKey && e.button === 0 && CV.sel.size) { CV.sel.clear(); cvMarkSel(); }
-    CV.drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, vx: CV.vp.x, vy: CV.vp.y, moved: false };
+    if (e.shiftKey && e.button === 0) {                    // Shift + 拖空白 = 框选
+      const r = $('#cv-root').getBoundingClientRect();
+      CV.drag = { kind: 'box', sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top, base: new Set(CV.sel), moved: false };
+    } else {
+      if (e.button === 0 && CV.sel.size) { CV.sel.clear(); cvMarkSel(); }
+      CV.drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, vx: CV.vp.x, vy: CV.vp.y, moved: false };
+    }
   } else return;
   window.addEventListener('pointermove', cvMove);
   window.addEventListener('pointerup', cvUp, { once: true });
@@ -312,12 +437,13 @@ function cvMove(e) {
   if (!d.moved && Math.hypot(dx, dy) < 4) return;
   d.moved = true; document.body.classList.add('cv-dragging');
   if (d.kind === 'pan') { CV.vp.x = d.vx + dx; CV.vp.y = d.vy + dy; cvApplyVp(); return; }
+  if (d.kind === 'box') { cvBoxSelect(d, e); return; }
   d.ids.forEach((k) => {
     const p = { x: Math.round(d.start[k].x + dx / CV.vp.z), y: Math.round(d.start[k].y + dy / CV.vp.z) };
     CV.pos[k] = p;
     const el = document.querySelector(`.cv-node[data-node="${CSS.escape(k)}"]`); if (el) { el.style.left = `${p.x}px`; el.style.top = `${p.y}px`; }
   });
-  cvDrawEdges();
+  cvDrawGroups(); cvDrawEdges(); cvMini();
   // 角色 / 场景 / 道具拖到镜头上：高亮目标
   const t = d.ids.length === 1 && /^(char|loc|prop):/.test(d.ids[0]) ? cvDropTarget(e) : null;
   if (t !== d.target) {
@@ -330,13 +456,45 @@ function cvUp() {
   window.removeEventListener('pointermove', cvMove);
   document.body.classList.remove('cv-dragging');
   const d = CV.drag; CV.drag = null; if (!d) return;
-  if (d.moved) window.addEventListener('click', (ev) => { ev.stopPropagation(); ev.preventDefault(); }, { capture: true, once: true });
-  if (d.kind === 'pan') { if (d.moved) cvSaveVp(); } else if (d.moved && d.target) cvLink(d); else if (d.moved) cvCommitMove(d.ids);
+  if (d.moved) {
+    const eat = (ev) => { ev.stopPropagation(); ev.preventDefault(); };
+    window.addEventListener('click', eat, { capture: true, once: true });
+    setTimeout(() => window.removeEventListener('click', eat, { capture: true }), 60);
+  }
+  if (d.kind === 'box') { const b = $('#cv-boxsel'); if (b) b.remove(); cvSelBar(); }
+  if (d.kind === 'pan') { if (d.moved) cvSaveVp(); } else if (d.kind === 'node' && d.moved && d.target) cvLink(d); else if (d.kind === 'node' && d.moved) cvCommitMove(d.ids);
   if (CV.dirty) { CV.dirty = false; renderProject(); }
 }
 function cvMarkSel() {
   document.querySelectorAll('#cv-nodes .cv-node').forEach((el) => el.classList.toggle('sel', CV.sel.has(el.dataset.node)));
-  cvDrawEdges();
+  cvDrawEdges(); cvSelBar();
+}
+function cvBoxSelect(d, e) {
+  let el = $('#cv-boxsel');
+  if (!el) { el = document.createElement('div'); el.id = 'cv-boxsel'; el.className = 'cv-boxsel'; $('#cv-root').appendChild(el); }
+  const x0 = Math.min(d.sx, e.clientX) - d.ox; const y0 = Math.min(d.sy, e.clientY) - d.oy;
+  const x1 = Math.max(d.sx, e.clientX) - d.ox; const y1 = Math.max(d.sy, e.clientY) - d.oy;
+  Object.assign(el.style, { left: `${x0}px`, top: `${y0}px`, width: `${x1 - x0}px`, height: `${y1 - y0}px` });
+  const w0 = { x: (x0 - CV.vp.x) / CV.vp.z, y: (y0 - CV.vp.y) / CV.vp.z }; const w1 = { x: (x1 - CV.vp.x) / CV.vp.z, y: (y1 - CV.vp.y) / CV.vp.z };
+  CV.sel = new Set(d.base);
+  Object.entries(CV.pos).forEach(([k, p]) => {
+    if (k.startsWith('grp:') || (CV.hidden || {})[k]) return;
+    const sz = CV.size[k] || [0, 0];
+    if (p.x < w1.x && p.x + sz[0] > w0.x && p.y < w1.y && p.y + sz[1] > w0.y) CV.sel.add(k);
+  });
+  document.querySelectorAll('#cv-nodes .cv-node').forEach((n) => n.classList.toggle('sel', CV.sel.has(n.dataset.node)));
+}
+// 选中多张卡片时出现的操作条
+function cvSelBar() {
+  const bar = $('#cv-selbar'); if (!bar) return;
+  const ids = [...CV.sel].filter((k) => !k.startsWith('grp:'));
+  const shots = ids.filter((k) => k.startsWith('shot:')); const notes = ids.filter((k) => k.startsWith('note:'));
+  bar.classList.toggle('hidden', ids.length < 2 && !notes.length);
+  bar.innerHTML = `<span class="muted small">已选 ${ids.length}</span>
+    ${ids.length >= 2 ? '<button class="btn small ghost" data-act="cv-group-make">成组</button>' : ''}
+    ${shots.length ? `<button class="btn small ghost" data-act="cv-sel-run" data-k="keyframe">出图 ${shots.length}</button><button class="btn small ghost" data-act="cv-sel-run" data-k="video">出视频 ${shots.length}</button>` : ''}
+    ${notes.length ? `<button class="btn small ghost" data-act="cv-sel-del-notes">删除便签 ${notes.length}</button>` : ''}
+    <button class="btn small ghost" data-act="cv-sel-clear">取消选择</button>`;
 }
 function cvCommitMove(ids) {
   const nodes = {}; let notes = null;
@@ -483,3 +641,57 @@ function cvCenterOn(id) {
   CV.vp.x = r.clientWidth / 2 - (p.x + sz[0] / 2) * CV.vp.z; CV.vp.y = r.clientHeight / 2 - (p.y + sz[1] / 2) * CV.vp.z;
   cvApplyVp(); cvSaveVp();
 }
+
+Object.assign(ACTIONS, {
+  'cv-group-toggle'(el) {
+    const g = (CV.groups || []).find((x) => x.id === el.dataset.id); if (!g) return;
+    if (!g.collapsed) g.members.forEach((m) => CV.sel.delete(m));
+    cvSaveGroups((gs) => {
+      const cur = gs.find((x) => x.id === g.id);
+      if (cur) cur.collapsed = !g.collapsed; else gs.push({ id: g.id, auto: g.auto || '', title: g.title, members: [], collapsed: !g.collapsed });
+    });
+    cvRenderNodes();
+  },
+  'cv-group-make'() {
+    const members = [...CV.sel].filter((k) => !k.startsWith('grp:')); if (members.length < 2) return;
+    const title = prompt('分组名称', '分组') || '分组';
+    cvSaveGroups((gs) => gs.push({ id: Math.random().toString(36).slice(2, 12), title, members, color: '' }));
+    cvRenderNodes();
+  },
+  'cv-group-rename'(el) {
+    const g = cvSavedGroups().find((x) => x.id === el.dataset.id); if (!g) return;
+    const t = prompt('分组名称', g.title); if (!t) return;
+    cvSaveGroups((gs) => { gs.find((x) => x.id === g.id).title = t; }); cvRenderNodes();
+  },
+  'cv-group-del'(el) {
+    if (!confirm('解散这个分组？（卡片保留）')) return;
+    cvSaveGroups((gs) => { const i = gs.findIndex((x) => x.id === el.dataset.id); if (i >= 0) gs.splice(i, 1); }); cvRenderNodes();
+  },
+  'cv-scene-groups'(el) {
+    const on = cvPrefs().scene_groups === false;
+    const prefs = { ...cvPrefs(), scene_groups: on }; cvState().prefs = prefs; cvSave({ prefs });
+    el.textContent = on ? '场景分组：开' : '场景分组：关'; cvRenderNodes();
+  },
+  async 'cv-sel-run'(el) {
+    const ids = [...CV.sel].filter((k) => k.startsWith('shot:')).map((k) => k.slice(5));
+    const k = el.dataset.k; let n = 0;
+    for (const id of ids) {
+      const x = localRow('shots', id); if (!x || (k === 'video' && !x.keyframe)) continue;
+      await api('POST', `/api/shots/${id}/${k}`, k === 'keyframe' ? { count: 1 } : {}); n += 1;
+    }
+    submitted(null, n ? `已提交 ${n} 个任务` : '选中的镜头还没有分镜图');
+  },
+  'cv-sel-del-notes'() {
+    const del = [...CV.sel].filter((k) => k.startsWith('note:')).map((k) => k.slice(5));
+    if (!confirm(`删除 ${del.length} 张便签？`)) return;
+    const notes = cvNotes().filter((n) => !del.includes(n.id)); cvState().notes = notes; cvSave({ notes });
+    del.forEach((d) => CV.sel.delete(`note:${d}`)); cvRenderNodes();
+  },
+  'cv-sel-clear'() { CV.sel.clear(); cvMarkSel(); },
+});
+document.addEventListener('keydown', (e) => {
+  if (S.step !== 'canvas' || /INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName || '')) return;
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
+    e.preventDefault(); CV.sel = new Set(Object.keys(CV.pos).filter((k) => !k.startsWith('grp:') && !(CV.hidden || {})[k])); cvMarkSel();
+  }
+});

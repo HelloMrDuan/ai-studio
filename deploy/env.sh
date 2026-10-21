@@ -74,6 +74,11 @@ build_jobs() {  # 每个编译进程按 2.5GB 内存估算，避免 OOM
   echo $(( c < m ? c : m ))
 }
 
+# 网页端口：.env 里的 PORT（AutoDL 自定义服务 6006；算家云只对外开放 8080）；文字模型端口取自 LLM_BASE_URL
+env_get() { grep -E "^$1=" "$APP_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- || true; }
+studio_port() { local p; p=$(env_get PORT); echo "${p:-6006}"; }
+llm_port() { local u; u=$(env_get LLM_BASE_URL); u=${u:-http://127.0.0.1:8080/v1}; u=${u#*://}; u=${u%%/*}; echo "${u##*:}"; }
+
 log() { echo -e "\033[1;36m[$(date +%H:%M:%S)] $*\033[0m"; }
 die() { echo -e "\033[1;31m[错误] $*\033[0m" >&2; exit 1; }
 

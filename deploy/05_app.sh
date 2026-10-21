@@ -19,6 +19,10 @@ else
   sed -i "s#^VIDEO_I2V_UNET=.*#VIDEO_I2V_UNET=minimax_h3_fl2va_pruned_int8_convrot.safetensors#; s#^VIDEO_R2V_UNET=.*#VIDEO_R2V_UNET=minimax_h3_ref2va_pruned_int8_convrot.safetensors#; s#^LLM_GGUF=.*#LLM_GGUF=$BASE/models/llm/Qwen_Qwen3.6-35B-A3B-Q4_K_M.gguf#" .env
 fi
 grep -E "^(BASE_DIR|VIDEO_I2V_UNET|LLM_GGUF)=" .env
+if [ -d /root/sj-tmp ] && ! grep -q "^PORT=8080" .env; then   # 算家云只对外开放 8080：网页用 8080，文字模型挪到 8081
+  sed -i "s#^PORT=.*#PORT=8080#; s#^LLM_BASE_URL=http://127.0.0.1:8080/#LLM_BASE_URL=http://127.0.0.1:8081/#" .env
+  log "算家云：网页端口改为 8080（对外开放端口），文字模型改用 8081"
+fi
 if ! grep -q "^ACCESS_PASSWORD=" .env; then   # 端口开放到公网后，没有密码任何人都能用你的显卡
   PW=$("$APP_PY" -c "import secrets; print(secrets.token_urlsafe(9))")
   printf '\n# 网页访问密码（留空 = 不需要密码）\nACCESS_PASSWORD=%s\n' "$PW" >> .env

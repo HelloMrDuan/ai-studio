@@ -123,3 +123,61 @@ def test_director_rules_and_notes(client, monkeypatch):
     snap = client.get(f"/api/projects/{pid}").json()
     plan = client.get(f"/api/shots/{ids[0]}/plan").json()
     assert "甲双手抱胸" in json.dumps(plan, ensure_ascii=False)
+
+
+def test_art_department(client, project, monkeypatch):
+    from test_features import CALLS
+    from app import pipeline
+    pid = project
+    snap = client.get(f"/api/projects/{pid}").json()
+    chen = next(c for c in snap["characters"] if c["name"] == "陈默")
+    assert chen["ref_image"] and chen["face_image"]
+    # 三视图 + 表情表
+    wait(client, client.post(f"/api/characters/{chen['id']}/sheet", json={"views": ["back"], "expressions": ["悲伤"]}).json()["id"])
+    chen = next(c for c in client.get(f"/api/projects/{pid}").json()["characters"] if c["name"] == "陈默")
+    assert chen["sheet"]["back"] and chen["sheet"]["expr"]["悲伤"]
+    shot = client.get(f"/api/projects/{pid}").json()["shots"][0]
+    client.patch(f"/api/shots/{shot['id']}", json={"character_ids": [chen["id"]], "description": "陈默背对镜头站在站台边，雨夜",
+                                                   "dialogue": [{"speaker": "陈默", "line": "我回来了", "emotion": "哽咽"}]})
+    plan = client.get(f"/api/shots/{shot['id']}/plan").json()
+    labels = json.dumps(plan, ensure_ascii=False)
+    assert "背面" in labels and "悲伤" in labels
+    # 场景变体：画面里有「雨」自动用雨天变体
+    loc = next(l for l in client.get(f"/api/projects/{pid}").json()["locations"])
+    if not loc["ref_image"]:
+        wait(client, client.post(f"/api/locations/{loc['id']}/image", json={"count": 1}).json()["id"])
+    wait(client, client.post(f"/api/locations/{loc['id']}/variant", json={"variant": "雨天"}).json()["id"])
+    client.patch(f"/api/shots/{shot['id']}", json={"location_id": loc["id"]})
+    assert "雨天" in json.dumps(client.get(f"/api/shots/{shot['id']}/plan").json(), ensure_ascii=False)
+    # 多套造型：按场次指定
+    o = client.post(f"/api/characters/{chen['id']}/outfits", json={"name": "西装", "appearance": "深蓝色西装白衬衫"}).json()
+    wait(client, client.post(f"/api/outfits/{o['id']}/image").json()["id"])
+    r = client.post(f"/api/projects/{pid}/outfits/assign", json={"character_id": chen["id"], "outfit_id": o["id"], "scene": shot["scene"]}).json()
+    assert r["shots"] >= 1
+    plan = client.get(f"/api/shots/{shot['id']}/plan").json()
+    assert "西装" in json.dumps(plan, ensure_ascii=False) and "深蓝色西装白衬衫" in plan["keyframe"]["prompt"]
+    # 画风锁定：画风参考图 + 风格 LoRA
+    from PIL import Image
+    from app.config import get_settings
+    img = get_settings().data_dir / "style.png"
+    Image.new("RGB", (32, 32), (200, 100, 50)).save(img)
+    with img.open("rb") as f:
+        client.post(f"/api/projects/{pid}/style_ref", files={"file": ("style.png", f, "image/png")})
+    client.patch(f"/api/projects/{pid}", json={"style_lora": "my_style.safetensors", "style_lora_strength": 0.6})
+    plan = client.get(f"/api/shots/{shot['id']}/plan").json()
+    assert "画风参考" in plan["keyframe"]["prompt"]
+    CALLS.clear()
+    wait(client, client.post(f"/api/shots/{shot['id']}/keyframe", json={"count": 1}).json()["id"])
+    wf = CALLS[0]
+    assert wf["7"]["class_type"] == "LoraLoaderModelOnly" and wf["7"]["inputs"]["strength_model"] == 0.6 and wf["4"]["inputs"]["model"] == ["7", 0]
+    client.patch(f"/api/projects/{pid}", json={"style_lora": ""})
+    # 素材库：存入 → 新项目导入（含造型、三视图）
+    lib = client.post("/api/library", json={"kind": "character", "id": chen["id"]}).json()
+    assert lib["images"]["ref_image"].startswith("library/") and lib["images"]["outfits"][0]["name"] == "西装"
+    pid2 = client.post("/api/projects", json={"title": "第二集", "source_text": "x"}).json()["id"]
+    assert client.post(f"/api/projects/{pid2}/library/import", json={"ids": [lib["id"]]}).json()["imported"] == 1
+    s2 = client.get(f"/api/projects/{pid2}").json()
+    c2 = s2["characters"][0]
+    assert c2["name"] == "陈默" and c2["locked"] and pipeline.exists(c2["ref_image"]) and c2["sheet"]["back"]
+    assert s2["outfits"][0]["name"] == "西装"
+    assert any(x["id"] == lib["id"] for x in client.get("/api/library?kind=character").json())

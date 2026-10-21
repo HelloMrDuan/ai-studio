@@ -30,12 +30,18 @@ def h3_length(seconds: float) -> int:
     return frames + (5 - frames % 17) % 17
 
 
-def _qwen_sampling(nodes: dict, positive: list, negative: list, latent: list, seed: int) -> None:
+def _qwen_sampling(nodes: dict, positive: list, negative: list, latent: list, seed: int,
+                   lora: tuple[str, float] | None = None) -> None:
     s = get_settings()
     turbo = "turbo" in s.image_unet
+    base = ["1", 0]
+    if lora:                     # 项目风格 LoRA（画风锁定）
+        nodes["7"] = {"class_type": "LoraLoaderModelOnly",
+                      "inputs": {"model": ["1", 0], "lora_name": lora[0], "strength_model": float(lora[1])}}
+        base = ["7", 0]
     nodes.update({
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": s.image_unet, "weight_dtype": "default"}},
-        "4": {"class_type": "QwenImage21Cache", "inputs": {"model": ["1", 0], "device": "auto", "dtype": "default"}},
+        "4": {"class_type": "QwenImage21Cache", "inputs": {"model": base, "device": "auto", "dtype": "default"}},
         "20": {"class_type": "CFGGuider", "inputs": {"model": ["4", 0], "positive": positive,
                                                      "negative": negative, "cfg": 1.0}},
         "21": {"class_type": "RandomNoise", "inputs": {"noise_seed": seed}},
@@ -51,7 +57,7 @@ def _qwen_sampling(nodes: dict, positive: list, negative: list, latent: list, se
 
 
 def image_workflow(prompt: str, aspect: str, refs: list[str] | None = None, seed: int | None = None,
-                   size: tuple[int, int] | None = None) -> dict:
+                   size: tuple[int, int] | None = None, lora: tuple[str, float] | None = None) -> dict:
     """文生图（refs 为空）或多图参考生图（refs = 已上传到 ComfyUI 的图片名，按 <image1>.. 顺序）。"""
     s = get_settings()
     width, height = size or IMAGE_SIZES.get(aspect, IMAGE_SIZES["16:9"])
@@ -69,7 +75,7 @@ def image_workflow(prompt: str, aspect: str, refs: list[str] | None = None, seed
             nodes[node_id] = {"class_type": "LoadImage", "inputs": {"image": name}}
             encode[f"images.image_{i}"] = [node_id, 0]
     nodes["5"] = {"class_type": "TextEncodeQwenImage21", "inputs": encode}
-    _qwen_sampling(nodes, ["5", 0], ["5", 1], ["6", 0], seed_or_random(seed))
+    _qwen_sampling(nodes, ["5", 0], ["5", 1], ["6", 0], seed_or_random(seed), lora)
     return nodes
 
 

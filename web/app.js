@@ -214,7 +214,7 @@ function viewScript() {
       <div class="panel"><h3>剧本 <span class="muted small">（可直接编辑，失焦自动保存）</span></h3>
         <label class="f">一句话梗概</label><input type="text" data-save="projects:${p.id}:synopsis" value="${esc(p.synopsis)}">
         <label class="f">剧本正文</label><textarea class="script-box" data-save="projects:${p.id}:script" placeholder="点击「AI 生成剧本」，或直接粘贴剧本。格式：## 场景1：地点 · 时间 / △画面动作 / 角色：（情绪）台词">${esc(p.script)}</textarea>
-      </div></div>${writerPanel()}`;
+      </div></div>${styleBox()}${writerPanel()}`;
 }
 
 const qaOf = (a) => (a && a.meta && a.meta.qa) || null;
@@ -272,15 +272,16 @@ function viewCast() {
       <div><label class="f">年龄</label><input type="text" data-save="characters:${c.id}:age" value="${esc(c.age)}"></div></div>
       <label class="f">外貌与服装（出图核心）</label><textarea rows="4" data-save="characters:${c.id}:appearance">${esc(c.appearance)}</textarea>
       <label class="f">声音（视频配音）</label><input type="text" data-save="characters:${c.id}:voice" value="${esc(c.voice)}">
-      ${bioBox(c)}
-      <div class="row" style="justify-content:flex-end;margin-top:8px"><button class="btn small danger" data-act="del-char" data-id="${c.id}">删除角色</button></div></div></div>`).join('');
+      ${bioBox(c)}${sheetBox(c)}${outfitBox(c)}
+      <div class="row" style="justify-content:flex-end;margin-top:8px"><button class="btn small ghost" data-act="lib-save" data-k="character" data-id="${c.id}" title="跨项目复用（系列剧）">存入素材库</button><button class="btn small danger" data-act="del-char" data-id="${c.id}">删除角色</button></div></div></div>`).join('');
   const locs = s.locations.map((l) => `<div class="card entity">
     <div><div class="ref wide" data-act="zoom" data-src="${media(l.ref_image)}" style="${l.ref_image ? `background-image:url('${media(l.ref_image)}')` : ''};position:relative">${l.ref_image ? '' : '暂无场景图'}${busyBox(l.id)}</div>
       ${thumbs(l.id, 'location', l.ref_image)}
       <div class="row" style="margin-top:6px"><button class="btn small" data-act="gen-location" data-id="${l.id}">生成</button><button class="btn small ghost" data-act="upload-location" data-id="${l.id}">上传</button></div></div>
     <div><input type="text" data-save="locations:${l.id}:name" value="${esc(l.name)}" style="font-weight:600">
       <label class="f">场景描述</label><textarea rows="5" data-save="locations:${l.id}:description">${esc(l.description)}</textarea>
-      <div class="row" style="justify-content:flex-end;margin-top:8px"><button class="btn small danger" data-act="del-loc" data-id="${l.id}">删除场景</button></div></div></div>`).join('');
+      ${variantBox(l)}
+      <div class="row" style="justify-content:flex-end;margin-top:8px"><button class="btn small ghost" data-act="lib-save" data-k="location" data-id="${l.id}">存入素材库</button><button class="btn small danger" data-act="del-loc" data-id="${l.id}">删除场景</button></div></div></div>`).join('');
   const props = (s.props || []).map((pr) => `<div class="card entity">
     <div><div class="ref prop" data-act="zoom" data-src="${media(pr.ref_image)}" style="${pr.ref_image ? `background-image:url('${media(pr.ref_image)}')` : ''};position:relative">${pr.ref_image ? '' : '暂无道具图'}${busyBox(pr.id)}</div>
       ${thumbs(pr.id, 'prop', pr.ref_image)}
@@ -292,7 +293,7 @@ function viewCast() {
       <button class="btn" data-act="extract" ${busy ? 'disabled' : ''}>${busy ? '提取中…' : '从剧本提取'}</button>
       <button class="btn ghost" data-act="batch-portraits">批量生成参考图（仅缺失）</button>
       <button class="btn ghost" data-act="batch-voices" title="为还没有音色样本的角色生成（每个约 2 分钟）">批量生成音色样本</button>
-      <button class="btn ghost" data-act="add-char">＋ 角色</button><button class="btn ghost" data-act="add-loc">＋ 场景</button><button class="btn ghost" data-act="add-prop">＋ 道具</button>
+      <button class="btn ghost" data-act="add-char">＋ 角色</button><button class="btn ghost" data-act="add-loc">＋ 场景</button><button class="btn ghost" data-act="add-prop">＋ 道具</button><button class="btn ghost" data-act="library">素材库导入</button>
       <button class="btn ghost" data-go="#/p/${s.project.id}/board">下一步：分镜 →</button></div>
     <p class="muted small">声音一致性：开启①里的「固定音色配音」后，每个角色先生成一段<b>音色样本</b>，所有台词都用 IndexTTS2 克隆这个声音，再用 LatentSync 对口型。<br>角色一致性靠两张图：<b>定妆照</b>（全身，锁服装体型）+ <b>脸部特写</b>（由定妆照派生，锁五官）。生成分镜图时，镜头里每个角色的这两张图（以及场景图）会一起交给 Qwen-Image 2.1 做多图参考；视频若有脸崩，可在④用「人脸修正」按特写一键换回。</p>
     <h3>角色（${s.characters.length}）</h3>${chars ? `<div class="entity-grid">${chars}</div>` : '<div class="empty">还没有角色，点击「从剧本提取」</div>'}
@@ -348,6 +349,7 @@ function viewBoard() {
       <div class="row" style="margin-top:8px"><div style="width:200px"><label class="f">场景</label>${sel([['', '（未指定）'], ...s.locations.map((l) => [l.id, l.name])], x.location_id, `data-save="shots:${x.id}:location_id"`)}</div>
         <div class="grow"><label class="f">出镜角色（点击切换，顺序即参考图顺序）</label><div class="chips">${s.characters.map((c) => `<span class="chip ${x.character_ids.includes(c.id) ? 'on' : ''}" data-act="toggle-char" data-id="${x.id}" data-c="${c.id}">${esc(c.name)}${c.ref_image ? '' : ' ⚠'}</span>`).join('') || '<span class="muted small">先在②添加角色</span>'}</div></div></div>
       ${(s.props || []).length ? `<label class="f">画面中的道具</label><div class="chips">${s.props.map((pr) => `<span class="chip ${(x.prop_ids || []).includes(pr.id) ? 'on' : ''}" data-act="toggle-prop" data-id="${x.id}" data-p="${pr.id}">${esc(pr.name)}${pr.ref_image ? '' : ' ⚠'}</span>`).join('')}</div>` : ''}
+      ${shotArtFields(x)}
       ${i ? `<label class="row small" style="margin-top:8px" title="同一场景、动作直接接着上一镜时勾选：视频首帧取上一镜视频的最后一帧，动作不跳变"><input type="checkbox" data-save="shots:${x.id}:continuous" data-rerender="1" ${x.continuous ? 'checked' : ''}> 与上一镜连续动作（首帧取上一镜最后一帧）</label>` : ''}
       <label class="f">画面描述（首帧：站位、姿态、表情、环境、光线）</label><textarea rows="3" data-save="shots:${x.id}:description">${esc(x.description)}</textarea>
       <label class="f">镜头内动作（给视频模型）</label><textarea rows="2" data-save="shots:${x.id}:action">${esc(x.action)}</textarea>

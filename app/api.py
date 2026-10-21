@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from . import autopilot, db, director, facefusion, pipeline, prompts, qa, suggest, voice, writers
+from . import art, autopilot, db, director, facefusion, pipeline, prompts, qa, suggest, voice, writers
 from .config import get_settings
 from .gpu import gpu
 from .tasks import queue
@@ -55,7 +55,8 @@ async def meta() -> dict:
             "shot_sizes": prompts.SHOT_SIZES, "camera_angles": prompts.CAMERA_ANGLES,
             "camera_moves": prompts.CAMERA_MOVES, "transitions": director.TRANSITIONS, "r2v": pipeline.r2v_available(), "qa": qa.available(),
             "voice": voice.status(), "auth": bool(get_settings().access_password),
-            "genres": {k: v["label"] for k, v in writers.GENRES.items()}}
+            "genres": {k: v["label"] for k, v in writers.GENRES.items()},
+            "views": art.VIEWS, "expressions": list(art.EXPRESSIONS), "variants": list(art.VARIANT_PRESETS)}
 
 
 def _model_check() -> list[dict]:
@@ -118,7 +119,7 @@ class ProjectIn(BaseModel):
 
 
 PROJECT_FIELDS = {"title", "source_type", "source_text", "aspect_ratio", "style", "style_note", "target_seconds",
-                  "script", "synopsis", "dub_mode", "genre"}
+                  "script", "synopsis", "dub_mode", "genre", "style_ref", "style_lora", "style_lora_strength"}
 
 
 def _check_project(values: dict) -> None:
@@ -167,6 +168,7 @@ async def project_snapshot(project_id: str) -> dict:
             "shots": pipeline.shots_of(project_id),
             "assets": assets, "tasks": tasks, "autopilot": autopilot.status(project_id),
             "writer": writers.status(project), "suggestions": suggest.pending(project_id),
+            "outfits": db.query("SELECT * FROM outfits WHERE project_id=? ORDER BY sort, created_at", [project_id]),
             "director": {"issues": director.check(pipeline.shots_of(project_id), pipeline.characters_of(project_id)),
                          "last": writers.writer_state(project).get("director")}}
 
@@ -468,7 +470,7 @@ async def upload_location(loc_id: str, file: UploadFile = File(...)) -> dict:
 # ================= 分镜 =================
 SHOT_FIELDS = {"scene", "location_id", "shot_size", "camera_angle", "camera_move", "description", "action",
                "character_ids", "prop_ids", "dialogue", "sound", "duration", "image_prompt", "video_prompt", "keyframe", "video",
-               "continuous", "end_frame", "performance", "transition"}
+               "continuous", "end_frame", "performance", "transition", "outfits", "location_variant"}
 
 
 def _renumber(project_id: str, ids: list[str]) -> None:
@@ -671,6 +673,12 @@ class SelectIn(BaseModel):
 async def select_asset(body: SelectIn) -> dict:
     """把某个候选素材设为当前使用（角色参考图 / 场景参考图 / 分镜图 / 镜头视频）。"""
     asset = _get("assets", body.asset_id, "素材")
+    from . import art
+    picked = art.select(asset)
+    if picked is not None:
+        return picked
+    if asset["owner_type"] == "project" and asset["kind"] == "style_ref":
+        return db.update("projects", asset["owner_id"], {"style_ref": asset["path"]})
     if asset["owner_type"] == "character":
         field = {"face": "face_image", "voice": "voice_ref"}.get(asset["kind"], "ref_image")
         return db.update("characters", asset["owner_id"], {field: asset["path"]})
@@ -696,6 +704,8 @@ async def delete_asset(asset_id: str) -> dict:
                          ("locations", "ref_image"), ("props", "ref_image"), ("shots", "keyframe"),
                          ("shots", "video"), ("shots", "end_frame"), ("projects", "final_video")):
         db.execute(f"UPDATE {table} SET {field}='' WHERE {field}=?", [asset["path"]])
+    from . import art
+    art.forget(asset["path"])
     try:
         pipeline.absolute(asset["path"]).unlink(missing_ok=True)
     except ValueError:

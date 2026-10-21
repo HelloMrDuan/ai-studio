@@ -118,8 +118,11 @@ def char_ref_lines(chars: list[dict], ref_map: dict[str, dict], tag: str = "imag
     for c in chars:
         m = ref_map.get(c["id"]) or {}
         full, face = m.get("full"), m.get("face")
+        body = f"{c['_view']}" if c.get("_view") else "全身"
+        outfit = f"（造型：{c['_outfit']}）" if c.get("_outfit") else ""
+        expr = f"，表情参考其「{c['_expr']}」特写" if c.get("_expr") else ""
         if full and face:
-            lines.append(f"<{tag}{full}> 是角色「{c['name']}」的全身设定图（体型、发型、服装），<{tag}{face}> 是其脸部特写（五官）。"
+            lines.append(f"<{tag}{full}> 是角色「{c['name']}」的{body}设定图{outfit}（体型、发型、服装），<{tag}{face}> 是其脸部特写（五官{expr}）。"
                          f"画面中的「{c['name']}」必须与这两张图是同一个人：脸型五官以 <{tag}{face}> 为准，服装以 <{tag}{full}> 为准。")
         elif full or face:
             n = full or face

@@ -128,3 +128,98 @@ Object.assign(ACTIONS, {
   async director() { submitted(await api('POST', `/api/projects/${S.pid}/director`), '已提交导演审校，结果会作为修改建议出现'); },
   async 'rules-fix'() { const r = await api('POST', `/api/projects/${S.pid}/director/fix`); toast(`生成 ${r.suggestions} 条修改建议`); loadSnap(true); },
 });
+
+/* ---------------- ② 美术与选角：三视图/表情、服装造型、场景变体、画风、素材库 ---------------- */
+TABLE_URL.outfits = '/api/outfits/';
+const outfitsOf = (cid) => (S.snap.outfits || []).filter((o) => o.character_id === cid);
+const scenesOf = () => [...new Set(S.snap.shots.map((x) => x.scene || '').filter(Boolean))];
+function sheetBox(c) {
+  const sh = c.sheet || {}; const ex = sh.expr || {}; const views = S.meta.views || { side: '侧面', back: '背面' };
+  const slot = (path, label) => `<div class="slot" ${path ? `data-act="zoom" data-src="${media(path)}" style="background-image:url('${media(path)}')"` : ''}><span>${esc(label)}</span></div>`;
+  const items = [...Object.entries(views).map(([k, l]) => slot(sh[k], l)), ...(S.meta.expressions || []).map((e) => slot(ex[e], e))];
+  const cands = [...assetsOf(c.id, 'view'), ...assetsOf(c.id, 'expression')];
+  const used = new Set([...Object.values(views).map((_, i) => sh[Object.keys(views)[i]]), ...Object.values(ex)]);
+  const done = Object.keys(views).filter((k) => sh[k]).length + Object.keys(ex).length;
+  return `<details class="art-box"><summary class="small">三视图与表情 <span class="muted">${done}/${items.length}</span></summary>
+    <p class="muted small" style="margin:4px 0">镜头里角色背对/侧对镜头时自动用对应视图做参考；台词情绪匹配到表情时用对应表情特写锁五官。</p>
+    <div class="sheet">${items.join('')}</div>
+    ${cands.length ? `<div class="thumbs">${cands.map((a) => { const m = a.meta || {}; return `<div class="thumb ${used.has(a.path) ? 'sel' : ''}" title="${esc((views[m.view] || m.expression || '') + '：点击设为当前')}" data-act="select-asset" data-id="${a.id}" style="background-image:url('${media(a.path)}')"><span class="x" data-act="del-asset" data-id="${a.id}">✕</span></div>`; }).join('')}</div>` : ''}
+    <div class="row" style="margin-top:6px"><button class="btn small" data-act="gen-sheet" data-id="${c.id}" ${c.ref_image ? '' : 'disabled title="先生成定妆照"'}>${done ? '补齐缺失' : '一键生成'}</button>
+      <button class="btn small ghost" data-act="gen-sheet" data-id="${c.id}" data-all="1" ${c.ref_image ? '' : 'disabled'}>全部重做</button></div></details>`;
+}
+function outfitBox(c) {
+  const os = outfitsOf(c.id); const scenes = scenesOf();
+  const rows = os.map((o) => `<div class="outfit"><div class="ref mini" ${o.ref_image ? `data-act="zoom" data-src="${media(o.ref_image)}" style="background-image:url('${media(o.ref_image)}')"` : ''}>${o.ref_image ? '' : '无图'}${busyBox(o.id)}</div>
+    <div class="grow"><div class="row"><input type="text" class="grow" data-save="outfits:${o.id}:name" value="${esc(o.name)}"><button class="btn small ghost" data-act="del-outfit" data-id="${o.id}">删除</button></div>
+      <textarea rows="2" data-save="outfits:${o.id}:appearance" placeholder="这套造型的服装、发型、妆容">${esc(o.appearance)}</textarea>
+      ${thumbs(o.id, 'outfit', o.ref_image)}
+      <div class="row"><button class="btn small" data-act="gen-outfit" data-id="${o.id}">生成定妆照</button>
+        ${scenes.length ? sel([['', '应用到场次…'], ['*', '全部镜头'], ...scenes.map((s) => [s, s])], '', `data-outfit-scene="${c.id}:${o.id}" style="width:150px"`) : ''}</div></div></div>`).join('');
+  return `<details class="art-box" ${os.length ? 'open' : ''}><summary class="small">服装造型 <span class="muted">${os.length} 套</span></summary>
+    <p class="muted small" style="margin:4px 0">换装、回忆、变身等用不同造型；按场次指定后，该场镜头出图用这套定妆照。</p>${rows}
+    <button class="btn small ghost" data-act="add-outfit" data-id="${c.id}">＋ 造型</button></details>`;
+}
+function variantBox(l) {
+  const v = l.variants || {}; const names = [...new Set([...(S.meta.variants || []), ...Object.keys(v)])];
+  return `<label class="f">场景变体 <span class="muted small">同一地点的昼夜/天气，镜头描述里出现「夜、雨…」自动选用</span></label>
+    <div class="chips">${names.map((n) => v[n] ? `<span class="chip on" data-act="zoom" data-src="${media(v[n])}" title="点击查看">✓ ${esc(n)}</span>` : `<span class="chip" data-act="gen-variant" data-id="${l.id}" data-v="${esc(n)}" title="以场景图为基础生成${esc(n)}版本" ${l.ref_image ? '' : 'style="opacity:.5"'}>＋ ${esc(n)}</span>`).join('')}</div>
+    ${assetsOf(l.id, 'loc_variant').length ? thumbs(l.id, 'loc_variant', '') : ''}`;
+}
+function styleBox() {
+  const p = S.snap.project;
+  return `<div class="panel" style="margin-top:16px"><h3>画风锁定 <span class="muted small">所有出图共用，保证整片画风统一</span></h3>
+    <div class="row" style="align-items:flex-start;gap:16px">
+      <div><div class="ref mini" ${p.style_ref ? `data-act="zoom" data-src="${media(p.style_ref)}" style="background-image:url('${media(p.style_ref)}')"` : ''}>${p.style_ref ? '' : '无'}</div>
+        <div class="row" style="margin-top:6px"><button class="btn small ghost" data-act="upload-style">上传画风参考图</button>${p.style_ref ? '<button class="btn small ghost" data-act="clear-style">不用</button>' : ''}</div></div>
+      <div class="grow"><p class="muted small" style="margin-top:0">画风参考图会作为额外参考图交给 Qwen-Image（只学画风色调，不学内容）。也可以指定风格 LoRA（放到 ComfyUI/models/loras/ 下）。</p>
+        <div class="grid2"><div><label class="f">风格 LoRA 文件名</label><input type="text" data-save="projects:${p.id}:style_lora" value="${esc(p.style_lora || '')}" placeholder="如 my_style.safetensors"></div>
+        <div><label class="f">LoRA 强度</label><input type="number" step="0.05" min="0" max="2" data-num="1" data-save="projects:${p.id}:style_lora_strength" value="${p.style_lora_strength ?? 0.8}"></div></div></div></div></div>`;
+}
+function shotArtFields(x) {
+  const s = S.snap; const loc = s.locations.find((l) => l.id === x.location_id);
+  const outs = x.character_ids.map((cid) => [s.characters.find((c) => c.id === cid), outfitsOf(cid)]).filter(([c, os]) => c && os.length);
+  const vars = Object.keys((loc && loc.variants) || {});
+  if (!outs.length && !vars.length) return '';
+  return `<div class="row" style="margin-top:6px;flex-wrap:wrap">${outs.map(([c, os]) => `<span class="small">${esc(c.name)} 造型 ${sel([['', '默认'], ...os.map((o) => [o.id, o.name])], (x.outfits || {})[c.id] || '', `data-shot-outfit="${x.id}:${c.id}" style="width:110px"`)}</span>`).join('')}
+    ${vars.length ? `<span class="small">场景版本 ${sel([['', '自动'], ['原图', '原图'], ...vars.map((v) => [v, v])], x.location_variant || '', `data-save="shots:${x.id}:location_variant" style="width:100px"`)}</span>` : ''}</div>`;
+}
+document.addEventListener('change', async (e) => {
+  const el = e.target;
+  if (el.dataset.shotOutfit) {
+    const [sid, cid] = el.dataset.shotOutfit.split(':');
+    await api('POST', `/api/projects/${S.pid}/outfits/assign`, { character_id: cid, outfit_id: el.value, shot_ids: [sid] }); toast('已保存'); loadSnap(true);
+  } else if (el.dataset.outfitScene && el.value) {
+    const [cid, oid] = el.dataset.outfitScene.split(':');
+    const r = await api('POST', `/api/projects/${S.pid}/outfits/assign`, { character_id: cid, outfit_id: oid, scene: el.value === '*' ? null : el.value });
+    toast(`已应用到 ${r.shots} 个镜头`); loadSnap(true);
+  }
+});
+async function libraryModal() {
+  const items = await api('GET', '/api/library'); const kinds = { character: '角色', location: '场景', prop: '道具' };
+  modal(`<h3>素材库 <span class="muted small">跨项目复用定妆照、三视图、造型和场景图（系列剧同一角色）</span></h3>
+    ${items.length ? `<div class="lib-grid">${items.map((it) => { const img = (it.images || {}).ref_image; return `<label class="lib-item"><input type="checkbox" value="${it.id}">
+      <div class="ref mini" style="${img ? `background-image:url('${media(img)}')` : ''}"></div><div><b>${esc(it.name)}</b><div class="muted small">${kinds[it.kind] || it.kind}</div></div>
+      <span class="x" data-act="lib-del" data-id="${it.id}" title="从素材库删除">✕</span></label>`; }).join('')}</div>` : '<div class="empty">素材库是空的。在角色/场景卡片上点「存入素材库」</div>'}
+    <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn ghost" data-act="close-modal">关闭</button><button class="btn" data-act="lib-import" ${items.length ? '' : 'disabled'}>导入选中</button></div>`);
+}
+Object.assign(ACTIONS, {
+  async 'gen-sheet'(el) {
+    const c = S.snap.characters.find((x) => x.id === el.dataset.id); const sh = c.sheet || {}; const ex = sh.expr || {};
+    const body = el.dataset.all ? {} : { views: Object.keys(S.meta.views || {}).filter((k) => !sh[k]), expressions: (S.meta.expressions || []).filter((k) => !ex[k]) };
+    if (body.views && !body.views.length && !body.expressions.length) return toast('已经齐了，要重做请点「全部重做」');
+    submitted(await api('POST', `/api/characters/${c.id}/sheet`, body));
+  },
+  async 'add-outfit'(el) { const name = prompt('造型名称（如：西装、校服、古装、受伤后）'); if (!name) return; await api('POST', `/api/characters/${el.dataset.id}/outfits`, { name }); loadSnap(true); },
+  async 'del-outfit'(el) { if (!confirm('删除这套造型？用到它的镜头会恢复默认造型')) return; await api('DELETE', `/api/outfits/${el.dataset.id}`); loadSnap(true); },
+  async 'gen-outfit'(el) { submitted(await api('POST', `/api/outfits/${el.dataset.id}/image`)); },
+  async 'gen-variant'(el) { submitted(await api('POST', `/api/locations/${el.dataset.id}/variant`, { variant: el.dataset.v })); },
+  async 'upload-style'() { const f = await pickFile('image/*'); if (f) { await upload(`/api/projects/${S.pid}/style_ref`, f); loadSnap(true); } },
+  async 'clear-style'() { await api('PATCH', `/api/projects/${S.pid}`, { style_ref: '' }); loadSnap(true); },
+  async 'lib-save'(el) { await api('POST', '/api/library', { kind: el.dataset.k, id: el.dataset.id }); toast('已存入素材库（同名会覆盖）'); },
+  library: libraryModal,
+  async 'lib-del'(el) { if (!confirm('从素材库删除？')) return; await api('DELETE', `/api/library/${el.dataset.id}`); libraryModal(); },
+  async 'lib-import'() {
+    const ids = [...document.querySelectorAll('.lib-item input:checked')].map((i) => i.value); if (!ids.length) return toast('先勾选要导入的');
+    const r = await api('POST', `/api/projects/${S.pid}/library/import`, { ids }); closeModal(); toast(`已导入 ${r.imported} 项（已锁定）`); loadSnap(true);
+  },
+});

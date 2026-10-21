@@ -128,3 +128,13 @@ pre.prompt{white-space:pre-wrap;background:var(--panel2);padding:10px;border-rad
 .curve{display:flex;align-items:flex-end;gap:2px;height:40px;margin-top:6px;border-bottom:1px solid var(--line)}
 .curve i{flex:1;background:linear-gradient(var(--accent2),var(--accent));border-radius:2px 2px 0 0;min-height:2px}
 .issues li.warn{color:var(--text)}.issues li.warn b{color:var(--warn)}
+.art-box{margin-top:10px;border:1px solid var(--line);border-radius:8px;padding:6px 10px}
+.art-box summary{cursor:pointer}
+.sheet{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:6px}
+.sheet .slot{aspect-ratio:3/4;border-radius:6px;background:var(--panel2) center/cover no-repeat;position:relative;cursor:pointer;border:1px dashed var(--line)}
+.sheet .slot span{position:absolute;left:0;right:0;bottom:0;font-size:11px;text-align:center;background:rgba(0,0,0,.45);color:#fff;border-radius:0 0 6px 6px}
+.outfit{display:flex;gap:8px;margin:8px 0;align-items:flex-start}
+.ref.mini{width:72px;height:96px;min-height:0;font-size:11px;flex:none;position:relative}
+.lib-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;max-height:60vh;overflow:auto}
+.lib-item{display:flex;gap:8px;align-items:center;border:1px solid var(--line);border-radius:8px;padding:6px;position:relative}
+.lib-item .x{position:absolute;right:6px;top:4px;cursor:pointer;opacity:.6}

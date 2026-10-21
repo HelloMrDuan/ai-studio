@@ -12,7 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db, pipeline  # noqa: F401  (pipeline 注册任务处理器)
+from . import autopilot, db, pipeline  # noqa: F401  (pipeline 注册任务处理器)
 from .api import router
 from .config import ROOT, get_settings
 from .gpu import gpu
@@ -40,6 +40,7 @@ async def lifespan(_: FastAPI):
     db.conn()
     gpu.lock = asyncio.Lock()
     queue.start()
+    autopilot.resume_all()
     yield
     if queue.worker:
         queue.worker.cancel()

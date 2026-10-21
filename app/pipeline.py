@@ -693,6 +693,69 @@ async def task_assemble(ctx: TaskContext) -> dict:
     return {"path": asset["path"], "seconds": round(t, 1), "skipped": skipped}
 
 
+# ---------------- 批量提交（批量按钮和一键成片共用） ----------------
+def submit_batch(project_id: str, kind: str, only_missing: bool = True, count: int = 1, quality: str = "draft",
+                 turbo: bool = True, mode: str = "auto", extra: dict | None = None) -> tuple[list[dict], str]:
+    """kind: portraits / voices / keyframes / videos / dub。返回 (提交的任务, 批次号)。"""
+    submitted = []
+    bid = f"{kind}-{db.new_id()[:6]}"           # 批量任务标记：调度时让位给手动任务，可整体暂停
+
+    def _submit(type_: str, title: str, project_id: str, owner_type: str = "", owner_id: str = "",
+                params: dict | None = None) -> dict:
+        return queue.submit(type_, project_id=project_id, title=title, owner_type=owner_type, owner_id=owner_id,
+                            params={**(params or {}), "_batch": bid, **(extra or {})})
+
+    if kind == "portraits":
+        for c in characters_of(project_id):
+            if not (only_missing and c["ref_image"]):
+                submitted.append(_submit("portrait", f"角色形象：{c['name']}", project_id, "character", c["id"],
+                                         {"character_id": c["id"], "count": count}))
+            elif not c.get("face_image"):
+                submitted.append(_submit("face_ref", f"脸部特写：{c['name']}", project_id, "character", c["id"],
+                                         {"character_id": c["id"], "count": 1}))
+        for loc in locations_of(project_id):
+            if not (only_missing and loc["ref_image"]):
+                submitted.append(_submit("location_image", f"场景图：{loc['name']}", project_id, "location",
+                                         loc["id"], {"location_id": loc["id"], "count": count}))
+        for pr in props_of(project_id):
+            if not (only_missing and pr["ref_image"]):
+                submitted.append(_submit("prop_image", f"道具图：{pr['name']}", project_id, "prop",
+                                         pr["id"], {"prop_id": pr["id"], "count": count}))
+    elif kind == "voices":
+        for c in characters_of(project_id):
+            if only_missing and c.get("voice_ref"):
+                continue
+            if c.get("ref_image") or c.get("face_image"):
+                submitted.append(_submit("voice_sample", f"音色样本：{c['name']}", project_id, "character", c["id"],
+                                         {"character_id": c["id"], "auto_select": True}))
+    elif kind == "dub":
+        if not voice.tts_available():
+            raise ValueError("未安装配音组件，请在服务器运行 bash deploy/06_voice.sh")
+        for s in shots_of(project_id):
+            done = db.query("SELECT meta FROM assets WHERE path=? LIMIT 1", [s["video"]]) if s["video"] else []
+            if not s["video"] or not dub_lines(s)[0]:
+                continue
+            if only_missing and done and (done[0].get("meta") or {}).get("dub"):
+                continue
+            submitted.append(_submit("dub", f"配音 #{s['sort'] + 1}", project_id, "shot", s["id"],
+                                     {"shot_id": s["id"], "lipsync": "auto"}))
+    elif kind in {"keyframes", "videos"}:
+        for s in shots_of(project_id):
+            field = "keyframe" if kind == "keyframes" else "video"
+            if only_missing and s[field]:
+                continue
+            if kind == "keyframes":
+                submitted.append(_submit("keyframe", f"分镜图 #{s['sort'] + 1}", project_id, "shot", s["id"],
+                                         {"shot_id": s["id"], "count": count}))
+            else:
+                submitted.append(_submit("video", f"镜头视频 #{s['sort'] + 1}", project_id, "shot", s["id"],
+                                         {"shot_id": s["id"], "quality": quality, "turbo": turbo,
+                                          "mode": mode}))
+    else:
+        raise ValueError("未知批量类型")
+    return submitted, bid
+
+
 # ---------------- 动态分镜预览：分镜图 + 推拉摇移 + 台词字幕（可选配音试听），出视频前先看节奏 ----------------
 CHARS_PER_SEC = 4.5          # 估算中文台词语速（没有配音试听时用来提示“台词塞不进镜头”）
 SPEECH_LEAD, SPEECH_GAP, SPEECH_TAIL = 0.3, 0.25, 0.3

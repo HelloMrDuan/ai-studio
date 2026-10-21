@@ -100,7 +100,7 @@ function newProjectModal() {
     <label class="f">素材内容</label><textarea id="np-text" rows="7" placeholder="例如：外卖小哥意外捡到一部能预知未来 10 秒的手机……"></textarea>
     <div class="grid3"><div><label class="f">画幅</label><select id="np-aspect">${S.meta.aspects.map((a) => `<option>${a}</option>`).join('')}</select></div>
     <div><label class="f">目标时长（秒）</label><input type="number" id="np-sec" value="60" min="10" max="600"></div>
-    <div><label class="f">&nbsp;</label><label class="row small"><input type="checkbox" id="np-auto" checked> 创建后自动生成剧本</label></div></div>
+    <div><label class="f">创建后</label>${sel([['ap', '一键成片（关键步骤停下审核）'], ['ap-full', '一键成片（全自动）'], ['script', '只生成剧本'], ['none', '什么都不做']], 'ap', 'id="np-auto"')}</div></div>
     <label class="f">画面风格</label><div class="style-grid" id="np-style">${styles}</div>
     <label class="f">风格补充（可选）</label><input type="text" id="np-note" placeholder="例如：冷色调、雨夜、王家卫式色彩">
     <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn ghost" data-act="close-modal">取消</button><button class="btn" data-act="create-project">创建</button></div>`);
@@ -149,9 +149,48 @@ function renderProject() {
   const steps = STEPS.map(([k, label], i) => `<div class="step ${S.step === k ? 'active' : ''} ${stepDone(k) ? 'done' : ''}" data-go="#/p/${p.id}/${k}">
     <span class="num">${stepDone(k) ? '✓' : i + 1}</span>${label}<span class="meta">${stepMeta(k)}</span></div>`).join('');
   const body = { script: viewScript, cast: viewCast, board: viewBoard, video: viewVideo, final: viewFinal }[S.step] || viewScript;
-  $('#view').innerHTML = `<div class="ws"><div class="steps"><div class="ptitle">${esc(p.title)}<div class="muted small">${esc(S.meta.styles[p.style] || '')} · ${p.aspect_ratio}</div></div>${steps}</div>
+  $('#view').innerHTML = `<div class="ws"><div class="steps"><div class="ptitle">${esc(p.title)}<div class="muted small">${esc(S.meta.styles[p.style] || '')} · ${p.aspect_ratio}</div></div>${steps}${apCard()}</div>
     <div class="content">${body()}</div></div>`;
   window.scrollTo(0, y); const c2 = $('.content'); if (c2) c2.scrollTop = cy;
+}
+/* ---------------- 一键成片 ---------------- */
+const AP_STEP = { script: 'script', extract: 'cast', refs: 'cast', voices: 'cast', storyboard: 'board', keyframes: 'board', animatic: 'board', videos: 'video', dub: 'video', assemble: 'final' };
+const fmtSec = (s) => (s < 60 ? `${Math.max(1, Math.round(s))} 秒` : s < 3600 ? `${Math.round(s / 60)} 分钟` : `${(s / 3600).toFixed(1)} 小时`);
+function apCard() {
+  const a = S.snap.autopilot || { status: 'none' }; const pid = S.snap.project.id;
+  if (a.status === 'none') return `<div class="ap"><button class="btn" style="width:100%" data-act="ap-open">🚀 一键成片</button>
+    <div class="muted small" style="margin-top:6px">从剧本一路做到成片，可在关键步骤停下审核</div></div>`;
+  const dots = (a.stages || []).map((x) => `<span class="ap-dot ${x.state}" title="${esc(x.label)}${x.stop ? '（审核点）' : ''}">${x.stop ? '◆' : '●'}</span>`).join('');
+  const head = { running: '🚀 一键成片进行中', waiting: '⏸ 等你审核', failed: '⚠ 一键成片已停下', stopped: '⏹ 已停止', done: '✓ 一键成片完成' }[a.status] || a.status;
+  const left = a.stage === 'keyframes' || a.stage === 'videos' ? ` · 剩 ${a.shots_left[a.stage]}/${a.shots} 镜` : '';
+  const btns = [];
+  if (['waiting', 'failed', 'stopped'].includes(a.status)) btns.push(`<button class="btn small" data-act="ap-continue">${a.status === 'waiting' ? '继续' : '重试当前步骤'}</button>`);
+  if (['running', 'waiting'].includes(a.status)) btns.push('<button class="btn small ghost" data-act="ap-stop">停止</button>');
+  if (['waiting', 'failed'].includes(a.status) && AP_STEP[a.stage] !== S.step) btns.push(`<button class="btn small ghost" data-go="#/p/${pid}/${AP_STEP[a.stage]}">去查看</button>`);
+  if (['done', 'stopped', 'failed'].includes(a.status)) btns.push('<button class="btn small ghost" data-act="ap-open">重新开始</button>');
+  return `<div class="ap ${a.status}"><div class="ap-head">${head}</div><div class="ap-dots">${dots}</div>
+    <div class="small">${a.status === 'done' ? '' : `第 ${(a.stages || []).findIndex((x) => x.key === a.stage) + 1}/${(a.stages || []).length} 步：<b>${esc(a.stage_label)}</b>${left}`}</div>
+    <div class="small ${a.status === 'failed' ? 'bad' : 'muted'}" style="margin-top:4px">${esc(a.message || '')}</div>
+    ${a.status === 'running' && a.eta_seconds ? `<div class="small muted">预计还要 ${fmtSec(a.eta_seconds)}</div>` : ''}
+    ${(a.notes || []).length ? `<details class="small muted"><summary>备注 ${a.notes.length}</summary>${a.notes.map((n) => `<div>${esc(n)}</div>`).join('')}</details>` : ''}
+    <div class="row" style="flex-wrap:wrap;gap:6px;margin-top:8px">${btns.join('')}</div></div>`;
+}
+function apModal() {
+  const a = S.snap.autopilot || {}; const o = a.options || {}; const stops = o.stops || ['script', 'storyboard', 'animatic'];
+  const stages = a.stages || [];
+  modal(`<h3>🚀 一键成片</h3>
+    <p class="muted small">按 剧本 → 角色与场景 → 参考图 → 分镜表 → 分镜图 → 动态分镜预览 → 视频 → 配音 → 成片 自动往下做；已经做好的步骤会跳过，缺的才补。勾选的步骤完成后会停下等你审核，可以修改后点「继续」。失败的步骤会自动重试一次。</p>
+    <label class="f">在这些步骤后停下审核</label>
+    <div class="chips" id="ap-stops">${stages.map((x) => `<span class="chip ${stops.includes(x.key) ? 'on' : ''}" data-v="${x.key}">${esc(x.label)}</span>`).join('')}</div>
+    <div class="grid3" style="margin-top:10px">
+      <div><label class="f">镜头视频</label>${sel([['draft', '草稿 480p（快）'], ['final', '成品 768p']], o.quality || 'draft', 'id="ap-q"')}</div>
+      <div><label class="f">成片输出</label>${sel([['final', '768p'], ['draft', '480p']], o.final_quality || 'final', 'id="ap-fq"')}</div>
+      <div><label class="f">每镜分镜图</label>${sel([['1', '1 张'], ['2', '2 张（挑选）']], String(o.keyframe_count || 1), 'id="ap-kc"')}</div></div>
+    <div class="row small" style="margin-top:10px;gap:16px"><label class="row"><input type="checkbox" id="ap-turbo" ${o.turbo === false ? '' : 'checked'}> 视频 Turbo</label>
+      <label class="row"><input type="checkbox" id="ap-sub" ${o.subtitles === false ? '' : 'checked'}> 烧录字幕</label>
+      <span class="muted">固定音色配音：${S.snap.project.dub_mode ? '已开启（会自动做音色样本和配音）' : '未开启（到①剧本页开启）'}</span></div>
+    <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn ghost" data-act="close-modal">取消</button><button class="btn" data-act="ap-start">开始</button></div>`);
+  $('#ap-stops').onclick = (e) => { const c = e.target.closest('.chip'); if (c) c.classList.toggle('on'); };
 }
 const sel = (opts, cur, attrs) => `<select ${attrs}>${opts.map((o) => { const [v, l] = Array.isArray(o) ? o : [o, o]; return `<option value="${esc(v)}" ${String(v) === String(cur) ? 'selected' : ''}>${esc(l)}</option>`; }).join('')}</select>`;
 
@@ -467,9 +506,10 @@ const ACTIONS = {
     const body = { title: val('np-title') || '未命名项目', source_type: $('#np-src .chip.on').dataset.v, source_text: val('np-text'),
       aspect_ratio: val('np-aspect'), style: $('#np-style .style-opt.on').dataset.style, style_note: val('np-note'), target_seconds: Number(val('np-sec')) || 60 };
     const p = await api('POST', '/api/projects', body);
-    const auto = val('np-auto') && body.source_text.trim();
+    const mode = body.source_text.trim() ? val('np-auto') : 'none';
     closeModal();
-    if (auto) await api('POST', `/api/projects/${p.id}/script/generate`);
+    if (mode === 'script') await api('POST', `/api/projects/${p.id}/script/generate`);
+    if (mode.startsWith('ap')) await api('POST', `/api/projects/${p.id}/autopilot/start`, mode === 'ap-full' ? { stops: [] } : {});
     location.hash = `#/p/${p.id}/script`;
   },
   async 'del-project'(el, e) {
@@ -528,6 +568,14 @@ const ACTIONS = {
     submitted(await api('POST', `/api/projects/${S.pid}/storyboard/generate`));
   },
   async 'batch-keyframes'() { const r = await api('POST', `/api/projects/${S.pid}/batch/keyframes`, { only_missing: true, count: Number(val('batch-kc')) || 1 }); submitted(r, `已提交 ${r.submitted} 个出图任务`); },
+  'ap-open'() { apModal(); },
+  async 'ap-start'() {
+    const body = { stops: [...document.querySelectorAll('#ap-stops .chip.on')].map((x) => x.dataset.v), quality: val('ap-q'), final_quality: val('ap-fq'),
+      keyframe_count: Number(val('ap-kc')), turbo: val('ap-turbo'), subtitles: val('ap-sub') };
+    await api('POST', `/api/projects/${S.pid}/autopilot/start`, body); closeModal(); toast('一键成片已开始'); await pollTasks(); await loadSnap(true);
+  },
+  async 'ap-continue'() { await api('POST', `/api/projects/${S.pid}/autopilot/continue`); toast('继续执行'); await pollTasks(); await loadSnap(true); },
+  async 'ap-stop'() { if (confirm('停止一键成片？排队中的任务会取消，正在运行的会跑完。')) { await api('POST', `/api/projects/${S.pid}/autopilot/stop`); await pollTasks(); await loadSnap(true); } },
   async animatic() { submitted(await api('POST', `/api/projects/${S.pid}/animatic`, { tts: val('an-tts'), prefer_video: val('an-vid') }), '已开始生成动态分镜预览'); },
   async 'batch-videos'() { const r = await api('POST', `/api/projects/${S.pid}/batch/videos`, { only_missing: true, quality: val('bv-q'), mode: val('bv-m'), turbo: val('bv-t') }); submitted(r, `已提交 ${r.submitted} 个视频任务`); },
   async 'add-shot'(el) { await api('POST', `/api/projects/${S.pid}/shots`, { after_id: el.dataset.id || null, description: '' }); loadSnap(true); },

@@ -320,3 +320,85 @@ def test_animatic_tts(client, project, monkeypatch):
     n = len(synth)
     wait(client, client.post(f"/api/projects/{project}/animatic", json={"tts": True}).json()["id"])
     assert len(synth) == n                                                            # 台词没改 → 用缓存，不再合成
+
+
+def ap_wait(client, pid, timeout=120):
+    import time
+    end = time.time() + timeout
+    while time.time() < end:
+        st = client.get(f"/api/projects/{pid}/autopilot").json()
+        if st["status"] != "running" and not st["active"]:
+            return st
+        time.sleep(0.2)
+    raise AssertionError(f"一键成片超时：{st}")
+
+
+def test_autopilot_unattended(client):
+    pid = client.post("/api/projects", json={"title": "一键", "source_text": "雨夜车站重逢", "style": "cinematic"}).json()["id"]
+    st = client.post(f"/api/projects/{pid}/autopilot/start", json={"stops": []}).json()
+    assert st["status"] == "running" and st["stage"] == "script" and st["eta_seconds"] > 0
+    st = ap_wait(client, pid)
+    assert st["status"] == "done", st
+    snap = client.get(f"/api/projects/{pid}").json()
+    assert snap["project"]["final_video"] and all(s["keyframe"] and s["video"] for s in snap["shots"])
+    assert any(a["kind"] == "animatic" for a in snap["assets"][pid])
+    done = [h["stage"] for h in st["history"]]
+    assert done[0] == "script" and done[-1] == "assemble" and "animatic" in done
+    assert all(x["state"] in {"done", "skip"} for x in st["stages"])
+    # 自动化任务带标记、批量任务带批次号
+    tasks = client.get(f"/api/tasks?project_id={pid}&limit=500").json()
+    assert all(t["params"].get("_autopilot") == st["run"] for t in tasks)
+
+
+def test_autopilot_review_stops_and_retry(client, monkeypatch):
+    pid = client.post("/api/projects", json={"title": "审核", "source_text": "雨夜车站重逢", "style": "cinematic"}).json()["id"]
+    client.post(f"/api/projects/{pid}/autopilot/start", json={})
+    st = ap_wait(client, pid)
+    assert st["status"] == "waiting" and st["stage"] == "script"
+    client.patch(f"/api/projects/{pid}", json={"script": "（用户改过的剧本）雨夜，车站。"})
+    client.post(f"/api/projects/{pid}/autopilot/continue")
+    st = ap_wait(client, pid)
+    assert st["status"] == "waiting" and st["stage"] == "storyboard"
+    # 审核分镜时删掉一个镜头，后面就少做一个
+    shots = client.get(f"/api/projects/{pid}").json()["shots"]
+    client.delete(f"/api/shots/{shots[-1]['id']}")
+    client.post(f"/api/projects/{pid}/autopilot/continue")
+    st = ap_wait(client, pid)
+    assert st["status"] == "waiting" and st["stage"] == "animatic"
+    # 视频第一次全部失败 → 自动重试一次后成功
+    fails = {"n": 0}
+    real = comfy.run
+
+    async def flaky(workflow, out_dir, progress=None):
+        if any(n["class_type"] == "SaveVideo" for n in workflow.values()) and fails["n"] < 1:
+            fails["n"] += 1
+            raise RuntimeError("模拟显存不足")
+        return await real(workflow, out_dir, progress)
+
+    monkeypatch.setattr(comfy, "run", flaky)
+    client.post(f"/api/projects/{pid}/autopilot/continue")
+    st = ap_wait(client, pid)
+    assert st["status"] == "done", st
+    assert any("自动重试" in n for n in st["notes"]) and fails["n"] == 1
+    snap = client.get(f"/api/projects/{pid}").json()
+    assert snap["project"]["script"].startswith("（用户改过的剧本）") and len(snap["shots"]) == len(shots) - 1
+
+
+def test_autopilot_stop_and_fail(client, monkeypatch):
+    pid = client.post("/api/projects", json={"title": "失败", "source_text": "雨夜车站重逢", "style": "cinematic"}).json()["id"]
+    real = comfy.run
+
+    async def broken(workflow, out_dir, progress=None):
+        if any(n["class_type"] == "SaveVideo" for n in workflow.values()):
+            raise RuntimeError("模拟 ComfyUI 崩溃")
+        return await real(workflow, out_dir, progress)
+
+    monkeypatch.setattr(comfy, "run", broken)
+    client.post(f"/api/projects/{pid}/autopilot/start", json={"stops": []})
+    st = ap_wait(client, pid)
+    assert st["status"] == "failed" and st["stage"] == "videos" and "模拟 ComfyUI 崩溃" in st["message"]
+    monkeypatch.setattr(comfy, "run", real)
+    client.post(f"/api/projects/{pid}/autopilot/continue")
+    assert ap_wait(client, pid)["status"] == "done"
+    st = client.post(f"/api/projects/{pid}/autopilot/stop").json()
+    assert st["status"] == "done"            # 已完成的不受停止影响

@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY, title TEXT NOT NULL, source_type TEXT, source_text TEXT,
   aspect_ratio TEXT DEFAULT '16:9', style TEXT DEFAULT 'cinematic', style_note TEXT DEFAULT '',
   script TEXT DEFAULT '', synopsis TEXT DEFAULT '', target_seconds INTEGER DEFAULT 60,
-  final_video TEXT DEFAULT '', dub_mode INTEGER DEFAULT 0, created_at REAL, updated_at REAL
+  final_video TEXT DEFAULT '', dub_mode INTEGER DEFAULT 0, autopilot TEXT DEFAULT '{}', created_at REAL, updated_at REAL
 );
 CREATE TABLE IF NOT EXISTS characters (
   id TEXT PRIMARY KEY, project_id TEXT, name TEXT, role TEXT DEFAULT '', gender TEXT DEFAULT '',
@@ -54,7 +54,7 @@ CREATE INDEX IF NOT EXISTS idx_assets_owner ON assets(owner_type, owner_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
 """
 
-JSON_FIELDS = {"character_ids", "prop_ids", "dialogue", "meta", "params", "result"}
+JSON_FIELDS = {"character_ids", "prop_ids", "dialogue", "meta", "params", "result", "autopilot"}
 LIST_FIELDS = {"character_ids", "prop_ids", "dialogue"}
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
@@ -79,7 +79,8 @@ def conn() -> sqlite3.Connection:
 
 
 MIGRATIONS = [("characters", "face_image", "TEXT DEFAULT ''"), ("characters", "voice_ref", "TEXT DEFAULT ''"),
-              ("shots", "prop_ids", "TEXT DEFAULT '[]'"), ("projects", "dub_mode", "INTEGER DEFAULT 0")]
+              ("shots", "prop_ids", "TEXT DEFAULT '[]'"), ("projects", "dub_mode", "INTEGER DEFAULT 0"),
+              ("projects", "autopilot", "TEXT DEFAULT '{}'")]
 
 
 def _migrate(c: sqlite3.Connection) -> None:

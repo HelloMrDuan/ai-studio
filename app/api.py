@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from . import db, facefusion, pipeline, prompts, qa, voice
+from . import autopilot, db, facefusion, pipeline, prompts, qa, voice
 from .config import get_settings
 from .gpu import gpu
 from .tasks import queue
@@ -160,7 +160,7 @@ async def project_snapshot(project_id: str) -> dict:
     return {"project": project, "characters": pipeline.characters_of(project_id),
             "locations": pipeline.locations_of(project_id), "props": pipeline.props_of(project_id),
             "shots": pipeline.shots_of(project_id),
-            "assets": assets, "tasks": tasks}
+            "assets": assets, "tasks": tasks, "autopilot": autopilot.status(project_id)}
 
 
 @router.patch("/projects/{project_id}")
@@ -199,6 +199,49 @@ async def gen_extract(project_id: str) -> dict:
 async def gen_storyboard(project_id: str) -> dict:
     _get("projects", project_id, "项目")
     return _submit("storyboard", "生成分镜表", project_id, "project", project_id + ":storyboard")
+
+
+class AutopilotIn(BaseModel):
+    quality: str = "draft"             # 镜头视频质量
+    turbo: bool = True
+    mode: str = "auto"
+    keyframe_count: int = Field(1, ge=1, le=4)
+    subtitles: bool = True
+    final_quality: str = "final"
+    stops: list[str] = Field(default_factory=lambda: list(autopilot.DEFAULT_STOPS))   # 在这些步骤完成后停下等审核
+    from_stage: str = ""
+
+
+@router.get("/projects/{project_id}/autopilot")
+async def autopilot_status(project_id: str) -> dict:
+    _get("projects", project_id, "项目")
+    return autopilot.status(project_id)
+
+
+@router.post("/projects/{project_id}/autopilot/start")
+async def autopilot_start(project_id: str, body: AutopilotIn) -> dict:
+    _get("projects", project_id, "项目")
+    opts = body.model_dump()
+    opts["stops"] = [x for x in opts["stops"] if x in autopilot.ORDER]
+    try:
+        autopilot.start(project_id, {k: v for k, v in opts.items() if k != "from_stage"}, body.from_stage)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return autopilot.status(project_id)
+
+
+@router.post("/projects/{project_id}/autopilot/continue")
+async def autopilot_continue(project_id: str) -> dict:
+    _get("projects", project_id, "项目")
+    autopilot.resume(project_id)
+    return autopilot.status(project_id)
+
+
+@router.post("/projects/{project_id}/autopilot/stop")
+async def autopilot_stop(project_id: str) -> dict:
+    _get("projects", project_id, "项目")
+    autopilot.stop(project_id)
+    return autopilot.status(project_id)
 
 
 class AssembleIn(BaseModel):
@@ -584,62 +627,10 @@ class BatchIn(BaseModel):
 @router.post("/projects/{project_id}/batch/{kind}")
 async def batch(project_id: str, kind: str, body: BatchIn) -> dict:
     _get("projects", project_id, "项目")
-    submitted = []
-    bid = f"{kind}-{db.new_id()[:6]}"           # 批量任务标记：调度时让位给手动任务，可整体暂停
-
-    def _submit(type_: str, title: str, project_id: str, owner_type: str = "", owner_id: str = "",
-                params: dict | None = None) -> dict:
-        return queue.submit(type_, project_id=project_id, title=title, owner_type=owner_type, owner_id=owner_id,
-                            params={**(params or {}), "_batch": bid})
-
-    if kind == "portraits":
-        for c in pipeline.characters_of(project_id):
-            if not (body.only_missing and c["ref_image"]):
-                submitted.append(_submit("portrait", f"角色形象：{c['name']}", project_id, "character", c["id"],
-                                         {"character_id": c["id"], "count": body.count}))
-            elif not c.get("face_image"):
-                submitted.append(_submit("face_ref", f"脸部特写：{c['name']}", project_id, "character", c["id"],
-                                         {"character_id": c["id"], "count": 1}))
-        for loc in pipeline.locations_of(project_id):
-            if not (body.only_missing and loc["ref_image"]):
-                submitted.append(_submit("location_image", f"场景图：{loc['name']}", project_id, "location",
-                                         loc["id"], {"location_id": loc["id"], "count": body.count}))
-        for pr in pipeline.props_of(project_id):
-            if not (body.only_missing and pr["ref_image"]):
-                submitted.append(_submit("prop_image", f"道具图：{pr['name']}", project_id, "prop",
-                                         pr["id"], {"prop_id": pr["id"], "count": body.count}))
-    elif kind == "voices":
-        for c in pipeline.characters_of(project_id):
-            if body.only_missing and c.get("voice_ref"):
-                continue
-            if c.get("ref_image") or c.get("face_image"):
-                submitted.append(_submit("voice_sample", f"音色样本：{c['name']}", project_id, "character", c["id"],
-                                         {"character_id": c["id"], "auto_select": True}))
-    elif kind == "dub":
-        if not voice.tts_available():
-            raise HTTPException(400, "未安装配音组件，请在服务器运行 bash deploy/06_voice.sh")
-        for s in pipeline.shots_of(project_id):
-            done = db.query("SELECT meta FROM assets WHERE path=? LIMIT 1", [s["video"]]) if s["video"] else []
-            if not s["video"] or not pipeline.dub_lines(s)[0]:
-                continue
-            if body.only_missing and done and (done[0].get("meta") or {}).get("dub"):
-                continue
-            submitted.append(_submit("dub", f"配音 #{s['sort'] + 1}", project_id, "shot", s["id"],
-                                     {"shot_id": s["id"], "lipsync": "auto"}))
-    elif kind in {"keyframes", "videos"}:
-        for s in pipeline.shots_of(project_id):
-            field = "keyframe" if kind == "keyframes" else "video"
-            if body.only_missing and s[field]:
-                continue
-            if kind == "keyframes":
-                submitted.append(_submit("keyframe", f"分镜图 #{s['sort'] + 1}", project_id, "shot", s["id"],
-                                         {"shot_id": s["id"], "count": body.count}))
-            else:
-                submitted.append(_submit("video", f"镜头视频 #{s['sort'] + 1}", project_id, "shot", s["id"],
-                                         {"shot_id": s["id"], "quality": body.quality, "turbo": body.turbo,
-                                          "mode": body.mode}))
-    else:
-        raise HTTPException(400, "未知批量类型")
+    try:
+        submitted, bid = pipeline.submit_batch(project_id, kind, **body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     return {"submitted": len(submitted), "batch": bid}
 
 

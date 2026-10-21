@@ -15,6 +15,7 @@ from .config import get_settings
 log = logging.getLogger("studio.tasks")
 Handler = Callable[["TaskContext"], Awaitable[dict | None]]
 HANDLERS: dict[str, Handler] = {}
+AFTER_HOOKS: list[Callable[[dict], None]] = []     # 任务结束（完成/失败/取消）后调用，例如一键成片推进下一步
 ACTIVE = ("queued", "running", "cancelling", "paused")
 
 
@@ -146,7 +147,13 @@ class TaskQueue:
         if not t:
             return None
         if t["status"] in {"queued", "paused"}:
-            return db.update("tasks", task_id, {"status": "cancelled", "message": "已取消"})
+            t = db.update("tasks", task_id, {"status": "cancelled", "message": "已取消"})
+            for hook in AFTER_HOOKS:
+                try:
+                    hook(t)
+                except Exception:  # noqa: BLE001
+                    log.error("任务后处理失败：\n%s", traceback.format_exc())
+            return t
         if t["status"] == "running":
             return db.update("tasks", task_id, {"status": "cancelling", "message": "正在取消…"})
         return t
@@ -215,6 +222,11 @@ class TaskQueue:
                 db.update("tasks", task_id, {"status": "failed", "message": str(exc)[:500]})
             finally:
                 self.current = None
+            for hook in AFTER_HOOKS:
+                try:
+                    hook(db.get("tasks", task_id) or task)
+                except Exception:  # noqa: BLE001
+                    log.error("任务后处理失败：\n%s", traceback.format_exc())
 
 
 def _fmt(sec: float) -> str:

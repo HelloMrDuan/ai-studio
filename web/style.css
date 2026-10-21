@@ -105,3 +105,7 @@ pre.prompt{white-space:pre-wrap;background:var(--panel2);padding:10px;border-rad
 .voice-box audio { width: 100%; height: 32px; margin-top: 6px; }
 .ref.prop { width: 140px; height: 140px; }
 .anim .tl-item{width:176px}.anim .tl-item input{width:54px;padding:4px 6px;flex:0 0 auto}.anim .tl-item .row{flex-wrap:nowrap}.anim .tl-item .btn.small{padding:3px 7px}
+.ap{margin-top:14px;padding:12px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.02)}
+.ap.running{border-color:#4b5bd6}.ap.waiting{border-color:var(--warn)}.ap.failed{border-color:#7a2f38}.ap.done{border-color:#2f6b45}
+.ap-head{font-weight:600;margin-bottom:6px}.ap-dots{display:flex;gap:3px;margin-bottom:6px;font-size:11px}
+.ap-dot{color:#3a3f4a}.ap-dot.done{color:var(--ok)}.ap-dot.current{color:var(--warn)}.ap-dot.skip{color:#262a31}

@@ -477,3 +477,51 @@ def test_sound_post(client, project, monkeypatch, tmp_path):
     srt = (pipeline.project_dir(pid, "final") / "subtitles.srt").read_text("utf-8")
     assert "那一夜" in srt and "三年前" in srt
     shutil.rmtree(sound.sfx_dir(), ignore_errors=True)
+
+
+def test_enhance(client, project, monkeypatch):
+    import subprocess
+    from app import comfy, enhance, pipeline
+    from test_features import CALLS
+    pid = project
+    shot = client.get(f"/api/projects/{pid}").json()["shots"][0]
+    if not shot["video"]:
+        wait(client, client.post(f"/api/shots/{shot['id']}/video", json={}).json()["id"])
+    assert enhance.target_size(768, 1344, 1080) == (1080, 1890) and enhance.target_size(320, 180, 1080) == (1920, 1080)
+    # 补帧：没装 RIFE 时用 ffmpeg 运动补偿插帧
+    monkeypatch.setattr(enhance, "rife_available", lambda: False)
+    r = wait(client, client.post(f"/api/shots/{shot['id']}/interpolate", json={"fps": 30}).json()["id"])
+    assert r["result"]["method"] == "ffmpeg"
+    snap = client.get(f"/api/projects/{pid}").json()
+    cur = next(s for s in snap["shots"] if s["id"] == shot["id"])
+    info = asyncio_run(enhance.video_info(pipeline.absolute(cur["video"])))
+    assert abs(info["fps"] - 30) < 0.01, info
+    # RIFE：倍数补帧后重采样到目标帧率
+    monkeypatch.setattr(enhance, "rife_available", lambda: True)
+    n0 = len(CALLS)
+    wait(client, client.post(f"/api/shots/{shot['id']}/interpolate", json={"fps": 60}).json()["id"])
+    wf = CALLS[n0]
+    assert wf["3"]["class_type"] == "RIFE VFI" and wf["3"]["inputs"]["multiplier"] == 2      # 30 → ×2 → 60
+    cur = next(s for s in client.get(f"/api/projects/{pid}").json()["shots"] if s["id"] == shot["id"])
+    assert abs(asyncio_run(enhance.video_info(pipeline.absolute(cur["video"])))["fps"] - 60) < 0.01
+    # 超分（Real-ESRGAN 脚本模拟成 ffmpeg 缩放）
+    monkeypatch.setattr(enhance, "esrgan_available", lambda: True)
+
+    async def fake_esrgan(src, out, width, height, model, ctx):
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(src), "-vf", f"scale={width}:{height}", "-c:a", "copy", str(out)], check=True)
+    monkeypatch.setattr(enhance, "run_esrgan", fake_esrgan)
+    r = wait(client, client.post(f"/api/shots/{shot['id']}/upscale", json={"target": "1080p"}).json()["id"])
+    assert r["result"]["size"] == "1920x1080"
+    snap = client.get(f"/api/projects/{pid}").json()
+    a = next(x for x in snap["assets"][shot["id"]] if x["path"] == next(s for s in snap["shots"] if s["id"] == shot["id"])["video"])
+    assert a["meta"]["enhanced"] == ["补帧 30fps", "补帧 60fps", "超分 1080p"] and a["meta"]["upscale"]["to"] == "1920x1080"
+    # 批量：已超分的跳过
+    assert client.post(f"/api/projects/{pid}/enhance", json={"kind": "upscale"}).json()["submitted"] == \
+        sum(1 for s in snap["shots"] if s["video"]) - 1
+    drain(client, pid)
+    # 成片：1080p · 30fps
+    client.patch(f"/api/projects/{pid}", json={"grade": {}, "post": {"fps": 30, "sound": {"loudnorm": False}}})
+    wait(client, client.post(f"/api/projects/{pid}/assemble", json={"quality": "1080p"}).json()["id"])
+    fin = [x for x in client.get(f"/api/projects/{pid}").json()["assets"][pid] if x["kind"] == "final"][0]
+    info = asyncio_run(enhance.video_info(pipeline.absolute(fin["path"])))
+    assert fin["meta"]["fps"] == 30 and abs(info["fps"] - 30) < 0.01 and min(info["width"], info["height"]) == 1080, info

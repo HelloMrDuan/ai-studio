@@ -292,7 +292,13 @@ function cameraFields(x) {
 }
 function videoExtras(x) {
   const m = S.meta.motion;
-  return `<details style="margin-top:6px"><summary class="muted small">延长 / 动作参考${x.motion_ref ? ' · <span class="ok">已有动作参考</span>' : ''}</summary>
+  const enh = ((assetsOf(x.id, 'video').find((a) => a.path === x.video) || {}).meta || {}).enhanced || [];
+  const E = S.meta.enhance || {};
+  return `<details style="margin-top:6px"><summary class="muted small">延长 / 动作参考 / 增强${x.motion_ref ? ' · <span class="ok">已有动作参考</span>' : ''}${enh.length ? ` · <span class="ok">${esc(enh.join('、'))}</span>` : ''}</summary>
+    <div class="row" style="margin-top:6px">${sel([['1080p', '超分到 1080p'], ['1440p', '超分到 1440p'], ['4k', '超分到 4K']], '1080p', `id="up-t-${x.id}" style="width:130px"`)}
+      <button class="btn small ghost" data-act="shot-upscale" data-id="${x.id}" ${x.video && (E.esrgan || E.seedvr2) ? '' : 'disabled'} title="${E.esrgan || E.seedvr2 ? '生成超分版本（可在版本里切回原版）' : '未安装超分组件：bash deploy/10_enhance.sh'}">超分</button>
+      ${sel([[48, '补帧到 48fps'], [60, '补帧到 60fps'], [30, '补帧到 30fps']], 48, `id="fi-f-${x.id}" style="width:130px"`)}
+      <button class="btn small ghost" data-act="shot-interp" data-id="${x.id}" ${x.video ? '' : 'disabled'} title="${E.rife ? 'RIFE 补帧' : '未安装 RIFE，将用 ffmpeg 运动补偿插帧（CPU，较慢）'}">补帧</button></div>
     <div class="row" style="margin-top:6px"><input type="text" class="grow" id="ve-ins-${x.id}" placeholder="接下来的动作（可空），如：他转身走向门口">
       ${sel([[3, '+3秒'], [4, '+4秒'], [6, '+6秒'], [8, '+8秒']], 4, `id="ve-s-${x.id}" style="width:80px"`)}
       <button class="btn small" data-act="video-extend" data-id="${x.id}" ${x.video ? '' : 'disabled'} title="取当前视频最后一帧续写，再拼成一个长镜头">延长</button></div>
@@ -446,4 +452,23 @@ Object.assign(ACTIONS, {
   async 'sfx-clear'(el) { await api('PATCH', `/api/shots/${el.dataset.id}`, { sfx: [] }); loadSnap(true); },
   async 'bgm-gen'() { submitted(await api('POST', `/api/projects/${S.pid}/bgm`, { single: !!val('bgm-single') })); },
   async 'bgm-plan'() { const r = await api('GET', `/api/projects/${S.pid}/bgm/plan`); alert(r.segments.map((g, i) => `${i + 1}. ${g.mood}  ${Math.round(g.seconds)} 秒（${g.shots.length} 个镜头）\n   ${g.tags}`).join('\n') || '还没有分镜'); },
+});
+
+/* ---------------- 画质增强：逐镜头超分 / 补帧、成片帧率 ---------------- */
+Object.assign(ACTIONS, {
+  async 'shot-upscale'(el) { submitted(await api('POST', `/api/shots/${el.dataset.id}/upscale`, { target: val(`up-t-${el.dataset.id}`) })); },
+  async 'shot-interp'(el) { submitted(await api('POST', `/api/shots/${el.dataset.id}/interpolate`, { fps: Number(val(`fi-f-${el.dataset.id}`)) })); },
+  async 'enhance-all'(el) {
+    const kind = el.dataset.kind; const body = kind === 'upscale' ? { kind, target: val('en-t') } : { kind, fps: Number(val('en-f')) };
+    const r = await api('POST', `/api/projects/${S.pid}/enhance`, body); toast(r.submitted ? `已提交 ${r.submitted} 个镜头` : '没有需要处理的镜头'); pollTasks();
+  },
+});
+POST_SECTIONS.push(() => {
+  const E = S.meta.enhance || {}; const vids = S.snap.shots.filter((x) => x.video).length;
+  return `<div class="post-sec"><div class="row between"><b>画质增强</b><span class="muted small">${E.esrgan ? '超分：Real-ESRGAN' : E.seedvr2 ? '超分：SeedVR2' : '超分未安装（deploy/10_enhance.sh）'} · ${E.rife ? '补帧：RIFE' : '补帧：ffmpeg（未装 RIFE）'}</span></div>
+    <div class="row" style="margin-top:6px;gap:10px;flex-wrap:wrap">
+      ${sel([['1080p', '1080p'], ['1440p', '1440p'], ['4k', '4K']], '1080p', 'id="en-t" style="width:90px"')}<button class="btn small ghost" data-act="enhance-all" data-kind="upscale" ${vids && (E.esrgan || E.seedvr2) ? '' : 'disabled'}>全部镜头超分</button>
+      ${sel([[48, '48fps'], [60, '60fps'], [30, '30fps']], 48, 'id="en-f" style="width:90px"')}<button class="btn small ghost" data-act="enhance-all" data-kind="interpolate" ${vids ? '' : 'disabled'}>全部镜头补帧</button>
+      <span class="small">成片帧率 ${sel([[24, '24'], [30, '30'], [48, '48'], [60, '60']], jget('post', 'fps', 24), 'data-jsave="post.fps" data-num="1" style="width:70px"')}</span>
+      <span class="muted small">已处理过的镜头自动跳过；建议先配音再增强；超分后成片选「输出 1080p/1440p」</span></div></div>`;
 });

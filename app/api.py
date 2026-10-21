@@ -9,7 +9,7 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from . import art, autopilot, board, db, grade, package, videox, vlm, director, facefusion, pipeline, prompts, qa, sound, suggest, voice, writers
+from . import art, autopilot, board, db, enhance, grade, package, videox, vlm, director, facefusion, pipeline, prompts, qa, sound, suggest, voice, writers
 from .config import get_settings
 from .gpu import gpu
 from .tasks import queue
@@ -61,7 +61,7 @@ async def meta() -> dict:
             "camera_dirs": {k: list(v) for k, v in videox.DIRECTIONS.items()}, "motion": videox.motion_available(),
             "luts": grade.STYLE_LUTS, "sub_presets": {k: v["label"] for k, v in package.SUB_PRESETS.items()},
             "transition_fx": list(package.TRANSITION_FX), "vlm": vlm.available(), "vlm_provider": vlm.provider(), "asr": vlm.asr_available(),
-            "moods": {k: v[0] for k, v in sound.MOODS.items()}, "narr_styles": sound.NARR_STYLES, "music": sound.music_available()}
+            "moods": {k: v[0] for k, v in sound.MOODS.items()}, "narr_styles": sound.NARR_STYLES, "music": sound.music_available(), "enhance": enhance.status()}
 
 
 def _model_check() -> list[dict]:

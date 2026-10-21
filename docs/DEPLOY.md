@@ -199,3 +199,11 @@ tail -f /root/autodl-tmp/logs/studio.log /root/autodl-tmp/logs/comfyui.log
 - **音效库**：wav/mp3 放进 `data/sfx/`（或网页上传），**文件名即标签**（`雨声_环境.wav`、`关门声.mp3`）。合成时按镜头「环境音/音效」描述自动匹配，文件名带 雨/风/人群/环境 等字样的会循环铺满整个镜头。
 - **AI 配乐**：`bash deploy/09_music.sh` 下载 ACE-Step v1 3.5B（约 7.7GB，可在无卡模式下运行；`--check` 检查 ComfyUI 节点）。按场次情绪曲线（紧张/悲伤/温馨/浪漫/燃/欢快/神秘/平静）分段生成、段间交叉淡化；想换工作流就把 API 格式 JSON 放到 `data/workflows/music.json`，占位符 `{{TAGS}} {{LYRICS}} {{SECONDS}} {{SEED}} {{STEPS}}`。
 - **混音**：人声（对白 + 旁白）闪避 BGM（sidechaincompress），整片两遍 loudnorm 标准化到 -14 LUFS / -1.5 dBTP（可选 -16、-23）。成片历史版本里显示用了哪些声音层和目标响度。
+
+## 画质增强（P3-1 超分 / P3-2 补帧，可选）
+
+- `bash deploy/10_enhance.sh`：下载 Real-ESRGAN（`realesr-animevideov3` 漫剧快、`RealESRGAN_x4plus` 写实）到 `ComfyUI/models/upscale_models`，安装 RIFE 补帧节点 ComfyUI-Frame-Interpolation；无卡模式可运行，开卡后 `--test` 自检。
+- 超分用 ComfyUI 的 Python 逐帧流式处理（显存与视频长度无关，原音轨直接复制），运行前会让 ComfyUI 卸载模型；`--seedvr2` 另装 SeedVR2 节点，需自备工作流模板 `data/workflows/upscale_seedvr2.json`（占位符 `{{VIDEO}} {{WIDTH}} {{HEIGHT}} {{SHORT}} {{SEED}} {{FPS}}`）。
+- 补帧：RIFE 按整数倍补帧后精确重采样到目标帧率（30/48/60）；没装 RIFE 时退回 ffmpeg 运动补偿插帧（CPU，慢、效果一般）。
+- 增强结果是镜头视频的新版本（继承配音和字幕时间），可随时切回原版。**建议先配音、对口型，再超分/补帧**（重新配音会从未增强的原视频开始）。
+- 成片输出可选 1080p / 1440p 和 24/30/48/60 帧率（⑤成片 → 画质增强）。

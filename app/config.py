@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     lipsync_python: Path | None = None
     lipsync_steps: int = 20
     voice_timeout: int = 1800
+    # 画质增强（deploy/10_enhance.sh）：超分用 ComfyUI 的 Python 环境（torch + spandrel）逐帧流式处理
+    comfyui_python: Path | None = None
+    upscale_model: str = "realesr-animevideov3.pth"     # ComfyUI/models/upscale_models 里的文件
+    rife_ckpt: str = "rife47.pth"
 
     @property
     def db_path(self) -> Path:
@@ -95,7 +99,8 @@ def get_settings() -> Settings:
     envs = s.base_dir / "envs"
     defaults = {"qa_python": s.facefusion_python, "tts_dir": s.base_dir / "index-tts",
                 "tts_python": envs / "tts" / "bin" / "python", "lipsync_dir": s.base_dir / "LatentSync",
-                "lipsync_python": envs / "lipsync" / "bin" / "python"}
+                "lipsync_python": envs / "lipsync" / "bin" / "python",
+                "comfyui_python": envs / "comfyui" / "bin" / "python"}
     for key, value in defaults.items():
         if getattr(s, key) is None:
             setattr(s, key, value)

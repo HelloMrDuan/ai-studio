@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import comfy, db, facefusion, llm, media, prompts, qa, videox, vlm, voice, grade, package, sound
+from . import comfy, db, facefusion, llm, media, prompts, qa, videox, vlm, voice, grade, package, sound, enhance
 from .config import get_settings
 from .gpu import gpu
 from .tasks import TaskContext, handler, queue
@@ -834,9 +834,11 @@ async def task_assemble(ctx: TaskContext) -> dict:
     durs = [(await media.probe(c))["duration"] or float(s["duration"] or 5) for s, c in zip(shots, clips)]
     out_dir = project_dir(project["id"], "final")
     bgm = absolute(ctx.params["bgm"]) if ctx.params.get("bgm") else None
-    quality = ctx.params.get("quality") if ctx.params.get("quality") in VIDEO_SIZES else "final"
-    width, height = VIDEO_SIZES[quality].get(project["aspect_ratio"], VIDEO_SIZES[quality]["16:9"])
-    await ctx.progress(5, f"合成 {len(clips)} 个镜头…")
+    sizes = {**VIDEO_SIZES, **enhance.EXPORT_SIZES}
+    quality = ctx.params.get("quality") if ctx.params.get("quality") in sizes else "final"
+    width, height = sizes[quality].get(project["aspect_ratio"], sizes[quality]["16:9"])
+    out_fps = int(post.get("fps") or 24) if int(post.get("fps") or 24) in (24, 25, 30, 48, 50, 60) else 24
+    await ctx.progress(5, f"合成 {len(clips)} 个镜头（{width}x{height} · {out_fps}fps）…")
     safe_title = "".join(ch for ch in (project["title"] or "final") if ch not in '\\/:*?"<>|')[:40]
     output = out_dir / f"{safe_title}_{time.strftime('%Y%m%d_%H%M%S')}.mp4"
     work = out_dir / f"work_{ctx.id}"
@@ -908,7 +910,8 @@ async def task_assemble(ctx: TaskContext) -> dict:
         mix = {"narration": layers["narration"], "sfx": layers["sfx"], "bgm": bgm, "bgm_volume": bgm_volume,
                "duck": bool(so["duck"]), "loudnorm": bool(so["loudnorm"]), "lufs": so["lufs"], "duration": timeline_total}
         await ctx.progress(60, "合成画面、混音…")
-        await media.assemble(seq_clips, output, width, height, work, srt="", ass=ass, pre=seq_pre, plan=plan, mix=mix)
+        await media.assemble(seq_clips, output, width, height, work, srt="", ass=ass, pre=seq_pre, plan=plan, mix=mix,
+                             fps=out_fps)
         sound_info = {**(mix.get("info") or {}), "narration": layers["narr_count"], "sfx": layers["sfx_count"],
                       "bgm": bgm_src}
         total = (await media.probe(output))["duration"]
@@ -921,7 +924,7 @@ async def task_assemble(ctx: TaskContext) -> dict:
     asset = add_asset(project["id"], "final", output, "project", project["id"],
                       {"shots": len(clips), "seconds": round(total, 1), "skipped": skipped, "grade": grade_info,
                        "transitions": sum(1 for fx, _ in plan if fx), "cards": n_intro + (1 if ec.get("enabled") else 0),
-                       "sound": sound_info})
+                       "sound": sound_info, "size": f"{width}x{height}", "fps": out_fps})
     db.update("projects", project["id"], {"final_video": asset["path"]})
     return {"path": asset["path"], "seconds": round(total, 1), "skipped": skipped, "cover": cover}
 

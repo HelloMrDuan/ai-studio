@@ -77,7 +77,7 @@ h2{margin:0 0 16px;font-size:20px}h3{margin:0 0 10px;font-size:16px}
 #task-list{overflow:auto;padding:10px 12px}
 .task{padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;background:var(--panel2)}
 .task .st{font-size:11px;padding:1px 8px;border-radius:999px;border:1px solid var(--line)}
-.st.running{color:var(--warn)}.st.done{color:var(--ok)}.st.failed{color:var(--err)}.st.queued{color:var(--muted)}
+.st.running{color:var(--warn)}.st.done{color:var(--ok)}.st.failed{color:var(--err)}.st.queued{color:var(--muted)}.st.paused{color:var(--muted);font-style:italic}
 .task .msg{font-size:12px;color:var(--muted);margin:4px 0;word-break:break-all}
 .modal{position:fixed;inset:0;background:#000a;z-index:40;display:flex;align-items:center;justify-content:center}
 .modal-box{background:var(--panel);border:1px solid var(--line);border-radius:14px;width:min(720px,94vw);max-height:90vh;overflow:auto;padding:20px 22px}

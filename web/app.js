@@ -128,7 +128,7 @@ const busyOf = (id) => S.active.find((t) => t.owner_id === id || t.owner_id === 
 function busyBox(id) { return `<span class="busy-slot" data-owner="${esc(id)}">${busyInner(id)}</span>`; }
 function busyInner(id) {
   const t = busyOf(id); if (!t) return '';
-  return `<div class="busy"><div>${t.status === 'queued' ? '排队中…' : esc(t.message || '生成中…')}</div><div class="bar" style="width:70%"><i style="width:${t.progress}%"></i></div></div>`;
+  return `<div class="busy"><div>${t.status === 'queued' ? '排队中…' : t.status === 'paused' ? '已暂停' : esc(t.message || '生成中…')}</div><div class="bar" style="width:70%"><i style="width:${t.progress}%"></i></div></div>`;
 }
 function stepDone(k) {
   const s = S.snap; const shots = s.shots;
@@ -618,7 +618,8 @@ async function renderSystem() {
         <tr><td>对口型 LatentSync</td><td>${yes(s.voice.lipsync, '已安装', '未安装')}</td></tr>
         <tr><td>ffmpeg</td><td>${yes(s.ffmpeg)}</td></tr></table></div>
       <div class="panel"><h3>磁盘与队列</h3><div>数据盘剩余 <b>${s.disk.free_gb} GB</b> / ${s.disk.total_gb} GB</div>
-        <div class="muted small" style="margin-top:6px">排队任务：${s.queue.waiting}${s.queue.current ? '，正在执行 1 个' : ''}</div></div></div>
+        <div class="muted small" style="margin-top:6px">排队任务：${s.queue.waiting}${s.queue.paused ? `，已暂停 ${s.queue.paused}` : ''}${s.queue.current ? '，正在执行 1 个' : ''}</div>
+        <div class="muted small" style="margin-top:6px">当前显存模型：${esc({ image: '出图', video: '视频', llm: '文字模型', voice: '配音/对口型', facefusion: 'FaceFusion' }[g.group] || '无')}，启动以来切换 ${g.switches || 0} 次${(g.recent_switches || []).length ? '（最近：' + g.recent_switches.map((r) => `${esc(r.from)}→${esc(r.to)} ${r.seconds}s`).join('，') + '）' : ''}</div></div></div>
     <div class="panel" style="margin-top:16px"><h3>模型文件</h3><table><tr><th>文件</th><th>目录</th><th>大小</th><th>状态</th></tr>
       ${s.models.map((m) => `<tr><td>${esc(m.name)}</td><td>${esc(m.folder)}</td><td>${m.size_gb ? m.size_gb + ' GB' : '-'}</td><td>${m.ok ? '<span class="ok">✓</span>' : m.optional ? '<span class="muted">可选，未下载</span>' : '<span class="bad">✗ 缺失</span>'}</td></tr>`).join('')}
     </table><p class="muted small">缺失的模型可运行 <code>bash deploy/download_models.sh</code> 补齐（参考生视频模型加 <code>--r2v</code>）。</p></div></div>`;
@@ -626,11 +627,11 @@ async function renderSystem() {
 
 /* ---------------- 任务轮询 ---------------- */
 function renderTasks(list) {
-  $('#task-list').innerHTML = list.map((t) => `<div class="task"><div class="row between"><b>${esc(t.title)}</b><span class="st ${t.status}">${{ queued: '排队', running: '运行中', cancelling: '取消中', done: '完成', failed: '失败', cancelled: '已取消' }[t.status] || t.status}</span></div>
+  $('#task-list').innerHTML = list.map((t) => `<div class="task"><div class="row between"><b>${esc(t.title)}</b><span class="st ${t.status}">${{ queued: '排队', paused: '已暂停', running: '运行中', cancelling: '取消中', done: '完成', failed: '失败', cancelled: '已取消' }[t.status] || t.status}</span></div>
     ${t.status === 'running' ? `<div class="bar" style="margin:6px 0"><i style="width:${t.progress}%"></i></div>` : ''}
     <div class="msg">${esc(t.message)}</div>
     <div class="row between"><span class="muted small">${new Date(t.created_at * 1000).toLocaleTimeString()}${t.project_id ? ` · <a href="#/p/${t.project_id}">打开项目</a>` : ''}</span>
-    <span>${['queued', 'running'].includes(t.status) ? `<button class="btn small ghost" data-act="task-cancel" data-id="${t.id}">取消</button>` : ''}
+    <span>${['queued', 'running', 'paused'].includes(t.status) ? `<button class="btn small ghost" data-act="task-cancel" data-id="${t.id}">取消</button>` : ''}
     ${['failed', 'cancelled'].includes(t.status) ? `<button class="btn small ghost" data-act="task-retry" data-id="${t.id}">重试</button>` : ''}</span></div></div>`).join('') || '<div class="muted">暂无任务</div>';
 }
 async function pollTasks() {
@@ -657,6 +658,8 @@ async function pollTasks() {
 }
 $('#task-btn').onclick = async () => { S.drawer = !S.drawer; $('#drawer').classList.toggle('hidden', !S.drawer); if (S.drawer) renderTasks(await api('GET', '/api/tasks?limit=80')); };
 $('#drawer-close').onclick = () => { S.drawer = false; $('#drawer').classList.add('hidden'); };
+$('#task-pause').onclick = async () => { const r = await api('POST', '/api/tasks/pause'); toast(r.paused ? `已暂停 ${r.paused} 个排队任务（正在运行的会跑完）` : '没有排队中的任务'); pollTasks(); };
+$('#task-resume').onclick = async () => { const r = await api('POST', '/api/tasks/resume'); toast(r.resumed ? `已继续 ${r.resumed} 个任务` : '没有暂停的任务'); pollTasks(); };
 $('#task-clear').onclick = async () => { await api('DELETE', '/api/tasks'); renderTasks(await api('GET', '/api/tasks?limit=80')); };
 
 route();

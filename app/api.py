@@ -86,7 +86,8 @@ async def system_status() -> dict:
         "ffmpeg": shutil.which("ffmpeg") is not None,
         "disk": {"free_gb": round(disk.free / 1e9, 1), "total_gb": round(disk.total / 1e9, 1)},
         "queue": {"current": queue.current,
-                  "waiting": len(db.query("SELECT id FROM tasks WHERE status='queued'"))},
+                  "waiting": len(db.query("SELECT id FROM tasks WHERE status='queued'")),
+                  "paused": len(db.query("SELECT id FROM tasks WHERE status='paused'"))},
     }
 
 
@@ -175,7 +176,7 @@ async def update_project(project_id: str, body: dict[str, Any]) -> dict:
 @router.delete("/projects/{project_id}")
 async def delete_project(project_id: str) -> dict:
     _get("projects", project_id, "项目")
-    for t in db.query("SELECT id FROM tasks WHERE project_id=? AND status IN ('queued','running')", [project_id]):
+    for t in db.query("SELECT id FROM tasks WHERE project_id=? AND status IN ('queued','running','paused')", [project_id]):
         queue.cancel(t["id"])
     db.delete_project(project_id)
     shutil.rmtree(get_settings().media_dir / project_id, ignore_errors=True)
@@ -573,6 +574,13 @@ class BatchIn(BaseModel):
 async def batch(project_id: str, kind: str, body: BatchIn) -> dict:
     _get("projects", project_id, "项目")
     submitted = []
+    bid = f"{kind}-{db.new_id()[:6]}"           # 批量任务标记：调度时让位给手动任务，可整体暂停
+
+    def _submit(type_: str, title: str, project_id: str, owner_type: str = "", owner_id: str = "",
+                params: dict | None = None) -> dict:
+        return queue.submit(type_, project_id=project_id, title=title, owner_type=owner_type, owner_id=owner_id,
+                            params={**(params or {}), "_batch": bid})
+
     if kind == "portraits":
         for c in pipeline.characters_of(project_id):
             if not (body.only_missing and c["ref_image"]):
@@ -621,7 +629,7 @@ async def batch(project_id: str, kind: str, body: BatchIn) -> dict:
                                           "mode": body.mode}))
     else:
         raise HTTPException(400, "未知批量类型")
-    return {"submitted": len(submitted)}
+    return {"submitted": len(submitted), "batch": bid}
 
 
 # ================= 素材 =================
@@ -671,7 +679,7 @@ async def list_tasks(project_id: str = "", active: bool = False, limit: int = 10
         sql += " AND project_id=?"
         args.append(project_id)
     if active:
-        sql += " AND status IN ('queued','running','cancelling')"
+        sql += " AND status IN ('queued','running','cancelling','paused')"
     sql += " ORDER BY created_at DESC LIMIT ?"
     args.append(max(1, min(limit, 500)))
     return db.query(sql, args)
@@ -691,6 +699,17 @@ async def retry_task(task_id: str) -> dict:
     if not t:
         raise HTTPException(404, "任务不存在")
     return t
+
+
+@router.post("/tasks/pause")
+async def pause_tasks(project_id: str = "", batch_only: bool = False) -> dict:
+    """暂停排队中的任务（正在运行的会跑完），之后可「继续」。"""
+    return {"paused": queue.pause(project_id, batch_only)}
+
+
+@router.post("/tasks/resume")
+async def resume_tasks(project_id: str = "") -> dict:
+    return {"resumed": queue.resume(project_id)}
 
 
 @router.delete("/tasks")

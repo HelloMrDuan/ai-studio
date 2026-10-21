@@ -246,3 +246,27 @@ def test_dub(client, project, monkeypatch, tmp_path):
     assert meta3.get("dub") and not meta3["lipsync"] and any("多人" in n for n in meta3["notes"])
     plan = client.get(f"/api/shots/{s2['id']}/plan").json()
     assert "是你吗" not in plan["video"]["prompt"]
+
+
+def test_batch_pause_resume(client, project, monkeypatch):
+    pid = project
+    fast = comfy.run
+
+    async def slow_run(*a, **kw):
+        await asyncio.sleep(0.5)
+        return await fast(*a, **kw)
+
+    monkeypatch.setattr(comfy, "run", slow_run)
+    r = client.post(f"/api/projects/{pid}/batch/keyframes", json={"only_missing": False, "count": 1}).json()
+    assert r["submitted"] >= 2 and r["batch"].startswith("keyframes-")
+    paused = client.post("/api/tasks/pause", params={"project_id": pid}).json()["paused"]
+    assert paused >= 1
+    active = client.get(f"/api/tasks?project_id={pid}&active=1").json()
+    assert any(t["status"] == "paused" for t in active)
+    assert client.post("/api/tasks/resume", params={"project_id": pid}).json()["resumed"] == paused
+    drain(client, pid)
+    rows = [t for t in client.get(f"/api/tasks?project_id={pid}&limit=500").json() if t["params"].get("_batch") == r["batch"]]
+    assert len(rows) == r["submitted"] and all(t["status"] == "done" for t in rows)
+    assert "elapsed" in rows[0]["result"] and rows[0]["message"].startswith("完成")
+    st = client.get("/api/system/status").json()
+    assert "switches" in st["gpu"] and "paused" in st["queue"]

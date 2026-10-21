@@ -31,6 +31,22 @@ class GPUManager:
         self.detail = ""
         self._llm_proc: subprocess.Popen | None = None
         self.comfy_kind = ""
+        self.switches = 0                 # 启动以来大模型切换次数（出图↔视频、文字模型启停、整体释放）
+        self.recent: list[dict] = []      # 最近的切换记录（显示在系统状态里）
+
+    def current_group(self) -> str:
+        """当前显存里留着的模型组，任务调度据此优先安排同组任务。"""
+        if self.owner == "comfyui":
+            return self.comfy_kind
+        if self.owner == "llm":
+            return "llm"
+        return self.owner if self.owner in {"voice", "facefusion"} else ""
+
+    def _note_switch(self, frm: str, to: str, seconds: float) -> None:
+        self.switches += 1
+        self.recent = (self.recent + [{"from": frm or "空闲", "to": to, "seconds": round(seconds, 1),
+                                       "at": time.time()}])[-10:]
+        log.info("模型切换 #%d：%s → %s，卸载/启动耗时 %.1fs", self.switches, frm or "空闲", to, seconds)
 
     # ---------- 状态 ----------
     async def status(self) -> dict:
@@ -42,6 +58,9 @@ class GPUManager:
             "memory": await self.memory(),
             "llm": {"provider": s.llm_provider, "running": await self.llm_alive()},
             "comfyui": {"running": await self.comfy_alive()},
+            "group": self.current_group(),
+            "switches": self.switches,
+            "recent_switches": self.recent[-5:],
         }
 
     async def memory(self) -> dict | None:
@@ -83,6 +102,13 @@ class GPUManager:
     async def use(self, workspace: str, detail: str = "") -> AsyncIterator[None]:
         async with self.lock:
             self.detail = detail
+            if workspace == "llm" and get_settings().llm_provider != "local":
+                try:                            # 云端文字模型：不占显存，不改变当前模型组
+                    yield
+                finally:
+                    self.detail = ""
+                return
+            before, t0 = self.current_group(), time.monotonic()
             if workspace == "llm":
                 await self._prepare_llm()
             elif workspace in {"comfyui", "facefusion", "voice"}:
@@ -90,6 +116,8 @@ class GPUManager:
                 if workspace != "comfyui":      # FaceFusion / 配音 / 对口型 需要 ComfyUI 先让出显存
                     await self.free_comfy()
             self.owner = workspace
+            if workspace != "comfyui" and before != self.current_group():
+                self._note_switch(before, self.current_group(), time.monotonic() - t0)
             try:
                 yield
             finally:
@@ -97,8 +125,11 @@ class GPUManager:
 
     async def comfy_switch(self, kind: str) -> None:
         """出图(Qwen-Image ≈17GB) 与出视频(H3 ≈50GB) 切换时先让 ComfyUI 卸载旧模型，避免 62GB 内存被缓存撑爆。"""
-        if self.comfy_kind and self.comfy_kind != kind:
-            await self.free_comfy()
+        if self.comfy_kind != kind:
+            t0, before = time.monotonic(), self.comfy_kind
+            if self.comfy_kind:
+                await self.free_comfy()
+            self._note_switch(before, kind, time.monotonic() - t0)
         self.comfy_kind = kind
 
     async def free_comfy(self) -> None:

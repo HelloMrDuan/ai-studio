@@ -57,9 +57,14 @@ const cvShotH = (x) => Math.round(CV_W.shot / cvRatio(shotAspect(x))) + 118;
 function cvDefaultLayout() {
   const s = S.snap; const pos = { script: { x: 0, y: 0 } };
   let y = 0; const cx = 340;
+  const H = (id, est) => (CV.size && CV.size[id] ? CV.size[id][1] : est);   // 量过的真实高度优先
   const col = (rows, w, h, cols) => {
-    rows.forEach((r, i) => { pos[r] = { x: cx + (i % cols) * (w + 20), y: y + Math.floor(i / cols) * (h + 20) }; });
-    if (rows.length) y += Math.ceil(rows.length / cols) * (h + 20) + 40;
+    for (let i = 0; i < rows.length; i += cols) {
+      const line = rows.slice(i, i + cols);
+      line.forEach((r, j) => { pos[r] = { x: cx + j * (w + 20), y }; });
+      y += Math.max(...line.map((r) => H(r, h))) + 20;
+    }
+    if (rows.length) y += 30;
   };
   col(s.characters.map((c) => `char:${c.id}`), CV_W.char, 250, 2);
   col(s.locations.map((l) => `loc:${l.id}`), CV_W.loc, 200, 1);
@@ -69,7 +74,7 @@ function cvDefaultLayout() {
   cvScenes().forEach((row) => {
     row.shots.forEach((x, j) => { pos[`shot:${x.id}`] = { x: sx + j * (CV_W.shot + 24), y: sy + 28 }; });
     maxCols = Math.max(maxCols, row.shots.length);
-    sy += Math.max(...row.shots.map(cvShotH)) + 28 + 50;
+    sy += Math.max(...row.shots.map((x) => H(`shot:${x.id}`, cvShotH(x)))) + 28 + 50;
   });
   pos.final = { x: sx + maxCols * (CV_W.shot + 24) + 100, y: 0 };
   return pos;
@@ -83,6 +88,33 @@ function cvPositions() {
   return pos;
 }
 
+/* ---------- 过期检测：上游换过图 / 视频后，下游标「需更新」 ---------- */
+const cvT = (owner, path) => { if (!path) return 0; const a = (S.snap.assets[owner] || []).find((x) => x.path === path); return a ? a.created_at : 0; };
+function cvStale() {
+  const s = S.snap; const out = {};
+  const refT = (type, id) => { const r = (type === 'char' ? s.characters : type === 'loc' ? s.locations : s.props || []).find((x) => x.id === id); return r ? cvT(r.id, r.ref_image) : 0; };
+  let lastVideo = 0;
+  s.shots.forEach((x) => {
+    const tk = cvT(x.id, x.keyframe); const tv = cvT(x.id, x.video); const why = [];
+    if (tk) {
+      const ups = [...(x.character_ids || []).map((c) => ['char', c, '角色形象']), ...(x.location_id ? [['loc', x.location_id, '场景图']] : []),
+        ...(x.prop_ids || []).map((pr) => ['prop', pr, '道具图'])];
+      ups.forEach(([t, id, label]) => { if (refT(t, id) > tk + 1) why.push(`${label}已更换`); });
+    }
+    if (why.length) out[`shot:${x.id}`] = { what: 'keyframe', why: [...new Set(why)].join('、') + '，分镜图需要重出' };
+    else if (tk && tv && tk > tv + 1) out[`shot:${x.id}`] = { what: 'video', why: '分镜图比视频新，视频需要重做' };
+    lastVideo = Math.max(lastVideo, tv);
+  });
+  const tf = cvT(s.project.id, s.project.final_video);
+  if (tf && lastVideo > tf + 1) out.final = { what: 'final', why: '有镜头视频比成片新，需要重新合成' };
+  return out;
+}
+function cvThumbs(owner, kind, current, max = 6) {
+  const list = assetsOf(owner, kind).slice(0, max); if (list.length < 2) return '';
+  return `<div class="cv-thumbs">${list.map((a) => `<span class="cv-th ${a.path === current ? 'sel' : ''}" data-act="select-asset" data-id="${a.id}" title="设为当前使用"
+    style="${isVideo(a.path) ? '' : `background-image:url('${media(a.path)}')`}">${isVideo(a.path) ? '▶' : ''}</span>`).join('')}</div>`;
+}
+
 /* ---------- 卡片 ---------- */
 const cvImg = (path, ratio, extra = '') => `<div class="cv-img" style="aspect-ratio:${ratio};${path ? `background-image:url('${media(path)}')` : ''}" ${path ? `data-act="zoom" data-src="${media(path)}"` : ''}>${path ? '' : '<span class="muted small">暂无图</span>'}${extra}</div>`;
 const CV_CARD = {
@@ -91,20 +123,27 @@ const CV_CARD = {
     return `<div class="cv-h">📜 剧本</div><div class="cv-b"><b>${esc(p.title)}</b>
       <div class="small muted clamp4">${esc(p.synopsis || (p.script ? p.script.slice(0, 120) : '还没有剧本'))}</div>
       <div class="small muted">${p.script ? `${p.script.length} 字 · ${scenes ? scenes.length : 0} 场` : ''} · ${p.aspect_ratio}</div></div>
-      <div class="cv-f"><button class="btn small ghost" data-act="cv-open" data-step="script">编辑剧本</button></div>`;
+      <div class="cv-f">${!p.script ? `<button class="btn small" data-act="gen-script" ${p.source_text ? '' : 'disabled'}>生成剧本</button>`
+        : !S.snap.characters.length ? '<button class="btn small" data-act="cv-extract">提取角色与场景</button>'
+          : !S.snap.shots.length ? '<button class="btn small" data-act="cv-storyboard">生成分镜表</button>' : ''}
+        <button class="btn small ghost" data-act="cv-open" data-step="script">编辑剧本</button>${busyBox(`${p.id}:script`)}</div>`;
   },
   char(it) {
     const c = it.row;
     return `<div class="cv-h">👤 ${esc(c.name)}${c.locked ? ' 🔒' : ''}</div>${cvImg(c.ref_image, '3/4', busyBox(c.id))}
-      <div class="cv-f"><span class="small muted clamp1">${esc(c.appearance || c.description || '')}</span></div>`;
+      ${cvThumbs(c.id, 'portrait', c.ref_image)}
+      <div class="cv-f"><button class="btn small ${c.ref_image ? 'ghost' : ''}" data-act="gen-portrait" data-id="${c.id}" ${c.locked ? 'disabled title="已锁定"' : ''}>${c.ref_image ? '重做' : '生成形象'}</button>
+        <button class="btn small ghost" data-act="cv-open" data-step="cast">详情</button></div>`;
   },
   loc(it) {
     const l = it.row;
-    return `<div class="cv-h">🏞 ${esc(l.name)}</div>${cvImg(l.ref_image, '16/9', busyBox(l.id))}`;
+    return `<div class="cv-h">🏞 ${esc(l.name)}</div>${cvImg(l.ref_image, '16/9', busyBox(l.id))}${cvThumbs(l.id, 'location', l.ref_image)}
+      <div class="cv-f"><button class="btn small ${l.ref_image ? 'ghost' : ''}" data-act="gen-location" data-id="${l.id}">${l.ref_image ? '重做' : '生成场景图'}</button></div>`;
   },
   prop(it) {
     const pr = it.row;
-    return `<div class="cv-h">🧩 ${esc(pr.name)}</div>${cvImg(pr.ref_image, '1/1', busyBox(pr.id))}`;
+    return `<div class="cv-h">🧩 ${esc(pr.name)}</div>${cvImg(pr.ref_image, '1/1', busyBox(pr.id))}${cvThumbs(pr.id, 'prop', pr.ref_image)}
+      <div class="cv-f"><button class="btn small ${pr.ref_image ? 'ghost' : ''}" data-act="gen-prop" data-id="${pr.id}">${pr.ref_image ? '重做' : '生成'}</button></div>`;
   },
   shot(it) {
     const x = it.row; const a = shotAspect(x);
@@ -113,15 +152,22 @@ const CV_CARD = {
     if ((x.dialogue || []).length) st.push(`<span class="muted">台词 ${x.dialogue.length}</span>`);
     return `<div class="cv-h"><b>#${it.i + 1}</b> <span class="muted small">${esc(x.shot_size || '')} · ${x.duration}s${x.aspect ? ` · ${a}` : ''}</span></div>
       ${cvImg(x.keyframe, a.replace(':', '/'), play + busyBox(x.id))}
-      <div class="cv-b small clamp2">${esc(x.description || '')}</div>
-      <div class="cv-f small row between">${st.join(' ')}<button class="btn small ghost" data-act="cv-open" data-step="${x.keyframe ? 'video' : 'board'}" data-anchor="shot-${x.id}">打开</button></div>`;
+      ${cvThumbs(x.id, 'keyframe', x.keyframe)}${cvThumbs(x.id, 'video', x.video)}
+      ${it.stale ? `<div class="cv-stale small">⚠ ${esc(it.stale.why)}</div>` : ''}
+      <div class="cv-b small clamp2" title="${esc(x.description || '')}">${esc(x.description || '')}</div>
+      <div class="cv-f small">${st.join(' ')}</div>
+      <div class="cv-f"><button class="btn small ${x.keyframe && !(it.stale && it.stale.what === 'keyframe') ? 'ghost' : ''}" data-act="gen-keyframe" data-id="${x.id}">${x.keyframe ? '重出图' : '出图'}</button>
+        <button class="btn small ${x.keyframe && (!x.video || (it.stale && it.stale.what === 'video')) ? '' : 'ghost'}" data-act="gen-video" data-id="${x.id}" ${x.keyframe ? '' : 'disabled'}>${x.video ? '重做视频' : '出视频'}</button>
+        <button class="btn small ghost" data-act="cv-open" data-step="${x.keyframe ? 'video' : 'board'}" data-anchor="shot-${x.id}" title="在流程视图里编辑这个镜头的全部设置">编辑</button></div>`;
   },
   final() {
     const p = S.snap.project; const n = S.snap.shots.length; const v = S.snap.shots.filter((x) => x.video).length;
     return `<div class="cv-h">🎬 成片</div>
       ${p.final_video ? `<div class="cv-img" style="aspect-ratio:${p.aspect_ratio.replace(':', '/')};${p.cover ? `background-image:url('${media(p.cover)}')` : ''}"><span class="cv-play" data-act="zoom" data-src="${media(p.final_video)}">▶</span>${busyBox(`${p.id}:assemble`)}</div>`
         : `<div class="cv-b small muted">镜头视频 ${v}/${n}${busyBox(`${p.id}:assemble`)}</div>`}
-      <div class="cv-f"><button class="btn small ghost" data-act="cv-open" data-step="final">去成片</button></div>`;
+      ${CV_CARD._stale && CV_CARD._stale.final ? `<div class="cv-stale small">⚠ ${CV_CARD._stale.final.why}</div>` : ''}
+      <div class="cv-f"><button class="btn small ${p.final_video && !(CV_CARD._stale && CV_CARD._stale.final) ? 'ghost' : ''}" data-act="cv-assemble" ${v ? '' : 'disabled'}>${p.final_video ? '重新合成' : '合成成片'}</button>
+        <button class="btn small ghost" data-act="cv-open" data-step="final">成片设置</button></div>`;
   },
   note(it) {
     const n = it.row;
@@ -139,18 +185,33 @@ function viewCanvas() {
       <button class="btn small ghost" data-act="cv-auto" title="按 剧本 → 角色/场景 → 镜头 → 成片 重新排列">自动排列</button>
       <button class="btn small ghost" data-act="cv-fit">适应画布</button>
       <button class="btn small ghost" data-act="cv-zoom" data-d="0.8">－</button><span class="cv-zl" id="cv-zl">100%</span><button class="btn small ghost" data-act="cv-zoom" data-d="1.25">＋</button>
+      <button class="btn small ghost" data-act="cv-batch" data-k="keyframes" title="给还没有分镜图的镜头出图">批量出图</button>
+      <button class="btn small ghost" data-act="cv-batch" data-k="videos" title="给有分镜图、还没有视频的镜头出视频">批量出视频</button>
+      <button class="btn small warn hidden" id="cv-stale-btn" data-act="cv-next-stale" title="依次定位到需要更新的卡片">⚠ 需更新</button>
       <button class="btn small ghost" data-act="cv-edges">${CV.edges === 'all' ? '连线：全部' : '连线：仅选中'}</button>
     </div>
-    <div class="cv-hint muted small">拖空白处平移 · 滚轮 / 双指缩放 · 拖卡片移动（Shift 多选）</div></div>`;
+    <div class="cv-hint muted small">拖空白处平移 · 滚轮 / 双指缩放 · 拖卡片移动（Shift 多选）· 把角色 / 场景 / 道具拖到镜头上即加入该镜头 · 点连线可断开 · 双击空白加便签</div></div>`;
 }
 function cvRenderNodes() {
   const pos = cvPositions(); CV.pos = pos;
+  const stale = cvStale(); CV_CARD._stale = stale; CV.stale = stale;
+  const sb = $('#cv-stale-btn'); if (sb) { const n = Object.keys(stale).length; sb.classList.toggle('hidden', !n); sb.textContent = `⚠ 需更新 ${n}`; }
   $('#cv-nodes').innerHTML = cvItems().map((it) => {
-    const p = pos[it.id];
-    return `<div class="cv-node cv-${it.type} ${CV.sel.has(it.id) ? 'sel' : ''} ${it.type === 'note' ? `nc-${it.row.color}` : ''}" data-node="${esc(it.id)}"
+    const p = pos[it.id]; it.stale = stale[it.id];
+    return `<div class="cv-node cv-${it.type} ${CV.sel.has(it.id) ? 'sel' : ''} ${it.stale ? 'stale' : ''} ${it.type === 'note' ? `nc-${it.row.color}` : ''}" data-node="${esc(it.id)}"
       style="left:${p.x}px;top:${p.y}px;width:${(it.type === 'note' && it.row.w) || CV_W[it.type]}px">${CV_CARD[it.type](it)}</div>`;
   }).join('');
-  cvMeasure(); cvDrawEdges();
+  cvMeasure();
+  // 默认布局按估计高度摆的，量到真实高度后再摆一次（只动没手动摆过的卡片）
+  const again = cvPositions(); let moved = false;
+  Object.entries(again).forEach(([k, p]) => {
+    if (CV.pos[k] && (CV.pos[k].x !== p.x || CV.pos[k].y !== p.y)) {
+      CV.pos[k] = p; moved = true;
+      const el = document.querySelector(`.cv-node[data-node="${CSS.escape(k)}"]`); if (el) { el.style.left = `${p.x}px`; el.style.top = `${p.y}px`; }
+    }
+  });
+  if (moved) cvMeasure();
+  cvDrawEdges();
 }
 function cvMeasure() {
   CV.size = {};
@@ -168,7 +229,9 @@ function cvDrawEdges() {
     if (k === 'cont' && Math.abs(pa.y - pb.y) < 40) { y1 = pa.y + sa[1] / 2; y2 = pb.y + sb[1] / 2; }
     if (x2 < x1 - 20) { x1 = pa.x; x2 = pb.x + sb[0]; }
     const dx = Math.max(40, Math.abs(x2 - x1) / 2) * (x2 >= x1 ? 1 : -1);
-    return `<path class="e-${k} ${on ? 'hot' : ''}" d="M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}"/>`;
+    const d = `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`;
+    const cut = ['char', 'loc', 'prop'].includes(k) ? `<path class="e-hit" d="${d}" data-a="${esc(a)}" data-b="${esc(b)}"><title>点击断开</title></path>` : '';
+    return `<path class="e-${k} ${on ? 'hot' : ''}" d="${d}"/>${cut}`;
   });
   svg.innerHTML = paths.join('');
 }
@@ -227,6 +290,7 @@ function cvWheel(e) {
 }
 function cvDown(e) {
   if (e.button !== 0 && e.button !== 1) return;
+  if (e.target.closest('.e-hit')) return;                 // 点连线：交给 click 处理断开
   const nodeEl = e.target.closest('.cv-node');
   if (nodeEl && e.button === 0) {
     if (e.target.closest('button,input,textarea,select,.cv-x')) return;
@@ -236,7 +300,7 @@ function cvDown(e) {
     const ids = [...CV.sel].filter((k) => CV.pos[k]);
     CV.drag = { kind: 'node', sx: e.clientX, sy: e.clientY, ids, start: Object.fromEntries(ids.map((k) => [k, { ...CV.pos[k] }])), moved: false };
   } else if (!e.target.closest('.cv-bar')) {
-    if (!e.shiftKey && e.button === 0) { CV.sel.clear(); cvMarkSel(); }
+    if (!e.shiftKey && e.button === 0 && CV.sel.size) { CV.sel.clear(); cvMarkSel(); }
     CV.drag = { kind: 'pan', sx: e.clientX, sy: e.clientY, vx: CV.vp.x, vy: CV.vp.y, moved: false };
   } else return;
   window.addEventListener('pointermove', cvMove);
@@ -254,13 +318,20 @@ function cvMove(e) {
     const el = document.querySelector(`.cv-node[data-node="${CSS.escape(k)}"]`); if (el) { el.style.left = `${p.x}px`; el.style.top = `${p.y}px`; }
   });
   cvDrawEdges();
+  // 角色 / 场景 / 道具拖到镜头上：高亮目标
+  const t = d.ids.length === 1 && /^(char|loc|prop):/.test(d.ids[0]) ? cvDropTarget(e) : null;
+  if (t !== d.target) {
+    if (d.target) { const o = document.querySelector(`.cv-node[data-node="${CSS.escape(d.target)}"]`); if (o) o.classList.remove('drop'); }
+    if (t) { const o = document.querySelector(`.cv-node[data-node="${CSS.escape(t)}"]`); if (o) o.classList.add('drop'); }
+    d.target = t;
+  }
 }
 function cvUp() {
   window.removeEventListener('pointermove', cvMove);
   document.body.classList.remove('cv-dragging');
   const d = CV.drag; CV.drag = null; if (!d) return;
   if (d.moved) window.addEventListener('click', (ev) => { ev.stopPropagation(); ev.preventDefault(); }, { capture: true, once: true });
-  if (d.kind === 'pan') { if (d.moved) cvSaveVp(); } else if (d.moved) cvCommitMove(d.ids);
+  if (d.kind === 'pan') { if (d.moved) cvSaveVp(); } else if (d.moved && d.target) cvLink(d); else if (d.moved) cvCommitMove(d.ids);
   if (CV.dirty) { CV.dirty = false; renderProject(); }
 }
 function cvMarkSel() {
@@ -348,3 +419,67 @@ document.addEventListener('keydown', (e) => {
     del.forEach((d) => CV.sel.delete(`note:${d}`)); cvRenderNodes();
   } else if (e.key === 'Escape') { CV.sel.clear(); cvMarkSel(); }
 });
+
+/* ---------- 拖拽建立关系 / 点连线断开 ---------- */
+function cvDropTarget(e) {
+  const pt = cvWorldPt(e);
+  return Object.keys(CV.pos).find((k) => {
+    if (!k.startsWith('shot:')) return false;
+    const p = CV.pos[k]; const sz = CV.size[k] || [0, 0];
+    return pt.x >= p.x && pt.x <= p.x + sz[0] && pt.y >= p.y && pt.y <= p.y + sz[1];
+  }) || null;
+}
+function cvShotPatch(src, shot, remove = false) {
+  const [t, id] = src.split(':');
+  if (t === 'loc') return { location_id: remove ? '' : id };
+  const key = t === 'char' ? 'character_ids' : 'prop_ids'; const cur = shot[key] || [];
+  return { [key]: remove ? cur.filter((x) => x !== id) : cur.includes(id) ? cur : [...cur, id] };
+}
+async function cvLink(d) {
+  const src = d.ids[0]; const shot = localRow('shots', d.target.slice(5));
+  // 拖过去的卡片回到原位
+  CV.pos[src] = d.start[src];
+  const el = document.querySelector(`.cv-node[data-node="${CSS.escape(src)}"]`); if (el) { el.style.left = `${d.start[src].x}px`; el.style.top = `${d.start[src].y}px`; }
+  const o = document.querySelector('.cv-node.drop'); if (o) o.classList.remove('drop');
+  if (!shot) return;
+  const idx = S.snap.shots.indexOf(shot) + 1; const name = cvName(src);
+  const patch = cvShotPatch(src, shot);
+  if (JSON.stringify(patch[Object.keys(patch)[0]]) === JSON.stringify(shot[Object.keys(patch)[0]])) { toast(`${name} 已经在镜头 #${idx} 里`); cvDrawEdges(); return; }
+  await api('PATCH', `/api/shots/${shot.id}`, patch);
+  toast(`已把 ${name} 加入镜头 #${idx}${shot.keyframe ? '（分镜图需要重出才会体现）' : ''}`);
+  loadSnap(true);
+}
+function cvName(nodeId) {
+  const [t, id] = nodeId.split(':'); const s = S.snap;
+  const r = (t === 'char' ? s.characters : t === 'loc' ? s.locations : t === 'prop' ? s.props || [] : []).find((x) => x.id === id);
+  return r ? `「${r.name}」` : '';
+}
+document.addEventListener('click', async (e) => {
+  const hit = e.target.closest && e.target.closest('#cv-edges .e-hit'); if (!hit) return;
+  const shot = localRow('shots', hit.dataset.b.slice(5)); if (!shot) return;
+  const idx = S.snap.shots.indexOf(shot) + 1;
+  if (!confirm(`把 ${cvName(hit.dataset.a)} 从镜头 #${idx} 中移除？`)) return;
+  await api('PATCH', `/api/shots/${shot.id}`, cvShotPatch(hit.dataset.a, shot, true));
+  toast('已断开'); loadSnap(true);
+});
+
+Object.assign(ACTIONS, {
+  async 'cv-extract'() { await api('POST', `/api/projects/${S.pid}/extract`); toast('已开始提取角色与场景'); pollTasks(); },
+  async 'cv-storyboard'() { submitted(await api('POST', `/api/projects/${S.pid}/storyboard/generate`)); },
+  async 'cv-assemble'() { submitted(await api('POST', `/api/projects/${S.pid}/assemble`, {}), '已提交成片合成'); },
+  async 'cv-batch'(el) {
+    const r = await api('POST', `/api/projects/${S.pid}/batch/${el.dataset.k}`, { only_missing: true, count: 1 });
+    submitted(r, r.submitted ? `已提交 ${r.submitted} 个任务` : '没有需要补的镜头');
+  },
+  'cv-next-stale'() {
+    const ids = Object.keys(CV.stale || {}); if (!ids.length) return;
+    CV.staleI = ((CV.staleI || 0) + 1) % ids.length; const id = ids[CV.staleI];
+    CV.sel.clear(); CV.sel.add(id); cvMarkSel(); cvCenterOn(id);
+    toast(CV.stale[id].why);
+  },
+});
+function cvCenterOn(id) {
+  const r = $('#cv-root'); const p = CV.pos[id]; const sz = CV.size[id] || [200, 200]; if (!r || !p) return;
+  CV.vp.x = r.clientWidth / 2 - (p.x + sz[0] / 2) * CV.vp.z; CV.vp.y = r.clientHeight / 2 - (p.y + sz[1] / 2) * CV.vp.z;
+  cvApplyVp(); cvSaveVp();
+}

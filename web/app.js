@@ -57,7 +57,9 @@ async function route() {
   }
   let m;
   if ((m = h.match(/^#\/p\/([^/]+)(?:\/(\w+))?/))) {
-    S.view = 'project'; S.pid = m[1]; S.step = m[2] || 'script';
+    S.view = 'project'; S.pid = m[1]; S.step = m[2] || (localStorage.getItem('ais.view') === 'canvas' ? 'canvas' : 'script');
+    localStorage.setItem('ais.view', S.step === 'canvas' ? 'canvas' : 'flow');
+    if (S.step !== 'canvas') S.lastStep = S.step;
     await loadSnap(true);
   } else if ((m = h.match(/^#\/s\/([^/]+)/))) {
     S.view = 'series'; S.pid = null; S.sid = m[1]; $('[data-nav=home]').classList.add('active'); await renderSeries(m[1]);
@@ -80,7 +82,7 @@ async function renderHome() {
   const list = await api('GET', '/api/projects');
   const series = await api('GET', '/api/series').catch(() => []);
   const cards = list.filter((p) => !p.series_id).map((p) => `
-    <div class="card click" data-go="#/p/${p.id}/${p.videos ? 'video' : p.shots ? 'board' : 'script'}">
+    <div class="card click" data-go="#/p/${p.id}/${localStorage.getItem('ais.view') === 'canvas' ? 'canvas' : p.videos ? 'video' : p.shots ? 'board' : 'script'}">
       <div class="cover" style="${p.cover ? `background-image:url('${media(p.cover)}')` : ''}">${p.cover ? '' : '🎞️'}</div>
       <div class="card-body">
         <div class="card-title">${esc(p.title)}</div>
@@ -147,14 +149,19 @@ function stepMeta(k) {
 
 function renderProject() {
   if (S.view !== 'project' || !S.snap) return;
+  if (S.step === 'canvas' && CV.drag) { CV.dirty = true; return; }      // 拖动中不重绘，松手后再刷新
   const y = window.scrollY; const c = $('.content'); const cy = c ? c.scrollTop : 0;
   const p = S.snap.project;
   const steps = STEPS.map(([k, label], i) => `<div class="step ${S.step === k ? 'active' : ''} ${stepDone(k) ? 'done' : ''}" data-go="#/p/${p.id}/${k}">
     <span class="num">${stepDone(k) ? '✓' : i + 1}</span>${label}<span class="meta">${stepMeta(k)}</span></div>`).join('');
-  const body = { script: viewScript, cast: viewCast, board: viewBoard, video: viewVideo, final: viewFinal }[S.step] || viewScript;
-  $('#view').innerHTML = `<div class="ws"><div class="steps"><div class="ptitle">${esc(p.title)}<div class="muted small">${esc(S.meta.styles[p.style] || '')} · ${p.aspect_ratio}</div></div>${steps}${apCard()}</div>
-    <div class="content">${body()}</div></div>`;
+  const cv = S.step === 'canvas';
+  const body = { script: viewScript, cast: viewCast, board: viewBoard, video: viewVideo, final: viewFinal, canvas: viewCanvas }[S.step] || viewScript;
+  const tog = `<div class="vtog"><span class="${cv ? '' : 'on'}" data-act="view-flow">流程视图</span><span class="${cv ? 'on' : ''}" data-act="view-canvas">无限画布</span></div>`;
+  $('#view').innerHTML = `<div class="ws ${cv ? 'ws-cv' : ''}"><div class="steps"><div class="ptitle">${esc(p.title)}<div class="muted small">${esc(S.meta.styles[p.style] || '')} · ${p.aspect_ratio}</div></div>${tog}${steps}${apCard()}</div>
+    <div class="content ${cv ? 'cv-content' : ''}">${body()}</div></div>`;
+  if (cv) { cvMount(); return; }
   window.scrollTo(0, y); const c2 = $('.content'); if (c2) c2.scrollTop = cy;
+  if (S.anchor) { const el = document.getElementById(S.anchor); S.anchor = ''; if (el) el.scrollIntoView({ block: 'center' }); }
 }
 /* ---------------- 一键成片 ---------------- */
 const AP_STEP = { beats: 'script', review: 'script', script: 'script', extract: 'cast', refs: 'cast', voices: 'cast', storyboard: 'board', keyframes: 'board', animatic: 'board', videos: 'video', dub: 'video', assemble: 'final' };

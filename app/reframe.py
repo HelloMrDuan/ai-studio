@@ -237,7 +237,7 @@ def summary(plans: list[dict]) -> dict:
 
 # ---------------- 重新出图：复制成新画幅项目 ----------------
 CLEAR_SHOT = {"keyframe": "", "video": "", "end_frame": "", "review": {}}
-SKIP_PROJECT = {"id", "created_at", "final_video", "cover", "autopilot", "review_report", "series_id", "episode"}
+SKIP_PROJECT = {"id", "created_at", "final_video", "cover", "autopilot", "review_report", "series_id", "episode", "canvas"}
 
 
 def clone_project(src_id: str, aspect: str, title: str = "") -> dict:

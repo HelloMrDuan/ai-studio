@@ -982,3 +982,28 @@ def test_aspects_auto_and_per_shot(client, project):
         assert rf["crop"] + rf["pad"] >= 1, rf
     finally:
         client.patch(f"/api/shots/{shot['id']}", json={"aspect": "", "video": old_video})
+
+
+def test_canvas_layout(client, project):
+    pid = project
+    snap = client.get(f"/api/projects/{pid}").json()
+    assert snap["project"]["canvas"] == {}
+    sid = snap["shots"][0]["id"]
+    c = client.put(f"/api/projects/{pid}/canvas", json={"nodes": {f"shot:{sid}": {"x": 100.26, "y": "-50"}, "script": {"x": 0, "y": 0}},
+                                                       "viewport": {"x": 10, "y": 20, "z": 99},
+                                                       "notes": [{"text": "雨再大一点", "x": 5, "y": 6, "color": "nope"}]}).json()
+    assert c["nodes"][f"shot:{sid}"] == {"x": 100.3, "y": -50.0} and c["viewport"]["z"] == 4
+    assert c["notes"][0]["color"] == "yellow" and c["notes"][0]["id"] and c["notes"][0]["text"] == "雨再大一点"
+    # 节点按 key 合并，null 删除；便签整体替换
+    c = client.put(f"/api/projects/{pid}/canvas", json={"nodes": {"script": None, "final": {"x": 900, "y": float("1e9")}}}).json()
+    assert "script" not in c["nodes"] and f"shot:{sid}" in c["nodes"] and c["nodes"]["final"]["y"] == 1e6
+    assert len(c["notes"]) == 1
+    assert client.get(f"/api/projects/{pid}").json()["project"]["canvas"]["nodes"]["final"]["x"] == 900
+    assert client.put(f"/api/projects/{pid}/canvas", json={"notes": [{}] * 301}).status_code == 400
+    # 自动排列：清空位置，便签保留
+    r = client.post(f"/api/projects/{pid}/canvas/reset").json()
+    assert r["nodes"] == {} and len(r["notes"]) == 1
+    # 复制为新画幅项目不带画布布局（节点 id 已变）
+    cl = client.post(f"/api/projects/{pid}/clone", json={"aspect": "1:1"}).json()
+    assert client.get(f"/api/projects/{cl['id']}").json()["project"]["canvas"] == {}
+    assert client.get("/static/canvas.js").status_code == 200

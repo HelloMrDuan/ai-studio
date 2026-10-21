@@ -72,7 +72,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
 """
 
 JSON_FIELDS = {"plan", "sfx", "grade", "post", "review", "review_report", "positions", "character_ids", "prop_ids", "dialogue", "meta", "params", "result", "autopilot", "old_value", "new_value",
-               "beats", "writer", "sheet", "variants", "outfits", "data", "images"}
+               "beats", "writer", "sheet", "variants", "outfits", "data", "images", "canvas"}
 LIST_FIELDS = {"character_ids", "prop_ids", "dialogue", "beats"}
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
@@ -132,7 +132,9 @@ MIGRATIONS = [("characters", "face_image", "TEXT DEFAULT ''"), ("characters", "v
               ("projects", "video_engine", "TEXT DEFAULT 'local'"), ("projects", "cloud_share", "REAL DEFAULT 0.5"),
               ("shots", "engine", "TEXT DEFAULT ''"),
               # 镜头级画幅（留空 = 跟随项目）
-              ("shots", "aspect", "TEXT DEFAULT ''")]
+              ("shots", "aspect", "TEXT DEFAULT ''"),
+              # 无限画布（布局 / 便签 / 分组 / 视口）
+              ("projects", "canvas", "TEXT DEFAULT '{}'")]
 
 
 def _migrate(c: sqlite3.Connection) -> None:

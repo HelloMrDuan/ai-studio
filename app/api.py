@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from . import autopilot, db, facefusion, pipeline, prompts, qa, voice
+from . import autopilot, db, facefusion, pipeline, prompts, qa, suggest, voice, writers
 from .config import get_settings
 from .gpu import gpu
 from .tasks import queue
@@ -54,7 +54,8 @@ async def meta() -> dict:
     return {"styles": {k: v["label"] for k, v in prompts.STYLES.items()}, "aspects": ASPECTS,
             "shot_sizes": prompts.SHOT_SIZES, "camera_angles": prompts.CAMERA_ANGLES,
             "camera_moves": prompts.CAMERA_MOVES, "r2v": pipeline.r2v_available(), "qa": qa.available(),
-            "voice": voice.status(), "auth": bool(get_settings().access_password)}
+            "voice": voice.status(), "auth": bool(get_settings().access_password),
+            "genres": {k: v["label"] for k, v in writers.GENRES.items()}}
 
 
 def _model_check() -> list[dict]:
@@ -113,10 +114,11 @@ class ProjectIn(BaseModel):
     script: str | None = None
     synopsis: str | None = None
     dub_mode: int = 0
+    genre: str = "general"
 
 
 PROJECT_FIELDS = {"title", "source_type", "source_text", "aspect_ratio", "style", "style_note", "target_seconds",
-                  "script", "synopsis", "dub_mode"}
+                  "script", "synopsis", "dub_mode", "genre"}
 
 
 def _check_project(values: dict) -> None:
@@ -124,6 +126,9 @@ def _check_project(values: dict) -> None:
         raise HTTPException(400, "不支持的画幅")
     if "style" in values and values["style"] not in prompts.STYLES:
         raise HTTPException(400, "不支持的风格")
+    from .writers import GENRES
+    if "genre" in values and values["genre"] not in GENRES:
+        raise HTTPException(400, "不支持的题材")
 
 
 @router.get("/projects")
@@ -160,7 +165,8 @@ async def project_snapshot(project_id: str) -> dict:
     return {"project": project, "characters": pipeline.characters_of(project_id),
             "locations": pipeline.locations_of(project_id), "props": pipeline.props_of(project_id),
             "shots": pipeline.shots_of(project_id),
-            "assets": assets, "tasks": tasks, "autopilot": autopilot.status(project_id)}
+            "assets": assets, "tasks": tasks, "autopilot": autopilot.status(project_id),
+            "writer": writers.status(project), "suggestions": suggest.pending(project_id)}
 
 
 @router.patch("/projects/{project_id}")
@@ -277,7 +283,8 @@ async def upload_file(project_id: str, file: UploadFile = File(...)) -> dict:
 
 
 # ================= 角色 =================
-CHAR_FIELDS = {"name", "role", "gender", "age", "appearance", "personality", "voice", "locked", "sort"}
+CHAR_FIELDS = {"name", "role", "gender", "age", "appearance", "personality", "voice", "locked", "sort",
+               "motivation", "relations", "speech", "catchphrase"}
 
 
 @router.post("/projects/{project_id}/characters")

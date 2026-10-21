@@ -154,7 +154,7 @@ function renderProject() {
   window.scrollTo(0, y); const c2 = $('.content'); if (c2) c2.scrollTop = cy;
 }
 /* ---------------- 一键成片 ---------------- */
-const AP_STEP = { script: 'script', extract: 'cast', refs: 'cast', voices: 'cast', storyboard: 'board', keyframes: 'board', animatic: 'board', videos: 'video', dub: 'video', assemble: 'final' };
+const AP_STEP = { beats: 'script', review: 'script', script: 'script', extract: 'cast', refs: 'cast', voices: 'cast', storyboard: 'board', keyframes: 'board', animatic: 'board', videos: 'video', dub: 'video', assemble: 'final' };
 const fmtSec = (s) => (s < 60 ? `${Math.max(1, Math.round(s))} 秒` : s < 3600 ? `${Math.round(s / 60)} 分钟` : `${(s / 3600).toFixed(1)} 小时`);
 function apCard() {
   const a = S.snap.autopilot || { status: 'none' }; const pid = S.snap.project.id;
@@ -214,7 +214,7 @@ function viewScript() {
       <div class="panel"><h3>剧本 <span class="muted small">（可直接编辑，失焦自动保存）</span></h3>
         <label class="f">一句话梗概</label><input type="text" data-save="projects:${p.id}:synopsis" value="${esc(p.synopsis)}">
         <label class="f">剧本正文</label><textarea class="script-box" data-save="projects:${p.id}:script" placeholder="点击「AI 生成剧本」，或直接粘贴剧本。格式：## 场景1：地点 · 时间 / △画面动作 / 角色：（情绪）台词">${esc(p.script)}</textarea>
-      </div></div>`;
+      </div></div>${writerPanel()}`;
 }
 
 const qaOf = (a) => (a && a.meta && a.meta.qa) || null;
@@ -272,6 +272,7 @@ function viewCast() {
       <div><label class="f">年龄</label><input type="text" data-save="characters:${c.id}:age" value="${esc(c.age)}"></div></div>
       <label class="f">外貌与服装（出图核心）</label><textarea rows="4" data-save="characters:${c.id}:appearance">${esc(c.appearance)}</textarea>
       <label class="f">声音（视频配音）</label><input type="text" data-save="characters:${c.id}:voice" value="${esc(c.voice)}">
+      ${bioBox(c)}
       <div class="row" style="justify-content:flex-end;margin-top:8px"><button class="btn small danger" data-act="del-char" data-id="${c.id}">删除角色</button></div></div></div>`).join('');
   const locs = s.locations.map((l) => `<div class="card entity">
     <div><div class="ref wide" data-act="zoom" data-src="${media(l.ref_image)}" style="${l.ref_image ? `background-image:url('${media(l.ref_image)}')` : ''};position:relative">${l.ref_image ? '' : '暂无场景图'}${busyBox(l.id)}</div>
@@ -350,7 +351,7 @@ function viewBoard() {
       ${i ? `<label class="row small" style="margin-top:8px" title="同一场景、动作直接接着上一镜时勾选：视频首帧取上一镜视频的最后一帧，动作不跳变"><input type="checkbox" data-save="shots:${x.id}:continuous" data-rerender="1" ${x.continuous ? 'checked' : ''}> 与上一镜连续动作（首帧取上一镜最后一帧）</label>` : ''}
       <label class="f">画面描述（首帧：站位、姿态、表情、环境、光线）</label><textarea rows="3" data-save="shots:${x.id}:description">${esc(x.description)}</textarea>
       <label class="f">镜头内动作（给视频模型）</label><textarea rows="2" data-save="shots:${x.id}:action">${esc(x.action)}</textarea>
-      <label class="f">台词</label>${(x.dialogue || []).map((d, j) => `<div class="dlg-row">${sel(speakers.some((sp) => sp[0] === d.speaker) ? speakers : [[d.speaker, d.speaker], ...speakers], d.speaker, `data-dlg="${x.id}:${j}:speaker"`)}
+      <label class="f">台词 ${overlongTag(x)}</label>${(x.dialogue || []).map((d, j) => `<div class="dlg-row">${sel(speakers.some((sp) => sp[0] === d.speaker) ? speakers : [[d.speaker, d.speaker], ...speakers], d.speaker, `data-dlg="${x.id}:${j}:speaker"`)}
         <input type="text" data-dlg="${x.id}:${j}:line" value="${esc(d.line)}" placeholder="台词"><input type="text" data-dlg="${x.id}:${j}:emotion" value="${esc(d.emotion)}" placeholder="情绪">
         <button class="btn small ghost" data-act="del-line" data-id="${x.id}" data-j="${j}">✕</button></div>`).join('')}
       <div class="row"><button class="btn small ghost" data-act="add-line" data-id="${x.id}">＋ 台词</button>
@@ -365,8 +366,9 @@ function viewBoard() {
       <select id="batch-kc" style="width:80px"><option value="1">每镜1张</option><option value="2">每镜2张</option><option value="4">每镜4张</option></select>
       <button class="btn ghost" data-act="batch-keyframes" ${s.shots.length ? '' : 'disabled'}>批量出分镜图（仅缺失）</button>
       <button class="btn ghost" data-act="add-shot">＋ 镜头</button>
+      <button class="btn ghost" data-act="polish" ${s.shots.some((x) => (x.dialogue || []).length) && !busyOf(`${s.project.id}:polish`) ? '' : 'disabled'} title="口语化、贴合人设、按镜头时长控制字数，结果逐条确认">${busyOf(`${s.project.id}:polish`) ? '打磨中…' : '台词打磨'}</button>
       <button class="btn ghost" data-go="#/p/${s.project.id}/video">下一步：视频 →</button></div>
-    ${animaticPanel()}
+    ${suggestPanel()}${animaticPanel()}
     ${shots || '<div class="empty">还没有分镜。先完成①剧本和②角色，再点击「AI 生成分镜表」</div>'}`;
 }
 

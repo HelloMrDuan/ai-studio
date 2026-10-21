@@ -110,3 +110,18 @@ pre.prompt{white-space:pre-wrap;background:var(--panel2);padding:10px;border-rad
 .ap-head{font-weight:600;margin-bottom:6px}.ap-dots{display:flex;gap:3px;margin-bottom:6px;font-size:11px}
 .ap-dot{color:#3a3f4a}.ap-dot.done{color:var(--ok)}.ap-dot.current{color:var(--warn)}.ap-dot.skip{color:#262a31}
 .endf{max-width:320px}.shot .frame.small-frame{width:160px;margin-top:4px}.shot .frame.small-frame.portrait{width:100px}
+/* 编剧室 / 修改建议 */
+.beat-row{display:grid;grid-template-columns:70px 80px 1fr 70px 32px;gap:6px;margin-bottom:6px;align-items:start}
+.beat-row textarea{min-height:34px}
+.score-card{display:flex;gap:14px;align-items:center;margin-top:6px}
+.score-total{font-size:34px;font-weight:700;min-width:90px;text-align:center}.score-total .small{font-size:12px;color:var(--muted)}
+.score-row{display:grid;grid-template-columns:64px 1fr 28px;gap:8px;align-items:center;font-size:12px;margin:2px 0}
+.score-row .bar{height:6px}
+.issues{margin:4px 0 0 16px;padding:0;font-size:12px}.issues li{margin:3px 0}
+.diff{max-height:60vh;overflow:auto;font-family:monospace;font-size:12px;background:#0b0d11;border:1px solid var(--line);border-radius:8px;padding:8px;white-space:pre-wrap}
+.diff .da{background:#13351f;color:#9be8b0}.diff .dr{background:#3a1717;color:#f0a3a3;text-decoration:line-through}
+.sug-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:10px;max-height:520px;overflow:auto}
+.sug{border:1px solid var(--line);border-radius:8px;padding:10px}
+.sug-cmp{display:grid;grid-template-columns:1fr 20px 1fr;gap:6px;margin:6px 0;font-size:12px;white-space:pre-wrap}
+.sug-cmp .old{color:var(--muted);text-decoration:line-through}.sug-cmp .new{color:var(--ok)}.sug-cmp .arrow{color:var(--muted);align-self:center}
+.bio summary{margin-top:8px;cursor:pointer}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 10px}

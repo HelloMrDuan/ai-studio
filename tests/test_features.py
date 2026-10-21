@@ -26,6 +26,19 @@ BOARD = {"shots": [
      "characters": ["陈默", "林晚"], "description": "林晚从站台另一头走来", "action": "",
      "dialogue": [{"speaker": "林晚", "line": "是你吗？", "emotion": "惊讶"}], "sound": "", "duration": 3}]}
 CALLS = []
+BEATS = {"logline": "十年后的雨夜重逢", "beats": [
+    {"time": "0-3秒", "name": "钩子", "content": "陈默盯着一张泛黄的旧照片，站台广播报出一个熟悉的名字", "emotion": "紧张"},
+    {"time": "3-40秒", "name": "冲突升级", "content": "林晚出现却假装不认识他", "emotion": "错愕"},
+    {"time": "40-60秒", "name": "结尾卡点", "content": "林晚转身时掉出同一张照片", "emotion": "震撼"}]}
+GOOD_REVIEW = {"scores": {"hook": 88, "conflict": 85, "rhythm": 84, "logic": 86, "character": 82, "dialogue": 85},
+               "issues": [], "summary": "合格"}
+LLM_EXTRA = {}      # system 提示词 → 返回内容（str 或 callable(messages)）；各测试按需设置
+
+
+def _writer_defaults():
+    from app import writers
+    return {writers.BEATS_SYSTEM: json.dumps(BEATS, ensure_ascii=False),
+            writers.REVIEW_SYSTEM: json.dumps(GOOD_REVIEW, ensure_ascii=False)}
 
 
 def media_file(path: Path, seconds: float, video: bool = True) -> None:
@@ -47,6 +60,10 @@ def duration(path: Path) -> float:
 def client():
     async def fake_complete(messages, **kw):
         system = messages[0]["content"]
+        extra = {**_writer_defaults(), **LLM_EXTRA}
+        if system in extra:
+            r = extra[system]
+            return r(messages) if callable(r) else r
         if system == prompts.SCRIPT_SYSTEM:
             return json.dumps(SCRIPT, ensure_ascii=False)
         if system == prompts.EXTRACT_SYSTEM:
@@ -336,14 +353,14 @@ def ap_wait(client, pid, timeout=120):
 def test_autopilot_unattended(client):
     pid = client.post("/api/projects", json={"title": "一键", "source_text": "雨夜车站重逢", "style": "cinematic"}).json()["id"]
     st = client.post(f"/api/projects/{pid}/autopilot/start", json={"stops": []}).json()
-    assert st["status"] == "running" and st["stage"] == "script" and st["eta_seconds"] > 0
+    assert st["status"] == "running" and st["stage"] == "beats" and st["eta_seconds"] > 0
     st = ap_wait(client, pid)
     assert st["status"] == "done", st
     snap = client.get(f"/api/projects/{pid}").json()
     assert snap["project"]["final_video"] and all(s["keyframe"] and s["video"] for s in snap["shots"])
     assert any(a["kind"] == "animatic" for a in snap["assets"][pid])
     done = [h["stage"] for h in st["history"]]
-    assert done[0] == "script" and done[-1] == "assemble" and "animatic" in done
+    assert done[:3] == ["beats", "script", "review"] and done[-1] == "assemble" and "animatic" in done
     assert all(x["state"] in {"done", "skip"} for x in st["stages"])
     # 自动化任务带标记、批量任务带批次号
     tasks = client.get(f"/api/tasks?project_id={pid}&limit=500").json()
@@ -354,7 +371,7 @@ def test_autopilot_review_stops_and_retry(client, monkeypatch):
     pid = client.post("/api/projects", json={"title": "审核", "source_text": "雨夜车站重逢", "style": "cinematic"}).json()["id"]
     client.post(f"/api/projects/{pid}/autopilot/start", json={})
     st = ap_wait(client, pid)
-    assert st["status"] == "waiting" and st["stage"] == "script"
+    assert st["status"] == "waiting" and st["stage"] == "review"
     client.patch(f"/api/projects/{pid}", json={"script": "（用户改过的剧本）雨夜，车站。"})
     client.post(f"/api/projects/{pid}/autopilot/continue")
     st = ap_wait(client, pid)

@@ -54,11 +54,14 @@ def validate_script(data: Any) -> dict:
 EXTRACT_SYSTEM = """你是影视美术指导。从剧本中提取所有出镜角色和场景，写成可以直接用于 AI 绘图的设定。
 角色 appearance 必须具体可画：性别年龄感、脸型五官、发型发色、体型、服装（款式+颜色+材质）、标志性配饰。不同角色之间外貌差异要明显。
 voice 写声音特征（如：清亮的少女声 / 低沉沙哑的中年男声），用于视频配音。
+人设卡：personality 性格（3~5 个关键词+一句说明），motivation 核心动机/想要什么，relations 与其他角色的关系，
+speech 说话方式（语速、用词习惯、语气），catchphrase 口头禅（没有就留空）。
 场景 description 写清：空间类型、时代、陈设、主色调、光线。
 props 是关键道具：在两个及以上镜头出现、或推动剧情的具体物品（信物、照片、信件、武器、手机等），最多 6 个，没有就给空数组。
 道具 description 写清外观细节：材质、颜色、尺寸、新旧程度、上面的图案或内容（例如：泛黄的旧照片，白色窄边，上面是两个少年在海边的合影）。
 只输出 JSON：
-{"characters":[{"name":"","role":"主角|配角|龙套","gender":"","age":"","appearance":"","personality":"","voice":""}],
+{"characters":[{"name":"","role":"主角|配角|龙套","gender":"","age":"","appearance":"","personality":"","voice":"",
+"motivation":"","relations":"","speech":"","catchphrase":""}],
  "locations":[{"name":"","description":""}],
  "props":[{"name":"","description":""}]}"""
 
@@ -76,7 +79,8 @@ def validate_extract(data: Any) -> dict:
         if name and name not in seen:
             seen.add(name)
             chars.append({k: str(c.get(k) or "").strip() for k in
-                          ("name", "role", "gender", "age", "appearance", "personality", "voice")})
+                          ("name", "role", "gender", "age", "appearance", "personality", "voice",
+                           "motivation", "relations", "speech", "catchphrase")})
     locs, seen = [], set()
     for loc in data.get("locations") or []:
         name = str((loc or {}).get("name") or "").strip()
@@ -177,7 +181,9 @@ STORYBOARD_SYSTEM = f"""你是分镜导演。把剧本拆成可以逐镜头生�
 
 def storyboard_user(project: dict, chars: list[dict], locs: list[dict], chunk: str, prev: str,
                     props: list[dict] | None = None) -> str:
-    roster = "\n".join(f"- {c['name']}（{c.get('role') or ''}）：{c.get('appearance') or ''}" for c in chars) or "（无）"
+    roster = "\n".join(f"- {c['name']}（{c.get('role') or ''}）：{c.get('appearance') or ''}"
+                       + (f"；说话方式：{c['speech']}" if c.get("speech") else "")
+                       + (f"；性格：{c['personality']}" if c.get("personality") else "") for c in chars) or "（无）"
     places = "\n".join(f"- {l['name']}：{l.get('description') or ''}" for l in locs) or "（无）"
     if props:
         places += "\n\n【道具表】\n" + "\n".join(f"- {p['name']}：{p.get('description') or ''}" for p in props)

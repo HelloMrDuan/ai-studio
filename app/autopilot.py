@@ -15,18 +15,20 @@ from .tasks import AFTER_HOOKS, queue
 log = logging.getLogger("studio.autopilot")
 
 STAGES = [
-    ("script", "剧本"), ("extract", "角色与场景"), ("refs", "定妆照/场景/道具图"), ("voices", "角色音色"),
+    ("beats", "节拍表"), ("script", "剧本"), ("review", "剧本审稿"),
+    ("extract", "角色与场景"), ("refs", "定妆照/场景/道具图"), ("voices", "角色音色"),
     ("storyboard", "分镜表"), ("keyframes", "分镜图"), ("animatic", "动态分镜预览"), ("videos", "镜头视频"),
     ("dub", "配音"), ("assemble", "合成成片"),
 ]
 LABEL = dict(STAGES)
 ORDER = [k for k, _ in STAGES]
-DEFAULT_STOPS = ["script", "storyboard", "animatic"]
+DEFAULT_STOPS = ["review", "storyboard", "animatic"]
 DEFAULT_OPTIONS = {"quality": "draft", "turbo": True, "mode": "auto", "keyframe_count": 1, "subtitles": True,
-                   "final_quality": "final", "stops": DEFAULT_STOPS}
+                   "final_quality": "final", "stops": DEFAULT_STOPS,
+                   "beats": True, "review": True}
 ACTIVE_SQL = "SELECT * FROM tasks WHERE project_id=? AND status IN ('queued','running','cancelling','paused')"
 # 估算剩余时间用的默认单任务耗时（秒）；实际以最近完成任务的平均用时为准
-DEFAULT_COST = {"script": 60, "extract": 40, "portrait": 45, "face_ref": 30, "location_image": 35, "prop_image": 30,
+DEFAULT_COST = {"beats": 30, "script_review": 90, "script": 60, "extract": 40, "portrait": 45, "face_ref": 30, "location_image": 35, "prop_image": 30,
                 "voice_sample": 150, "storyboard": 90, "keyframe": 45, "animatic": 20, "video": 150, "dub": 70,
                 "assemble": 60}
 
@@ -63,8 +65,17 @@ def _submit_stage(project: dict, stage: str, ap: dict) -> list[dict]:
         return [queue.submit(type_, project_id=pid, title=title, owner_type="project", owner_id=f"{pid}:{type_}",
                              params={**(params or {}), **tag})]
 
+    if stage == "beats":
+        if not opt.get("beats", True) or project.get("beats") or (project.get("script") or "").strip():
+            return []
+        return one("beats", "节拍表")
     if stage == "script":
         return [] if (project.get("script") or "").strip() else one("script", "生成剧本")
+    if stage == "review":
+        from .writers import reviewed
+        if not opt.get("review", True) or reviewed(project):
+            return []
+        return one("script_review", "剧本审稿")
     if stage == "extract":
         return [] if characters_of(pid) else one("extract", "提取角色与场景")
     if stage == "refs":
@@ -92,6 +103,8 @@ def _check_stage(project: dict, stage: str, ap: dict) -> tuple[bool, str]:
     """本步产出是否齐全。返回 (是否通过, 说明)。"""
     from .pipeline import characters_of, dub_lines, exists
     pid = project["id"]
+    if stage in {"beats", "review"}:
+        return True, ""
     if stage == "script":
         return bool((project.get("script") or "").strip()), "剧本为空"
     if stage == "extract":
@@ -154,7 +167,8 @@ def advance(pid: str) -> dict:
             ap["message"] = f"正在：{LABEL[stage]}"
             tasks = _submit_stage(project, stage, ap)
             ap["tasks"] = [t["id"] for t in tasks]
-            ap["did_work"] = bool(tasks)
+            ap["did_work"] = bool(tasks) or (stage == "review" and any(
+                h["stage"] == "script" and h["tasks"] for h in ap.get("history") or []))   # 关了审稿也在这里停下看剧本
             if tasks:
                 log.info("一键成片 %s：%s 提交 %d 个任务", pid, LABEL[stage], len(tasks))
                 return _save(pid, ap)
@@ -192,7 +206,7 @@ def start(pid: str, options: dict | None = None, from_stage: str = "") -> dict:
     if ap.get("status") == "running":
         return ap
     opt = {**DEFAULT_OPTIONS, **{k: v for k, v in (options or {}).items() if v is not None}}
-    stage = from_stage if from_stage in ORDER else "script"
+    stage = from_stage if from_stage in ORDER else ORDER[0]
     if not (project.get("source_text") or "").strip() and not (project.get("script") or "").strip():
         raise ValueError("请先填写创意/小说/剧本素材")
     ap = {"run": db.new_id(), "status": "running", "stage": stage, "submitted": False, "options": opt,
@@ -258,6 +272,8 @@ def status(pid: str) -> dict:
     for st in future:
         if st == "script" and not (project.get("script") or "").strip():
             left["script"] = left.get("script", 0) + 1
+        elif st == "review" and ap["options"].get("review", True):
+            left["script_review"] = left.get("script_review", 0) + 1
         elif st == "extract" and not characters_of(pid):
             left["extract"] = left.get("extract", 0) + 1
         elif st == "refs":

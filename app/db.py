@@ -49,13 +49,20 @@ CREATE TABLE IF NOT EXISTS tasks (
   progress INTEGER DEFAULT 0, message TEXT DEFAULT '', params TEXT DEFAULT '{}',
   result TEXT DEFAULT '{}', created_at REAL, updated_at REAL
 );
+CREATE TABLE IF NOT EXISTS suggestions (
+  id TEXT PRIMARY KEY, project_id TEXT, source TEXT DEFAULT '', target_type TEXT, target_id TEXT, field TEXT,
+  old_value TEXT DEFAULT 'null', new_value TEXT DEFAULT 'null', reason TEXT DEFAULT '', label TEXT DEFAULT '',
+  batch TEXT DEFAULT '', status TEXT DEFAULT 'pending', decided_at REAL, created_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_suggest_project ON suggestions(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_shots_project ON shots(project_id, sort);
 CREATE INDEX IF NOT EXISTS idx_assets_owner ON assets(owner_type, owner_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status, created_at);
 """
 
-JSON_FIELDS = {"character_ids", "prop_ids", "dialogue", "meta", "params", "result", "autopilot"}
-LIST_FIELDS = {"character_ids", "prop_ids", "dialogue"}
+JSON_FIELDS = {"character_ids", "prop_ids", "dialogue", "meta", "params", "result", "autopilot", "old_value", "new_value",
+               "beats", "writer"}
+LIST_FIELDS = {"character_ids", "prop_ids", "dialogue", "beats"}
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
 
@@ -81,7 +88,12 @@ def conn() -> sqlite3.Connection:
 MIGRATIONS = [("characters", "face_image", "TEXT DEFAULT ''"), ("characters", "voice_ref", "TEXT DEFAULT ''"),
               ("shots", "prop_ids", "TEXT DEFAULT '[]'"), ("projects", "dub_mode", "INTEGER DEFAULT 0"),
               ("projects", "autopilot", "TEXT DEFAULT '{}'"), ("shots", "continuous", "INTEGER DEFAULT 0"),
-              ("shots", "end_frame", "TEXT DEFAULT ''")]
+              ("shots", "end_frame", "TEXT DEFAULT ''"),
+              # P2-1 编剧室
+              ("projects", "genre", "TEXT DEFAULT 'general'"), ("projects", "beats", "TEXT DEFAULT '[]'"),
+              ("projects", "writer", "TEXT DEFAULT '{}'"), ("characters", "motivation", "TEXT DEFAULT ''"),
+              ("characters", "relations", "TEXT DEFAULT ''"), ("characters", "catchphrase", "TEXT DEFAULT ''"),
+              ("characters", "speech", "TEXT DEFAULT ''")]
 
 
 def _migrate(c: sqlite3.Connection) -> None:
@@ -165,6 +177,6 @@ def execute(sql: str, params: list[Any] | tuple = ()) -> None:
 
 def delete_project(project_id: str) -> None:
     with _lock:
-        for table in ("characters", "locations", "props", "shots", "assets", "tasks"):
+        for table in ("characters", "locations", "props", "shots", "assets", "tasks", "suggestions"):
             conn().execute(f"DELETE FROM {table} WHERE project_id=?", [project_id])
         conn().execute("DELETE FROM projects WHERE id=?", [project_id])

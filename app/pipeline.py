@@ -88,12 +88,22 @@ async def task_script(ctx: TaskContext) -> dict:
     if not (project.get("source_text") or "").strip():
         raise ValueError("请先填写创意/小说/剧本素材")
     await ctx.progress(5, "文字模型编写剧本中…")
-    data = await llm.chat_json(prompts.SCRIPT_SYSTEM, prompts.script_user(project),
+    from . import writers
+    user = prompts.script_user(project) + "\n\n" + writers.genre_text(project)
+    if project.get("beats"):
+        user += "\n\n【节拍表】（剧本必须按这些节拍展开，时间点对齐）\n" + writers.beats_text(project["beats"])
+    chars = characters_of(project["id"])
+    if chars:
+        user += "\n\n【人设卡】（沿用这些角色和名字，台词符合各自说话方式）\n" + writers.bio_text(chars)
+    if (project.get("script") or "").strip():
+        writers.save_version(project["id"], project["script"], "重写前")
+    data = await llm.chat_json(prompts.SCRIPT_SYSTEM, user,
                                validate=prompts.validate_script, temperature=0.85, max_tokens=12000)
     values: dict[str, Any] = {"script": data["script"], "synopsis": data["synopsis"]}
     if data["title"] and (project.get("title") or "").strip() in {"", "未命名项目"}:
         values["title"] = data["title"]
     db.update("projects", project["id"], values)
+    writers.save_version(project["id"], data["script"], "AI 生成")
     return {"chars": len(data["script"])}
 
 

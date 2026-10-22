@@ -48,13 +48,19 @@ turbo_off() { unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_
 
 # GitHub 克隆：有学术加速（AutoDL）直连；否则先走 GH_PROXY 镜像（默认 gh-proxy.com，可 export GH_PROXY= 关闭），失败再直连
 if [ -f /etc/network_turbo ]; then GH_PROXY=${GH_PROXY-}; else GH_PROXY=${GH_PROXY-https://gh-proxy.com/}; fi
-gh_clone() {  # gh_clone <github_url> <dir> [tag/branch]
-  local url=$1 dir=$2 ref=${3:-} args=(--depth 1)
+gh_clone() {  # gh_clone <github_url> <dir> [tag/branch]；镜像 → 备用镜像 → 直连，最多 3 轮（实测：国内直连常中途断开）
+  local url=$1 dir=$2 ref=${3:-} args=(--depth 1) round u
   [ -n "$ref" ] && args+=(--branch "$ref")
-  if [ -n "$GH_PROXY" ] && git clone "${args[@]}" "${GH_PROXY}${url}" "$dir"; then
-    git -C "$dir" remote set-url origin "$url"; return 0
-  fi
-  rm -rf "$dir"; git clone "${args[@]}" "$url" "$dir"
+  for round in 1 2 3; do
+    for u in ${GH_PROXY:+"${GH_PROXY}${url}"} ${GH_PROXY:+"https://ghfast.top/${url}"} "$url"; do
+      rm -rf "$dir"
+      if timeout 600 git clone "${args[@]}" "$u" "$dir"; then
+        git -C "$dir" remote set-url origin "$url"; return 0
+      fi
+    done
+    sleep $((round * 5))
+  done
+  rm -rf "$dir"; return 1
 }
 
 # 容器可用内存（GB）与 CPU 核数（读 cgroup 限额；nproc/free 显示的是宿主机）

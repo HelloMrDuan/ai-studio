@@ -213,7 +213,11 @@ def detect_cuts(path: Path) -> list[float]:
     med = float(np.median(diffs)) + 1.0
     cuts = []
     for i, (c, d) in enumerate(zip(hists, diffs)):
-        if d > max(18.0, 6 * med) and c < 0.7 and 0.2 < (i + 1) / fps:
+        if (i + 1) / fps <= 0.2:
+            continue
+        near = max(diffs[i - 1] if i else 0.0, diffs[i + 1] if i + 1 < len(diffs) else 0.0)
+        # 颜色突变；或色调相近但单帧画面突变（实测 21:9 公路 → 车内：帧差 61，平时 1.5，直方图相关 0.76）
+        if (d > max(18.0, 6 * med) and c < 0.7) or (d > max(30.0, 12 * med) and d > 4 * near):
             cuts.append(round((i + 1) / fps, 2))
     return cuts
 

@@ -53,7 +53,11 @@ REQ=$NODE/requirements-no-cupy.txt; [ -f "$REQ" ] || REQ=$NODE/requirements.txt
 "$COMFY_PY" -m pip install -q -r "$REQ"
 CK=$(grep -E "^RIFE_CKPT=" .env | cut -d= -f2- || true); CK=${CK:-rife47.pth}
 gh_get "https://github.com/styler00dollar/VSGAN-tensorrt-docker/releases/download/models/$CK" "$NODE/ckpts/rife/$CK" \
-  || log "⚠ RIFE 权重预下载失败，首次补帧时节点会自动下载"
+  || aria2c -c -x 8 -s 8 --file-allocation=none --console-log-level=warn -d "$NODE/ckpts/rife" -o "$CK" \
+       "https://hf-mirror.com/marduk191/rife/resolve/main/$CK" \
+  || aria2c -c -x 8 -s 8 --file-allocation=none --console-log-level=warn -d "$NODE/ckpts/rife" -o "$CK" \
+       "https://huggingface.co/marduk191/rife/resolve/main/$CK" \
+  || log "⚠ RIFE 权重下载失败（GitHub 与 HuggingFace 镜像都不通），补帧会退回 ffmpeg"
 
 # ---------- 3. SeedVR2（可选） ----------
 if [ $SEEDVR2 = 1 ]; then

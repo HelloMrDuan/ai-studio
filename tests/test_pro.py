@@ -1255,3 +1255,22 @@ def test_light_anchor_rules():
     assert not prompts.light_anchor({"camera_move": "固定", "description": "房间的灯突然亮起"})
     p = prompts.video_prompt({"style": "cinematic"}, {"description": "苏晴站着", "_anchor": True}, {}, None)
     assert "回到与首帧相近" in p and "指定的尾帧" not in p
+
+
+def test_comfy_fit_inputs(monkeypatch):
+    """实测 P3-2：新版 RIFE VFI 多了 dtype/batch_size 必填项 → 按节点实际定义补默认值、去掉不认识的输入。"""
+    import asyncio
+    from app import comfy
+    spec = {"input": {"required": {"frames": ["IMAGE"], "multiplier": ["INT", {"default": 2}],
+                                   "dtype": [["float32", "float16"], {"default": "float32"}],
+                                   "batch_size": ["INT", {"default": 1}], "mode": [["a", "b"]]},
+                      "optional": {"states": ["X"]}}}
+
+    async def fake(name):
+        return spec
+    monkeypatch.setattr(comfy, "node_spec", fake)
+    wf = {"3": {"class_type": "RIFE VFI", "inputs": {"frames": ["2", 0], "multiplier": 3, "old_flag": True}},
+          "4": {"class_type": "Other", "inputs": {"x": 1}}}
+    out = asyncio.run(comfy.fit_inputs(wf, ("RIFE VFI",)))
+    assert out["3"]["inputs"] == {"frames": ["2", 0], "multiplier": 3, "dtype": "float32", "batch_size": 1, "mode": "a"}
+    assert out["4"]["inputs"] == {"x": 1}

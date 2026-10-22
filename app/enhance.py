@@ -49,7 +49,9 @@ def seedvr2_template() -> dict | None:
 
 
 def rife_available() -> bool:
-    return (get_settings().comfyui_dir / "custom_nodes" / "ComfyUI-Frame-Interpolation").is_dir()
+    """节点和权重都在才算可用（实测：权重没下载下来时节点会去 GitHub 现下，国内常失败）。"""
+    node = get_settings().comfyui_dir / "custom_nodes" / "ComfyUI-Frame-Interpolation"
+    return node.is_dir() and (node / "ckpts" / "rife" / get_settings().rife_ckpt).is_file()
 
 
 def status() -> dict:
@@ -205,7 +207,8 @@ async def task_interpolate(ctx: TaskContext) -> dict:
         async with gpu.use("comfyui", ctx.task.get("title") or "补帧"):
             await gpu.comfy_switch("interpolate")
             name = await comfy.upload_image(src)
-            files = await comfy.run(rife_workflow(name, mult, info["fps"] * mult), out_dir / f"fi_{ctx.id}",
+            wf = await comfy.fit_inputs(rife_workflow(name, mult, info["fps"] * mult), ("RIFE VFI",))
+            files = await comfy.run(wf, out_dir / f"fi_{ctx.id}",
                                     progress_slice(ctx, 5, 90, "RIFE 补帧"))
         v = next((f for f in files if f.suffix.lower() in VIDEO_SUFFIX), None)
         if not v:

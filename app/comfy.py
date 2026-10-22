@@ -47,6 +47,44 @@ async def node_available(name: str) -> bool:
     return _has_node[name]
 
 
+_node_specs: dict[str, dict] = {}
+
+
+async def node_spec(name: str) -> dict:
+    if name not in _node_specs:
+        async with httpx.AsyncClient(timeout=30, trust_env=False) as c:
+            r = await c.get(f"{_base()}/object_info/{name}")
+        r.raise_for_status()
+        _node_specs[name] = (r.json() or {}).get(name) or {}
+    return _node_specs[name]
+
+
+async def fit_inputs(workflow: dict, classes: tuple[str, ...]) -> dict:
+    """按 ComfyUI 实际装的节点版本对齐输入：缺的必填项用默认值补上，不认识的去掉。
+    实测：新版 RIFE VFI 多了 dtype / batch_size / torch_compile 必填项，旧工作流直接被拒。"""
+    for node in workflow.values():
+        if node.get("class_type") not in classes:
+            continue
+        try:
+            spec = (await node_spec(node["class_type"])).get("input") or {}
+        except Exception:  # noqa: BLE001 —— 查不到就原样提交
+            continue
+        req, opt = spec.get("required") or {}, spec.get("optional") or {}
+        inputs = node.setdefault("inputs", {})
+        for k, v in req.items():
+            if k in inputs:
+                continue
+            cfg = v[1] if len(v) > 1 and isinstance(v[1], dict) else {}
+            if "default" in cfg:
+                inputs[k] = cfg["default"]
+            elif isinstance(v[0], list) and v[0]:
+                inputs[k] = v[0][0]
+        if req:
+            for k in [k for k in inputs if k not in req and k not in opt]:
+                inputs.pop(k)
+    return workflow
+
+
 async def strip_missing_optional(workflow: dict) -> dict:
     """去掉 ComfyUI 不认识的可选节点，把引用它的输入直接接到它的上游。"""
     for nid, node in list(workflow.items()):

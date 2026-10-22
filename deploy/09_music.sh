@@ -11,7 +11,7 @@ NAME=ace_step_v1_3.5b.safetensors
 REPO=${MUSIC_REPO:-Comfy-Org/ACE-Step_ComfyUI_repackaged}
 
 check_nodes() {
-  local url; url=$(grep -E "^COMFYUI_URL=" .env | cut -d= -f2-); url=${url:-http://127.0.0.1:8188}
+  local url; url=$(grep -E "^COMFYUI_URL=" .env | cut -d= -f2- || true); url=${url:-http://127.0.0.1:8188}
   curl -fsS "$url/object_info" -o /tmp/oi.json || { log "⚠ ComfyUI 没在运行，跳过节点检查"; return 0; }
   for n in TextEncodeAceStepAudio EmptyAceStepLatentAudio VAEDecodeAudio SaveAudio; do
     grep -q "\"$n\"" /tmp/oi.json && log "✓ 节点 $n" || log "⚠ ✗ 缺节点 $n：请升级 ComfyUI（git pull）"
@@ -35,7 +35,7 @@ fi
 grep -q "^MUSIC_CKPT=" .env || echo "MUSIC_CKPT=$NAME" >> .env
 
 # 音效库：把 wav/mp3 放进 data/sfx，文件名即标签（如「雨声_环境.wav」「关门声.mp3」）
-DATA=$(grep -E "^DATA_DIR=" .env | cut -d= -f2-); DATA=${DATA:-$BASE/data/studio}
+DATA=$(grep -E "^DATA_DIR=" .env | cut -d= -f2- || true); DATA=${DATA:-$BASE/data/studio}
 mkdir -p "$DATA/sfx" "$DATA/voices"
 log "音效库目录：$DATA/sfx（可在网页 ⑤成片 → 音效 上传）；默认旁白音色可放 $DATA/voices/narrator.wav"
 check_nodes

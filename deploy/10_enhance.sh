@@ -30,7 +30,7 @@ selftest() {
   [ "$HAS_GPU" = 1 ] || { log "无卡模式：跳过自检（开卡后运行 bash deploy/10_enhance.sh --test）"; return 0; }
   local t=/tmp/enh_test; mkdir -p $t
   ffmpeg -v error -y -f lavfi -i testsrc2=size=768x432:rate=24:d=2 -f lavfi -i sine=d=2 -shortest -pix_fmt yuv420p $t/src.mp4
-  local model; model=$(grep -E "^UPSCALE_MODEL=" .env | cut -d= -f2-); model=${model:-realesr-animevideov3.pth}
+  local model; model=$(grep -E "^UPSCALE_MODEL=" .env | cut -d= -f2- || true); model=${model:-realesr-animevideov3.pth}
   log "自检：超分 768x432 → 1920x1080（$model）"
   local t0=$SECONDS
   "$COMFY_PY" scripts/upscale.py --input $t/src.mp4 --output $t/up.mp4 --model "$UP/$model" --width 1920 --height 1080 | tail -2
@@ -51,7 +51,7 @@ if [ ! -d "$NODE" ]; then
 fi
 REQ=$NODE/requirements-no-cupy.txt; [ -f "$REQ" ] || REQ=$NODE/requirements.txt
 "$COMFY_PY" -m pip install -q -r "$REQ"
-CK=$(grep -E "^RIFE_CKPT=" .env | cut -d= -f2-); CK=${CK:-rife47.pth}
+CK=$(grep -E "^RIFE_CKPT=" .env | cut -d= -f2- || true); CK=${CK:-rife47.pth}
 gh_get "https://github.com/styler00dollar/VSGAN-tensorrt-docker/releases/download/models/$CK" "$NODE/ckpts/rife/$CK" \
   || log "⚠ RIFE 权重预下载失败，首次补帧时节点会自动下载"
 

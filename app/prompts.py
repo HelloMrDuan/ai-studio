@@ -345,6 +345,16 @@ LIGHT_WORDS = ("黄昏", "夕阳", "傍晚", "日落", "晚霞", "清晨", "黎�
                "夜", "月光", "雨", "雪", "雾", "阴天", "逆光", "霓虹", "烛光", "路灯", "灯光", "昏暗")
 
 
+LIGHT_CHANGE_WORDS = ("开灯", "关灯", "灯亮", "灯灭", "亮起", "熄灭", "闪电", "天亮", "天黑", "变暗", "变亮", "暗下",
+                      "日出", "太阳升起", "太阳落山", "夕阳落下", "点燃", "火光", "爆炸", "闪光", "手电")
+
+
+def light_changes(shot: dict) -> bool:
+    """镜头本身要求光线变化（开灯、天黑、闪电…）时不做光线锁定。"""
+    text = "，".join(str(shot.get(k) or "") for k in ("description", "action", "video_prompt", "scene"))
+    return any(w in text for w in LIGHT_CHANGE_WORDS)
+
+
 def light_text(shot: dict, loc: dict | None) -> str:
     """时段/天气/光线：先看镜头自己的描述，再看场景变体和场景设定。实测：视频提示词里不写时段，
     首帧是黄昏的镜头第二帧就变成了白天。"""

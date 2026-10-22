@@ -1230,3 +1230,16 @@ def test_region_paste_removes_connected_change(tmp_path):
     shifted = Image.new("RGB", (400, 600), (200, 200, 200))                        # 整张都变了 → 不扩
     shifted.save(pp)
     assert board.change_mask(base, shifted, inner) is None
+
+
+def test_light_changes_and_lock_fallback(tmp_path, monkeypatch):
+    """实测 P2-5：H3 图生视频黄昏首帧 5 秒内变成白天 → 生成后拉回首帧光线；镜头本身要求光线变化时不锁。"""
+    import asyncio
+    from app import prompts, qa
+    assert prompts.light_changes({"description": "她按下开关，房间的灯亮起"})
+    assert not prompts.light_changes({"description": "黄昏的天台，她站着不动"})
+    v = tmp_path / "v.mp4"
+    v.write_bytes(b"x" * 10)
+    monkeypatch.setattr(qa.get_settings(), "qa_python", tmp_path / "missing-python")
+    out, info = asyncio.run(qa.light_lock(v))          # 环境不可用 → 原样返回
+    assert out == v and info == {} and v.exists()

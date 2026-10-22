@@ -699,6 +699,12 @@ async def task_video(ctx: TaskContext) -> dict:
         videos = [f for f in files if f.suffix.lower() in VIDEO_SUFFIX]
         if not videos:
             raise RuntimeError("ComfyUI 没有产出视频文件")
+        light: dict = {}
+        if not prompts.light_changes(shot):          # 实测：首帧黄昏，5 秒内逐渐变成白天 → 拉回首帧光线
+            fixed_strength = 1.0 if (shot.get("camera_move") or "固定") == "固定" else 0.8
+            videos[0], light = await qa.light_lock(videos[0], fixed_strength)
+            if light.get("applied"):
+                await ctx.log(f"光线漂移 {light['drift']:.0f} → {light.get('fixed', 0):.0f}，已拉回首帧光线")
         await ctx.log("自动质检中…")
         result = await qa.check(videos[0], reference=reference, faces=_qa_faces(chars), check_text=True,
                                 style=project.get("style") or "", lines=lines,
@@ -707,7 +713,7 @@ async def task_video(ctx: TaskContext) -> dict:
         asset = add_asset(project["id"], "video", videos[0], "shot", shot["id"],
                           {"prompt": prompt, "mode": plan["mode"], "quality": quality, "seconds": seconds,
                            "turbo": turbo, "qa": result, "attempt": attempt + 1,
-                           "chain_from": src["path"] if src else "", "end_frame": rel(end_frame) if end_frame else "",
+                           "chain_from": src["path"] if src else "", "light_lock": light, "end_frame": rel(end_frame) if end_frame else "",
                            "notes": chain_notes})
         results.append((asset, result))
         if not result or result.get("ok"):

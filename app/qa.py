@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from .config import ROOT, get_settings
 
 log = logging.getLogger("studio.qa")
 SCRIPT = ROOT / "scripts" / "qa_check.py"
+LIGHT_SCRIPT = ROOT / "scripts" / "light_lock.py"
 REAL_STYLES = {"cinematic", "cyberpunk"}   # ArcFace 只对写实人脸可靠；动漫/国风等画风只查文字
 
 
@@ -77,3 +79,34 @@ def summary(result: dict | None) -> str:
     if not result:
         return ""
     return "质检通过" if result.get("ok") else "；".join(i["detail"] for i in result.get("issues") or [])
+
+
+async def light_lock(video: Path, strength: float = 1.0) -> tuple[Path, dict]:
+    """把逐渐变亮/变色的视频拉回首帧光线（见 scripts/light_lock.py）。不可用或失败时原样返回。"""
+    s = get_settings()
+    if not (s.video_light_lock and s.qa_python and Path(s.qa_python).is_file() and LIGHT_SCRIPT.is_file()):
+        return video, {}
+    out = video.with_name(video.stem + "_ll.mp4")
+    job = {"src": str(video), "out": str(out), "ffmpeg": shutil.which("ffmpeg") or "ffmpeg", "strength": strength}
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
+        json.dump(job, fh, ensure_ascii=False)
+        job_path = fh.name
+    try:
+        proc = await asyncio.create_subprocess_exec(str(s.qa_python), str(LIGHT_SCRIPT), job_path, env=clean_env(),
+                                                    stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                                                    stderr=asyncio.subprocess.PIPE)
+        o, err = await asyncio.wait_for(proc.communicate(), timeout=300)
+        lines = [ln for ln in o.decode("utf-8", "replace").splitlines() if ln.startswith("{")]
+        if not lines:
+            raise RuntimeError(err.decode("utf-8", "replace")[-300:] or "没有输出")
+        info = json.loads(lines[-1])
+        if info.get("applied") and out.is_file() and out.stat().st_size > 1000:
+            video.unlink(missing_ok=True)
+            return out.rename(video), info
+        return video, info
+    except Exception as exc:  # noqa: BLE001
+        log.warning("光线锁定失败（忽略）：%s", exc)
+        out.unlink(missing_ok=True)
+        return video, {"error": str(exc)[:200]}
+    finally:
+        Path(job_path).unlink(missing_ok=True)

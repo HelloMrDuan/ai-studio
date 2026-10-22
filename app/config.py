@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     # 推理加速（P1-1）：视频 DiT 推理缓存（ComfyUI 内置 EasyCache，相邻步变化小时复用上一步结果）
     video_cache: float = 0.2               # 草稿视频的缓存阈值，越大越快、细节损失越多；0 = 关闭
     video_cache_final: float = 0.0         # 成品画质的缓存阈值，默认关闭（追求画质）
+    video_light_lock: bool = True          # 视频逐渐变亮/变色时拉回首帧光线（实测 H3 黄昏 5 秒变白天）
     qa_video_retry: int = 1                # 视频不合格时额外重抽次数（每次约 2~3 分钟）
     qa_keyframe_retry: int = 1
     qa_face_threshold: float = 0.25        # ArcFace 余弦相似度，低于它判为「不像」

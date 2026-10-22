@@ -78,9 +78,48 @@ def gen_size(cw: int, ch: int, target: int = 1024 * 1024) -> tuple[int, int]:
     return _snap16(cw * k), _snap16(ch * k)
 
 
-def feather_paste(base_path: Path, patch_path: Path, inner: tuple, outer: tuple, out: Path, feather: int = 0) -> Path:
-    """把重绘结果缩回裁切框大小，用羽化蒙版只替换框选区域（边缘渐变过渡）。"""
-    from PIL import Image, ImageDraw, ImageFilter
+def change_mask(base, patch, inner: tuple, thr: int = 40, reach: float = 1.0, max_grow: float = 1.5):
+    """框外但与框内改动相连的变化区域（如抬手后原来垂着的手臂要去掉）。
+    只在框周围 reach 倍框尺寸内生长；生长面积超过框面积 max_grow 倍（整体偏移/重画）则不扩。返回 L 蒙版或 None。"""
+    from collections import deque
+
+    from PIL import Image, ImageChops, ImageFilter
+    w, h = base.size
+    k = 192 / max(w, h)
+    sw, sh = max(1, int(w * k)), max(1, int(h * k))
+    d = ImageChops.difference(base.convert("L"), patch.convert("L")).filter(ImageFilter.GaussianBlur(4))
+    on = d.point(lambda v: 255 if v > thr else 0).resize((sw, sh), Image.BOX).point(lambda v: 255 if v > 100 else 0)
+    px = on.load()
+    ix0, iy0, ix1, iy1 = [int(v * k) for v in inner]
+    rw, rh = max(ix1 - ix0, 1), max(iy1 - iy0, 1)
+    ext = int(max(rw, rh) * reach)
+    wx0, wy0, wx1, wy1 = max(0, ix0 - ext), max(0, iy0 - ext), min(sw, ix1 + ext), min(sh, iy1 + ext)
+    seen = set()
+    q = deque((x, y) for x in range(max(0, ix0), min(sw, ix1)) for y in range(max(0, iy0), min(sh, iy1)) if px[x, y])
+    seen.update(q)
+    grown = []
+    while q:
+        x, y = q.popleft()
+        for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            if wx0 <= nx < wx1 and wy0 <= ny < wy1 and (nx, ny) not in seen and px[nx, ny]:
+                seen.add((nx, ny))
+                q.append((nx, ny))
+                if not (ix0 <= nx < ix1 and iy0 <= ny < iy1):
+                    grown.append((nx, ny))
+    if not grown or len(grown) > rw * rh * max_grow:
+        return None
+    small = Image.new("L", (sw, sh), 0)
+    sp = small.load()
+    for x, y in grown:
+        sp[x, y] = 255
+    return small.resize((w, h), Image.BILINEAR).filter(ImageFilter.MaxFilter(9))
+
+
+def feather_paste(base_path: Path, patch_path: Path, inner: tuple, outer: tuple, out: Path, feather: int = 0,
+                  grow: bool = False) -> Path:
+    """把重绘结果缩回裁切框大小，用羽化蒙版只替换框选区域（边缘渐变过渡）。
+    grow=True（整张画面作为上下文时）：与框内改动相连的框外变化也一起贴回，避免原来的手臂/物体残留。"""
+    from PIL import Image, ImageChops, ImageDraw, ImageFilter
     base = Image.open(base_path).convert("RGB")
     ow, oh = outer[2] - outer[0], outer[3] - outer[1]
     patch = Image.open(patch_path).convert("RGB").resize((ow, oh), Image.LANCZOS)
@@ -88,6 +127,10 @@ def feather_paste(base_path: Path, patch_path: Path, inner: tuple, outer: tuple,
     mask = Image.new("L", (ow, oh), 0)
     ix0, iy0, ix1, iy1 = inner[0] - outer[0], inner[1] - outer[1], inner[2] - outer[0], inner[3] - outer[1]
     ImageDraw.Draw(mask).rectangle([ix0 - f // 2, iy0 - f // 2, ix1 + f // 2, iy1 + f // 2], fill=255)
+    if grow and outer == (0, 0, base.width, base.height):
+        extra = change_mask(base, patch, inner)
+        if extra is not None:
+            mask = ImageChops.lighter(mask, extra)
     mask = mask.filter(ImageFilter.GaussianBlur(f / 2))
     base.paste(patch, (outer[0], outer[1]), mask)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -158,7 +201,8 @@ async def task_keyframe_region(ctx: TaskContext) -> dict:
     files = checked
     assets = []
     for n, f in enumerate(files):
-        merged = feather_paste(src, f, inner, outer, out_dir / f"{Path(shot['keyframe']).stem}_r{ctx.task['id'][:6]}_{n}.png")
+        merged = feather_paste(src, f, inner, outer, out_dir / f"{Path(shot['keyframe']).stem}_r{ctx.task['id'][:6]}_{n}.png",
+                               grow=True)
         assets.append(add_asset(shot["project_id"], "keyframe", merged, "shot", shot["id"],
                                 {"prompt": prompt, "edit": instruction, "region": ctx.params.get("box"),
                                  "from": shot["keyframe"]}))

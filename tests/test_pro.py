@@ -1208,3 +1208,25 @@ def test_video_prompt_keeps_light():
     assert "光线与时段：背景是黄昏时分的城市天际线，光线为强烈的逆光" in p and "保持首帧的光线、时段" in p
     assert prompts.light_text({"description": "深夜，雨中的站台"}, loc).startswith("深夜")
     assert prompts.light_text({"description": "两人对视"}, {"name": "教室", "description": "宽敞的教室"}) == ""
+
+
+def test_region_paste_removes_connected_change(tmp_path):
+    """实测 P2-4：「让她举手拿纸鹤」框在胸前，模型整图里已去掉原来垂着的手臂，
+    但只贴框内会把旧手臂留下 → 与框内改动相连的框外变化一起贴回；整体偏移时不扩。"""
+    from PIL import Image, ImageDraw
+    from app import board
+    base = Image.new("RGB", (400, 600), (90, 90, 90))
+    ImageDraw.Draw(base).rectangle([100, 300, 130, 480], fill=(230, 230, 230))      # 原来垂着的手臂（框外）
+    patch = Image.new("RGB", (400, 600), (90, 90, 90))
+    ImageDraw.Draw(patch).rectangle([110, 200, 220, 290], fill=(250, 250, 250))     # 框内新画的手和纸鹤
+    ImageDraw.Draw(patch).rectangle([100, 285, 130, 300], fill=(230, 230, 230))     # 与改动相连
+    bp, pp = tmp_path / "b.png", tmp_path / "p.png"
+    base.save(bp); patch.save(pp)
+    inner = (100, 190, 240, 300)
+    out = board.feather_paste(bp, pp, inner, (0, 0, 400, 600), tmp_path / "o.png", grow=True)
+    assert Image.open(out).getpixel((115, 420))[0] < 120                          # 旧手臂已去掉
+    out2 = board.feather_paste(bp, pp, inner, (0, 0, 400, 600), tmp_path / "o2.png")
+    assert Image.open(out2).getpixel((115, 420))[0] > 200                         # 不扩时旧手臂残留
+    shifted = Image.new("RGB", (400, 600), (200, 200, 200))                        # 整张都变了 → 不扩
+    shifted.save(pp)
+    assert board.change_mask(base, shifted, inner) is None

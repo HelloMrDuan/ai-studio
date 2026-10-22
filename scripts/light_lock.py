@@ -22,6 +22,18 @@ def smooth(a, k=9):
     return np.stack([np.convolve(pad[:, i], ker, mode="valid") for i in range(a.shape[1])], 1)
 
 
+def cdf_lut(src, ref):
+    """把 src 通道的分布映射到 ref 的分布（直方图匹配），返回 256 项查找表。"""
+    hs = np.bincount(src.ravel(), minlength=256).astype(np.float64)
+    hr = np.bincount(ref.ravel(), minlength=256).astype(np.float64)
+    cs, cr = np.cumsum(hs) / hs.sum(), np.cumsum(hr) / hr.sum()
+    return np.interp(cs, cr, np.arange(256))
+
+
+def small_lab(f):
+    return cv2.cvtColor(cv2.resize(f, (192, int(192 * f.shape[0] / f.shape[1]))), cv2.COLOR_BGR2LAB)
+
+
 def main():
     job = json.load(open(sys.argv[1], encoding="utf-8"))
     cap = cv2.VideoCapture(job["src"])
@@ -49,7 +61,24 @@ def main():
                            "-c:v", "libx264", "-crf", "16", "-preset", "medium", "-pix_fmt", "yuv420p", "-c:a", "copy",
                            "-shortest", job["out"]], stdin=subprocess.PIPE)
     after = []
-    for f, s in zip(frames, st):
+    luts = None
+    if job.get("mode", "hist") == "hist":           # 逐通道直方图匹配：能把变蓝的天空拉回暖色，比只拉均值更像首帧
+        r = small_lab(frames[0])
+        raw = np.stack([np.stack([cdf_lut(small_lab(f)[..., c], r[..., c]) for c in range(3)]) for f in frames])
+        win = 9
+        pad = np.pad(raw, ((win // 2, win // 2), (0, 0), (0, 0)), mode="edge")
+        luts = np.stack([pad[i:i + win].mean(0) for i in range(len(frames))])
+        ident = np.arange(256)[None, :]
+        luts = np.clip(ident + (luts - ident) * k, 0, 255).astype(np.uint8)
+    for n, (f, s) in enumerate(zip(frames, st)):
+        if luts is not None:
+            lab = cv2.cvtColor(f, cv2.COLOR_BGR2LAB)
+            for c in range(3):
+                lab[..., c] = luts[n, c][lab[..., c]]
+            out = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+            after.append(stats(out)[0])
+            ff.stdin.write(out.tobytes())
+            continue
         lab = cv2.cvtColor(f, cv2.COLOR_BGR2LAB).astype(np.float32)
         ratio = np.clip(ref[3] / max(s[3], 1e-3), 0.5, 2.0) ** k
         shift = np.clip(ref[0] - s[0], -100, 100) * k

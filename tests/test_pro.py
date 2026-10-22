@@ -1086,3 +1086,51 @@ def test_video_cache_and_optional_nodes(client, monkeypatch):
     assert "9" not in out and out["20"]["inputs"]["model"] == ["8", 0]
     monkeypatch.setattr(comfy, "_has_node", {"EasyCache": True})
     assert "9" in asyncio.run(comfy.strip_missing_optional(json.loads(json.dumps(wf))))
+
+
+def test_subtitle_retry_and_chain_guard(client, project, monkeypatch):
+    """实测问题：台词被烧成字幕多给一次机会；上一镜人物走样时不接它的尾帧；场景文字不算字幕。"""
+    from app import pipeline, qa
+    from test_flow import wait as wait_task
+    calls = []
+
+    def fake(results):
+        async def check(target, **kw):
+            calls.append(kw.get("lines"))
+            return results[min(len(calls) - 1, len(results) - 1)]
+        return check
+
+    sub = {"ok": False, "issues": [{"type": "text", "subtitle": True, "detail": "台词被烧成了字幕：十年了"}]}
+    face = {"ok": False, "issues": [{"type": "face", "detail": "「陈默」的脸不像"}]}
+    monkeypatch.setattr(qa, "available", lambda: True)
+    monkeypatch.setattr(qa, "check", fake([sub, sub, {"ok": True, "issues": []}]))
+    a, b = client.get(f"/api/projects/{project}").json()["shots"][:2]
+    wait_task(client, client.post(f"/api/shots/{a['id']}/keyframe", json={"count": 1}).json()["id"])
+    calls.clear()
+    wait_task(client, client.post(f"/api/shots/{a['id']}/video", json={"quality": "draft"}).json()["id"])
+    video_calls = [c for c in calls if c]
+    assert len(video_calls) == 3 and video_calls[0] == pipeline.shot_lines(a)          # 字幕：2 次 + 额外 1 次
+    snap = client.get(f"/api/projects/{project}").json()
+    assert "画面中不出现任何字幕" in next(x for x in snap["assets"][a["id"]] if x["kind"] == "video")["meta"]["prompt"]
+    calls.clear(); monkeypatch.setattr(qa, "check", fake([face]))
+    wait_task(client, client.post(f"/api/shots/{a['id']}/video", json={"quality": "draft"}).json()["id"])
+    assert len(calls) == 2                                                               # 人脸问题：不加次数
+    # 上一镜（a）当前视频人脸不合格 → b 连续镜头不接尾帧
+    client.patch(f"/api/shots/{b['id']}", json={"continuous": 1})
+    b = next(s for s in client.get(f"/api/projects/{project}").json()["shots"] if s["id"] == b["id"])
+    assert pipeline.chain_source(b) is None and "人物走样" in pipeline.chain_blocked(pipeline.prev_shot(b))
+    assert pipeline.shot_lines({"dialogue": [{"line": "快走"}], "narration": "那一夜"}) == ["快走", "那一夜"]
+
+
+def test_qa_text_rules(monkeypatch):
+    import importlib.util
+    import pytest
+    pytest.importorskip("cv2")
+    spec = importlib.util.spec_from_file_location("qa_check", Path(__file__).resolve().parents[1] / "scripts" / "qa_check.py")
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    seq = iter([[("POLICE", 0.9, 0.5, 0.5)], [("POLICE", 0.9, 0.5, 0.5)], [("快走", 0.9, 0.8, 0.5)]])
+    monkeypatch.setattr(m, "ocr", lambda img: next(seq))
+    r = m.check_text([0, 0, 0], None, ["警察在找我，快走！"])
+    assert r["flagged"] and r["subtitle"] == ["快走"]
+    seq = iter([[("POLICE", 0.9, 0.5, 0.5)]] * 3)
+    assert not m.check_text([0, 0, 0], None, ["快走"])["flagged"]

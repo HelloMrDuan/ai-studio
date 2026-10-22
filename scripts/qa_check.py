@@ -57,8 +57,8 @@ def ocr_engine():
     return _ocr
 
 
-def ocr(img: np.ndarray) -> list[tuple[str, float, float]]:
-    """返回 [(文字, 置信度, 文字框中心的纵向位置 0~1)]"""
+def ocr(img: np.ndarray) -> list[tuple[str, float, float, float]]:
+    """返回 [(文字, 置信度, 文字框中心的纵向位置 0~1, 横向位置 0~1)]"""
     out = ocr_engine()(img)
     items = []
     if isinstance(out, tuple):            # rapidocr_onnxruntime: (result, elapse)
@@ -66,11 +66,11 @@ def ocr(img: np.ndarray) -> list[tuple[str, float, float]]:
             items.append((box, text, score))
     elif getattr(out, "txts", None):      # rapidocr >= 2: RapidOCROutput
         items = list(zip(out.boxes, out.txts, out.scores))
-    h = img.shape[0]
+    h, w = img.shape[:2]
     res = []
     for box, text, score in items:
-        ys = [p[1] for p in np.asarray(box).reshape(-1, 2)]
-        res.append((str(text), float(score), float(np.mean(ys)) / h))
+        pts = np.asarray(box).reshape(-1, 2)
+        res.append((str(text), float(score), float(np.mean(pts[:, 1])) / h, float(np.mean(pts[:, 0])) / w))
     return res
 
 
@@ -82,17 +82,31 @@ def is_known(text: str, known: list[str]) -> bool:
     return any(text in k or k in text or difflib.SequenceMatcher(None, text, k).ratio() >= 0.5 for k in known)
 
 
-def check_text(frames: list[np.ndarray], reference: np.ndarray | None) -> dict:
-    known = [norm(t) for t, s, _ in (ocr(reference) if reference is not None else []) if s >= 0.5]
+def is_line(text: str, lines: list[str]) -> bool:
+    """OCR 文字是不是台词 / 旁白（视频模型把台词烧成了字幕）。"""
+    return any(len(text) >= 2 and (text in ln or (len(ln) >= 2 and ln in text)
+                                   or difflib.SequenceMatcher(None, text, ln).ratio() >= 0.6) for ln in lines)
+
+
+def check_text(frames: list[np.ndarray], reference: np.ndarray | None, lines: list[str] = ()) -> dict:
+    """台词字幕（和本镜台词/旁白对得上）→ 一定判不合格；其他新出现的文字（招牌、衣服 logo、POLICE…）
+    只有像字幕那样在画面下方居中、连续出现在 2 帧以上才判不合格，否则只记为提示。"""
+    known = [norm(t) for t, s, *_ in (ocr(reference) if reference is not None else []) if s >= 0.5]
     known = [k for k in known if k]
-    hits, bottom = [], 0
+    lines = [x for x in (norm(ln) for ln in lines) if x]
+    hits, subs, caption_frames = [], set(), 0
     for img in frames:
-        new = [(norm(t), y) for t, s, y in ocr(img) if s >= 0.6 and len(norm(t)) >= 2 and not is_known(norm(t), known)]
-        if new:
-            hits.append([t for t, _ in new])
-            bottom += any(y > 0.6 for _, y in new)
-    flagged = bottom >= 1 or len(hits) >= 2 or (len(frames) == 1 and hits)
-    return {"flagged": bool(flagged), "texts": sorted({t for h in hits for t in h})[:8]}
+        new = [(norm(t), y, x) for t, s, y, x in ocr(img) if s >= 0.6 and len(norm(t)) >= 2 and not is_known(norm(t), known)]
+        if not new:
+            continue
+        hits.append([t for t, *_ in new])
+        subs.update(t for t, *_ in new if is_line(t, lines))
+        caption_frames += any(y > 0.7 and 0.25 < x < 0.75 and re.search(r"[\u4e00-\u9fff]", t) for t, y, x in new)
+    if len(frames) == 1:
+        flagged = bool(hits)
+    else:
+        flagged = bool(subs) or caption_frames >= 2
+    return {"flagged": bool(flagged), "subtitle": sorted(subs)[:8], "texts": sorted({t for h in hits for t in h})[:8]}
 
 
 # ---------------- 人脸 ----------------
@@ -185,10 +199,14 @@ def main() -> None:
     if job.get("check_text"):
         try:
             ref = cv2.imread(job["reference"]) if job.get("reference") else None
-            t = check_text(frames, ref)
+            t = check_text(frames, ref, job.get("lines") or [])
             result["text"] = t
             if t["flagged"]:
-                result["issues"].append({"type": "text", "detail": "画面出现多余文字/字幕：" + "、".join(t["texts"][:3])})
+                what = "台词被烧成了字幕" if t["subtitle"] else "画面出现多余文字/字幕"
+                result["issues"].append({"type": "text", "subtitle": bool(t["subtitle"]),
+                                         "detail": f"{what}：" + "、".join((t["subtitle"] or t["texts"])[:3])})
+            elif t["texts"]:
+                result["warnings"].append("画面里有文字（场景/服装上的字，未判为字幕）：" + "、".join(t["texts"][:3]))
         except Exception as exc:  # noqa: BLE001
             result["warnings"].append(f"文字检测不可用：{exc}")
     if job.get("check_faces") and job.get("faces"):

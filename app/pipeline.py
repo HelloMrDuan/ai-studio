@@ -468,10 +468,31 @@ def chain_source(shot: dict) -> dict | None:
     if not prev:
         return None
     if exists(prev.get("video")):
+        if chain_blocked(prev):
+            return None
         return {"prev": prev, "kind": "video", "path": prev["video"]}
     if exists(prev.get("end_frame")):
         return {"prev": prev, "kind": "end_frame", "path": prev["end_frame"]}
     return None
+
+
+def shot_lines(shot: dict) -> list[str]:
+    """本镜的台词和旁白文本（质检用来认出被烧成字幕的台词）。"""
+    out = [d.get("line") or "" for d in (shot.get("dialogue") or []) if isinstance(d, dict)]
+    if (shot.get("narration") or "").strip():
+        out.append(shot["narration"].strip())
+    return [x for x in out if x.strip()]
+
+
+def chain_blocked(prev: dict) -> str:
+    """上一镜视频的人脸质检没通过（人物走样 / 换了人）时不再接它的最后一帧，免得偏差一路传下去。"""
+    if not exists(prev.get("video")):
+        return ""
+    meta = (db.query("SELECT meta FROM assets WHERE path=? LIMIT 1", [prev["video"]]) or [{}])[0].get("meta") or {}
+    issues = ((meta.get("qa") or {}).get("issues")) or []
+    if any(i.get("type") == "face" for i in issues):
+        return f"上一镜（#{prev['sort'] + 1}）视频人物走样（质检未通过），本镜改用自己的分镜图做首帧，避免偏差延续；上一镜重做后可再生成本镜"
+    return ""
 
 
 async def chain_first_frame(ctx: TaskContext, shot: dict, src: dict) -> tuple[Path, list[str]]:
@@ -629,13 +650,18 @@ async def task_video(ctx: TaskContext) -> dict:
         if not (ctx.params.get("prompt") or "").strip():
             prompt = video_plan({**shot, "_chain": True, "_end_frame": exists(shot.get("end_frame"))}, "i2v")["prompt"]
     elif shot.get("continuous"):
-        chain_notes.append("上一镜还没有视频，暂用本镜分镜图做首帧（上一镜出视频后建议重生成本镜）")
+        blocked = chain_blocked(prev_shot(shot) or {})
+        chain_notes.append(blocked or "上一镜还没有视频，暂用本镜分镜图做首帧（上一镜出视频后建议重生成本镜）")
     end_frame = absolute(shot["end_frame"]) if exists(shot.get("end_frame")) and plan["mode"] == "i2v" else None
     if end_frame and not src and not (ctx.params.get("prompt") or "").strip():
         prompt = video_plan({**shot, "_end_frame": True}, "i2v")["prompt"]
     attempts = 1 + (max(0, get_settings().qa_video_retry) if qa.available() or vlm.auto_enabled() else 0)
+    extra_for_subtitle = 1 if attempts > 1 else 0       # 只是台词被烧成字幕时，多给一次机会（换种子通常就没了）
+    lines = shot_lines(shot)
     results: list[tuple[dict, dict | None]] = []
-    for attempt in range(attempts):
+    attempt = -1
+    while attempt + 1 < attempts:
+        attempt += 1
         tag = f"（第 {attempt + 1} 次）" if attempt else ""
         async with gpu.use("comfyui", (ctx.task.get("title") or "生成视频") + tag):
             await gpu.comfy_switch("video")
@@ -658,7 +684,7 @@ async def task_video(ctx: TaskContext) -> dict:
             raise RuntimeError("ComfyUI 没有产出视频文件")
         await ctx.log("自动质检中…")
         result = await qa.check(videos[0], reference=reference, faces=_qa_faces(chars), check_text=True,
-                                style=project.get("style") or "")
+                                style=project.get("style") or "", lines=lines)
         result = vlm.merge_qa(result, await vlm.quick_check(shot, videos[0]))
         asset = add_asset(project["id"], "video", videos[0], "shot", shot["id"],
                           {"prompt": prompt, "mode": plan["mode"], "quality": quality, "seconds": seconds,
@@ -668,6 +694,9 @@ async def task_video(ctx: TaskContext) -> dict:
         results.append((asset, result))
         if not result or result.get("ok"):
             break
+        issues = result.get("issues") or []
+        if attempt + 1 == attempts and extra_for_subtitle and issues and all(i.get("subtitle") for i in issues):
+            attempts += 1; extra_for_subtitle = 0
         if attempt + 1 < attempts:
             await ctx.log(f"质检未通过（{qa.summary(result)}），自动换种子重抽")
     best, best_qa = min(results, key=lambda x: qa.rank(x[1]))

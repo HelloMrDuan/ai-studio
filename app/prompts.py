@@ -366,7 +366,10 @@ def video_prompt(project: dict, shot: dict, chars_by_name: dict[str, dict], loc:
             parts.append("本镜头紧接上一个镜头：开头画面就是上一镜头的最后一帧，人物位置、姿态和动作从那里自然延续，不要跳变。")
         if shot.get("_end_frame"):
             parts.append("镜头结束时画面到达指定的尾帧状态。")
-        parts.append("人物外貌、服装和场景与首帧保持一致，动作自然连贯。画面干净，没有字幕、文字和水印。")
+        if not dub and any((d.get("line") or "").strip() for d in shot.get("dialogue") or []):
+            parts.insert(0, "画面中不出现任何字幕或台词文字，台词只出现在声音里。")
+        parts.append("单一连续镜头，一镜到底，中间不切换画面、不转场。人物外貌、服装和场景与首帧保持一致，动作自然连贯。"
+                     "画面干净，没有字幕、文字和水印。")
         body = "\n".join(parts)
     if ref_descs:
         head = ["<Picture 1> 是本镜头的构图与画面参考。"]

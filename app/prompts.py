@@ -15,6 +15,14 @@ STYLES: dict[str, dict[str, str]] = {
 }
 
 SHOT_SIZES = ["远景", "全景", "中景", "近景", "特写"]
+SIZE_HINTS = {"远景": "远景（人物很小，画面以环境为主）", "全景": "全景（人物从头到脚完整入画）",
+              "中景": "中景（人物膝盖或腰部以上入画）", "近景": "近景（人物胸部以上入画，脸部清晰）",
+              "特写": "特写（只拍头肩，脸部占据画面大部分）"}
+
+
+def size_text(shot: dict) -> str:
+    size = shot.get("shot_size") or "中景"
+    return SIZE_HINTS.get(size, size)
 CAMERA_ANGLES = ["平视", "俯视", "仰视", "过肩", "主观视角", "侧面"]
 CAMERA_MOVES = ["固定", "推镜", "拉镜", "摇镜", "移镜", "跟拍", "环绕", "升降"]
 
@@ -311,7 +319,7 @@ def keyframe_prompt(project: dict, shot: dict, chars: list[dict], loc: dict | No
                     ref_map: dict[str, dict], loc_idx: int | None,
                     props: list[tuple[dict, int | None]] = ()) -> str:
     """ref_map 见 char_ref_lines；loc_idx 为场景参考图的序号（None 表示没有）。"""
-    lines = [f"生成一张电影分镜画面，{shot.get('shot_size') or '中景'}，{shot.get('camera_angle') or '平视'}。"]
+    lines = [f"生成一张电影分镜画面，{size_text(shot)}，{shot.get('camera_angle') or '平视'}。"]
     lines.append("画面内容：" + (shot.get("image_prompt") or shot.get("description") or "").strip())
     if (shot.get("performance") or "").strip():
         lines.append("人物表演（表情与视线）：" + shot["performance"].strip())

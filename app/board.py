@@ -12,6 +12,8 @@ from .tasks import TaskContext, handler, queue
 
 router = APIRouter(prefix="/api")
 
+REGION_MAX_DIFF = 40.0      # 局部重绘框外边距的平均像素差异上限
+
 POSITIONS = {"左": "画面左侧三分之一处", "中": "画面正中", "右": "画面右侧三分之一处",
              "前景": "前景（离镜头最近，可被画框裁切）", "背景": "背景远处（人物较小）",
              "左前": "画面左侧前景", "右前": "画面右侧前景"}
@@ -33,14 +35,40 @@ def _snap16(v: float) -> int:
     return max(256, int(round(v / 16)) * 16)
 
 
-def crop_box(w: int, h: int, box: list[float], pad: float = 0.25) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]]:
-    """box = [x, y, w, h]（0~1 比例）。返回 (要重绘的区域像素框, 带外扩边距的裁切框)。"""
+def crop_box(w: int, h: int, box: list[float], pad: float = 0.25,
+             min_side: float = 0.4) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]]:
+    """box = [x, y, w, h]（0~1 比例）。返回 (要重绘的区域像素框, 带外扩边距的裁切框)。
+    裁切框至少为画面短边的 min_side（实测：只框住一张脸时模型看不出这是画面局部，会画成一张白底人像）。"""
     x, y, bw, bh = [min(1.0, max(0.0, float(v))) for v in box]
     bw, bh = max(bw, 0.02), max(bh, 0.02)
     inner = (int(x * w), int(y * h), int(min(1, x + bw) * w), int(min(1, y + bh) * h))
     px, py = int((inner[2] - inner[0]) * pad) + 16, int((inner[3] - inner[1]) * pad) + 16
-    outer = (max(0, inner[0] - px), max(0, inner[1] - py), min(w, inner[2] + px), min(h, inner[3] + py))
-    return inner, outer
+    side = int(min(w, h) * min_side)
+    px = max(px, (side - (inner[2] - inner[0])) // 2)
+    py = max(py, (side - (inner[3] - inner[1])) // 2)
+    x0, y0, x1, y1 = inner[0] - px, inner[1] - py, inner[2] + px, inner[3] + py
+    if x0 < 0:                                  # 贴边时往另一侧多扩，保持上下文大小
+        x1, x0 = min(w, x1 - x0), 0
+    if x1 > w:
+        x0, x1 = max(0, x0 - (x1 - w)), w
+    if y0 < 0:
+        y1, y0 = min(h, y1 - y0), 0
+    if y1 > h:
+        y0, y1 = max(0, y0 - (y1 - h)), h
+    return inner, (x0, y0, x1, y1)
+
+
+def margin_diff(crop_path: Path, patch_path: Path, inner: tuple, outer: tuple) -> float:
+    """重绘结果在「框外边距」上与原裁切图的平均差异（0~255）。差异大说明模型没在原图上改，而是重画了一张别的图。"""
+    from PIL import Image, ImageChops, ImageStat
+    crop = Image.open(crop_path).convert("L")
+    patch = Image.open(patch_path).convert("L").resize(crop.size, Image.BILINEAR)
+    diff = ImageChops.difference(crop, patch)
+    ix0, iy0, ix1, iy1 = inner[0] - outer[0], inner[1] - outer[1], inner[2] - outer[0], inner[3] - outer[1]
+    ring = diff.copy()
+    ring.paste(0, (ix0, iy0, ix1, iy1))
+    area = crop.size[0] * crop.size[1] - (ix1 - ix0) * (iy1 - iy0)
+    return ImageStat.Stat(ring).sum[0] / max(1, area)
 
 
 def gen_size(cw: int, ch: int, target: int = 1024 * 1024) -> tuple[int, int]:
@@ -68,18 +96,23 @@ def feather_paste(base_path: Path, patch_path: Path, inner: tuple, outer: tuple,
 
 
 def region_prompt(instruction: str, char_lines: list[str]) -> str:
-    lines = [f"<image1> 是一张画面的局部特写。保持构图、透视、光线方向、色调和画风完全不变，只做以下修改：{instruction}。",
-             "修改后的内容要与周围画面自然衔接，边缘没有接缝。"]
+    lines = [f"在 <image1> 上直接编辑：<image1> 是一张电影画面的局部。输出必须与 <image1> 取景、构图、人物位置和大小、透视、光线、色调和画风完全一致，"
+             f"只做以下修改：{instruction}。其余所有内容保持原样。",
+             "修改后的内容要与周围画面自然衔接，边缘没有接缝。不要换背景，不要生成新的构图。"]
     return "\n".join(lines + char_lines + ["不要出现任何文字、字幕或水印。"])
+
+
+def face_ref_lines(chars: list[dict], start: int = 2) -> list[str]:
+    return [f"<image{start + i}> 是角色「{c['name']}」的脸部参考：只参考五官长相和发型，不要把它的背景、构图、服装画进来。"
+            for i, c in enumerate(chars)]
 
 
 @handler("keyframe_region")
 async def task_keyframe_region(ctx: TaskContext) -> dict:
     from PIL import Image
 
-    from . import pipeline, prompts
-    from .pipeline import (MAX_IMAGE_REFS, _generate_images, absolute, add_asset, char_refs, exists, keyframe_plan,
-                           need, project_dir)
+    from . import pipeline
+    from .pipeline import MAX_IMAGE_REFS, _generate_images, absolute, add_asset, exists, keyframe_plan, need, project_dir
     shot = need("shots", ctx.params.get("shot_id"), "镜头")
     instruction = (ctx.params.get("instruction") or "").strip()
     if not exists(shot["keyframe"]) or not instruction:
@@ -94,13 +127,23 @@ async def task_keyframe_region(ctx: TaskContext) -> dict:
     # 选中的角色（重绘脸/人物时）带上其参考图
     plan = keyframe_plan(shot)
     who = [c for c in plan["chars"] if c["id"] in (ctx.params.get("character_ids") or [])]
-    char_paths, _, ref_map = char_refs(who, MAX_IMAGE_REFS - 1, start=2)
-    lines = [ln for ln in prompts.char_ref_lines(who, ref_map) if ln.startswith("<image")]
-    prompt = region_prompt(instruction, lines)
+    who = [c for c in who if exists(c.get("face_image")) or exists(c.get("ref_image"))][:MAX_IMAGE_REFS - 1]
+    char_paths = [absolute(c["face_image"] if exists(c.get("face_image")) else c["ref_image"]) for c in who]
+    prompt = region_prompt(instruction, face_ref_lines(who))
     size = gen_size(outer[2] - outer[0], outer[3] - outer[1])
     await ctx.log(f"局部重绘：区域 {inner}，裁切 {outer}，按 {size[0]}×{size[1]} 生成")
-    files = await _generate_images(ctx, prompt, pipeline.shot_aspect(shot, plan["project"]), [crop, *char_paths],
-                                   ctx.params.get("count", 1), out_dir, size=size)
+    aspect = pipeline.shot_aspect(shot, plan["project"])
+    files = await _generate_images(ctx, prompt, aspect, [crop, *char_paths], ctx.params.get("count", 1), out_dir, size=size)
+    checked = []
+    for f in files:                       # 框外边距对不上原图 = 模型重画了别的构图 → 换种子再来一次
+        d = margin_diff(crop, f, inner, outer)
+        if d > REGION_MAX_DIFF:
+            await ctx.log(f"重绘结果与原画面对不上（边缘差异 {d:.0f}），换种子重试")
+            retry = await _generate_images(ctx, prompt, aspect, [crop, *char_paths], 1, out_dir, random_seed=True, size=size)
+            d2 = margin_diff(crop, retry[0], inner, outer)
+            f = retry[0] if d2 < d else f
+        checked.append(f)
+    files = checked
     assets = []
     for n, f in enumerate(files):
         merged = feather_paste(src, f, inner, outer, out_dir / f"{Path(shot['keyframe']).stem}_r{ctx.task['id'][:6]}_{n}.png")

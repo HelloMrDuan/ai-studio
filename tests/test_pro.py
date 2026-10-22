@@ -1154,3 +1154,21 @@ def test_art_clause_subject():
     assert art.orientation(two, "苏晴", ["周屿"]) == "back" and art.emotion(two, "苏晴", ["周屿"]) == "恐惧"
     assert art.orientation(two, "周屿", ["苏晴"]) is None and art.emotion(two, "周屿", ["苏晴"]) == "开心"
     assert art.emotion({"description": "两人对视，沉默不语"}, "周屿", ["苏晴"]) is None
+
+
+def test_region_context_and_margin(tmp_path):
+    """实测 P2-4：只框一张脸时裁切太小，模型画成白底人像 → 裁切至少为短边 40%；边缘对不上能被检测出来。"""
+    from PIL import Image
+    from app import board
+    inner, outer = board.crop_box(720, 1280, [0.16, 0.25, 0.28, 0.16])
+    assert outer[2] - outer[0] >= 288 and outer[3] - outer[1] >= 288
+    assert outer[0] <= inner[0] and outer[2] >= inner[2]
+    inner, outer = board.crop_box(720, 1280, [0.0, 0.0, 0.1, 0.05])      # 贴左上角：往右下多扩
+    assert outer[:2] == (0, 0) and outer[2] >= 288 and outer[3] >= 288
+    crop = tmp_path / "c.png"; same = tmp_path / "s.png"; other = tmp_path / "o.png"
+    im = Image.new("RGB", (300, 300), (30, 60, 90)); im.save(crop)
+    im2 = im.copy(); im2.paste((250, 250, 250), (100, 100, 200, 200)); im2.save(same)      # 只改了框内
+    Image.new("RGB", (600, 600), (240, 240, 240)).save(other)                              # 整张重画
+    box_in, box_out = (100, 100, 200, 200), (0, 0, 300, 300)
+    assert board.margin_diff(crop, same, box_in, box_out) < 5
+    assert board.margin_diff(crop, other, box_in, box_out) > board.REGION_MAX_DIFF

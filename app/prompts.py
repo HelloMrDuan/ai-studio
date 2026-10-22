@@ -20,9 +20,24 @@ SIZE_HINTS = {"远景": "远景（人物很小，画面以环境为主）", "全
               "特写": "特写（只拍头肩，脸部占据画面大部分）"}
 
 
-def size_text(shot: dict) -> str:
+SIZE_HINTS_EMPTY = {"远景": "远景（大范围环境全貌）", "全景": "全景（主体完整入画，交代周围环境）",
+                    "中景": "中景（主体占画面一半左右）", "近景": "近景（主体近拍，细节清晰）",
+                    "特写": "特写（主体局部细节占满画面）"}
+PERSON_WORDS = ("人", "他", "她", "男", "女", "孩", "老人", "少年", "少女", "学生", "司机", "路人", "顾客", "店员",
+                "士兵", "警察", "医生", "妈妈", "爸爸", "母亲", "父亲", "手", "脸")
+
+
+def has_people(shot: dict, chars: list | None = None) -> bool:
+    """镜头里有没有人：有角色，或描述里写了人。实测：空镜头（桌上一杯咖啡）因为景别提示写着「人物胸部以上」被画出一个人。"""
+    if chars or shot.get("character_ids"):
+        return True
+    text = "，".join(str(shot.get(k) or "") for k in ("description", "action", "image_prompt"))
+    return any(w in text for w in PERSON_WORDS)
+
+
+def size_text(shot: dict, people: bool = True) -> str:
     size = shot.get("shot_size") or "中景"
-    return SIZE_HINTS.get(size, size)
+    return (SIZE_HINTS if people else SIZE_HINTS_EMPTY).get(size, size)
 CAMERA_ANGLES = ["平视", "俯视", "仰视", "过肩", "主观视角", "侧面"]
 CAMERA_MOVES = ["固定", "推镜", "拉镜", "摇镜", "移镜", "跟拍", "环绕", "升降"]
 
@@ -319,7 +334,8 @@ def keyframe_prompt(project: dict, shot: dict, chars: list[dict], loc: dict | No
                     ref_map: dict[str, dict], loc_idx: int | None,
                     props: list[tuple[dict, int | None]] = ()) -> str:
     """ref_map 见 char_ref_lines；loc_idx 为场景参考图的序号（None 表示没有）。"""
-    lines = [f"生成一张电影分镜画面，{size_text(shot)}，{shot.get('camera_angle') or '平视'}。"]
+    people = has_people(shot, chars)
+    lines = [f"生成一张电影分镜画面，{size_text(shot, people)}，{shot.get('camera_angle') or '平视'}。"]
     lines.append("画面内容：" + (shot.get("image_prompt") or shot.get("description") or "").strip())
     if (shot.get("performance") or "").strip():
         lines.append("人物表演（表情与视线）：" + shot["performance"].strip())
@@ -333,7 +349,7 @@ def keyframe_prompt(project: dict, shot: dict, chars: list[dict], loc: dict | No
     if chars:
         names = "、".join(f"「{c['name']}」" for c in chars)
         lines.append(f"画面中共有 {len(chars)} 个主要人物：{names}，每人只出现一次，彼此外貌明显不同，不要出现多余人物。")
-    else:
+    elif not people:
         lines.append("这是空镜头，画面中没有人物。")
     lines.append(f"画风：{style_text(project)}。")
     lines.append("不要出现任何文字、字幕、水印或分镜编号。")
@@ -414,6 +430,8 @@ def video_prompt(project: dict, shot: dict, chars_by_name: dict[str, dict], loc:
             parts.append("声音：" + shot["sound"])
         if dub:
             parts.append("音频只有环境音和音效，没有任何人声、对白、旁白和背景音乐。")
+        if not has_people(shot) and not shot.get("dialogue"):
+            parts.append("这是空镜头：整段视频画面中不出现任何人物，也不切到车内、室内等别的画面。")
         if shot.get("_chain"):
             parts.append("本镜头紧接上一个镜头：开头画面就是上一镜头的最后一帧，人物位置、姿态和动作从那里自然延续，不要跳变。")
         if shot.get("_anchor"):

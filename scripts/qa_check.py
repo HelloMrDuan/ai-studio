@@ -188,6 +188,36 @@ def check_faces(frames: list[np.ndarray], refs: list[dict], models_dir: Path, th
 
 
 # ---------------- 运镜（光流） ----------------
+def detect_cuts(path: Path) -> list[float]:
+    """硬切检测：相邻帧颜色直方图突然对不上（且远大于平时的帧间变化）= 中途切到了别的画面。
+    实测：H3 生成 21:9 公路远景时，2 秒处突然切到车内司机特写。返回切点秒数。"""
+    cap = cv2.VideoCapture(str(path))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 24
+    hists, diffs, prev = [], [], None
+    while True:
+        ok, img = cap.read()
+        if not ok:
+            break
+        small = cv2.resize(img, (96, 54))
+        hsv = cv2.cvtColor(small, cv2.COLOR_BGR2HSV)
+        h = cv2.calcHist([hsv], [0, 1], None, [16, 8], [0, 180, 0, 256])
+        cv2.normalize(h, h)
+        g = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY).astype(np.float32)
+        if prev is not None:
+            hists.append(cv2.compareHist(hists_prev, h, cv2.HISTCMP_CORREL))
+            diffs.append(float(np.abs(g - prev).mean()))
+        prev, hists_prev = g, h
+    cap.release()
+    if len(diffs) < 6:
+        return []
+    med = float(np.median(diffs)) + 1.0
+    cuts = []
+    for i, (c, d) in enumerate(zip(hists, diffs)):
+        if d > max(18.0, 6 * med) and c < 0.7 and 0.2 < (i + 1) / fps:
+            cuts.append(round((i + 1) / fps, 2))
+    return cuts
+
+
 def camera_motion(path: Path) -> dict:
     """逐帧 LK 光流 + 相似变换，累计整段的缩放和平移（相对画面尺寸）。实测比视觉大模型看抽帧网格可靠得多。"""
     cap = cv2.VideoCapture(str(path))
@@ -266,6 +296,15 @@ def main() -> None:
                 result["issues"].append({"type": "face", "detail": f"「{name}」的脸不像（相似度 {s:.2f}）"})
         except Exception as exc:  # noqa: BLE001
             result["warnings"].append(f"人脸检测不可用：{exc}")
+    if target.suffix.lower() in (".mp4", ".mov", ".webm", ".mkv"):
+        try:
+            cuts = detect_cuts(target)
+            result["cuts"] = cuts
+            if cuts:
+                result["issues"].append({"type": "cut", "detail": "画面在 " + "、".join(f"{c:g}" for c in cuts[:3])
+                                         + " 秒处突然切换到别的画面（不是一镜到底）"})
+        except Exception as exc:  # noqa: BLE001
+            result["warnings"].append(f"切镜检测不可用：{exc}")
     if job.get("camera") and target.suffix.lower() in (".mp4", ".mov", ".webm", ".mkv"):
         try:
             m = camera_motion(target)

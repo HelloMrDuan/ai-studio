@@ -1274,3 +1274,18 @@ def test_comfy_fit_inputs(monkeypatch):
     out = asyncio.run(comfy.fit_inputs(wf, ("RIFE VFI",)))
     assert out["3"]["inputs"] == {"frames": ["2", 0], "multiplier": 3, "dtype": "float32", "batch_size": 1, "mode": "a"}
     assert out["4"]["inputs"] == {"x": 1}
+
+
+def test_empty_shot_has_no_people():
+    """实测：空镜头「桌上一杯咖啡」+ 近景 → 景别提示写着「人物胸部以上」被画出一个人；21:9 公路远景视频中途切到车内司机。"""
+    from app import prompts
+    empty = {"description": "咖啡馆窗边的木桌上放着一杯冒热气的咖啡", "shot_size": "近景"}
+    assert not prompts.has_people(empty)
+    assert "人物" not in prompts.size_text(empty, False)
+    kp = prompts.keyframe_prompt({"style": "cinematic"}, empty, [], None, {}, None)
+    assert "没有人物" in kp and "胸部以上" not in kp
+    vp = prompts.video_prompt({"style": "cinematic"}, empty, {}, None)
+    assert "不出现任何人物" in vp
+    girl = {"description": "樱花树下的少女全身像", "shot_size": "全景"}
+    assert prompts.has_people(girl)
+    assert "不出现任何人物" not in prompts.video_prompt({"style": "cinematic"}, girl, {}, None)

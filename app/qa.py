@@ -110,11 +110,11 @@ def layout_mismatch(info: dict | None) -> str:
     if shift > 0.3:
         return f"人物位置不同（水平错开 {shift:.0%}）"
     sims = info.get("sims") or []
-    if sims and len(a) == 1 and sims[0] and sims[0][0] < 0.3:
+    if sims and len(a) == 1 and sims[0] and sims[0][0] < 0.25:
         return f"画面里不是同一个人（相似度 {sims[0][0]:.2f}）"
     if sims and len(a) > 1 and all(row for row in sims):
         best = [max(row) for row in sims]
-        if min(best) < 0.3:
+        if min(best) < 0.25:
             return f"画面里的人物对不上（最低相似度 {min(best):.2f}）"
     return ""
 

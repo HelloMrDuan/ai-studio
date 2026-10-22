@@ -7,6 +7,7 @@ job = {"target": 图片/视频绝对路径, "reference": 参考图（视频用�
 检查项：
 - text：画面里出现了参考图里没有的文字（视频模型偶尔会自己烧字幕）。需要 rapidocr。
 - face：画面中的人脸与角色脸部特写的 ArcFace 相似度过低（脸崩 / 串脸）。用 FaceFusion 自带的 yoloface + arcface 模型。
+另：job = {"layout": [图a, 图b], "models_dir", "identity"} → 只输出两张图的人脸布局对比（接续镜头用）。
 """
 from __future__ import annotations
 
@@ -187,6 +188,26 @@ def check_faces(frames: list[np.ndarray], refs: list[dict], models_dir: Path, th
     return {"scores": scores, "low": low, "frames_with_faces": frames_with_faces, "refs": list(ref_emb)}
 
 
+def face_layout(a: Path, b: Path, models_dir: Path, identity: bool) -> dict:
+    """两张图的人脸布局（位置 cx、高度占比 s，按大小排序，忽略背景小脸）+ 两两 ArcFace 相似度（写实画风才算）。
+    用于判断「上一镜尾帧」和「本镜分镜图」是不是同一构图（接续镜头）。"""
+    fx = Faces(models_dir)
+    out: dict = {}
+    embs: dict[str, list] = {}
+    for key, path in (("a", a), ("b", b)):
+        img = cv2.imread(str(path))
+        if img is None:
+            raise RuntimeError(f"读不出图片：{path}")
+        h, w = img.shape[:2]
+        found = [(box, lm, float((box[3] - box[1]) / h)) for box, lm in fx.detect(img)]
+        top = max((f[2] for f in found), default=0.0)
+        found = sorted([f for f in found if f[2] >= max(0.04, 0.4 * top)], key=lambda f: -f[2])
+        out[key] = [{"cx": round(float((box[0] + box[2]) / 2 / w), 3), "s": round(s, 3)} for box, lm, s in found]
+        embs[key] = [fx.embed(img, lm) for box, lm, s in found] if identity else []
+    out["sims"] = [[round(float(np.dot(x, y)), 3) for y in embs["b"]] for x in embs["a"]]
+    return out
+
+
 # ---------------- 运镜（光流） ----------------
 def detect_cuts(path: Path) -> list[float]:
     """硬切检测：相邻帧颜色直方图突然对不上（且远大于平时的帧间变化）= 中途切到了别的画面。
@@ -272,6 +293,10 @@ def camera_mismatch(move: str, direction: str, m: dict) -> str:
 
 def main() -> None:
     job = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    if job.get("layout"):
+        a, b = job["layout"]
+        print(json.dumps(face_layout(Path(a), Path(b), Path(job["models_dir"]), bool(job.get("identity"))), ensure_ascii=False))
+        return
     target = Path(job["target"])
     frames = read_frames(target, int(job.get("frames") or 5))
     result: dict = {"ok": True, "issues": [], "warnings": []}

@@ -1143,3 +1143,14 @@ def test_chain_mismatch():
     assert pipeline.chain_mismatch(p, {"shot_size": "中景", "character_ids": ["a", "b"]})     # 换人又换景别
     assert not pipeline.chain_mismatch(p, {"shot_size": "中景", "character_ids": ["a"]})
     assert not pipeline.chain_mismatch(p, {"shot_size": "近景", "character_ids": ["b"]})
+
+
+def test_art_clause_subject():
+    """实测 P2-2：「周屿侧身站在栏杆旁，侧脸对着镜头，惊讶地愣住」——后两句省略了主语，也要算周屿的。"""
+    from app import art
+    one = {"description": "周屿侧身站在栏杆旁，侧脸对着镜头，惊讶地愣住"}
+    assert art.emotion(one, "周屿") == "惊讶" and art.orientation(one, "周屿") == "side"
+    two = {"description": "苏晴背对镜头站着，肩膀微微颤抖。周屿走上前，开心地笑了"}
+    assert art.orientation(two, "苏晴", ["周屿"]) == "back" and art.emotion(two, "苏晴", ["周屿"]) == "恐惧"
+    assert art.orientation(two, "周屿", ["苏晴"]) is None and art.emotion(two, "周屿", ["苏晴"]) == "开心"
+    assert art.emotion({"description": "两人对视，沉默不语"}, "周屿", ["苏晴"]) is None

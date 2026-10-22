@@ -354,7 +354,8 @@ def keyframe_plan(shot: dict) -> dict:
     场景图优先级高于「第二张脸部参考」：先给每个角色一张，再放场景图，最后用剩余名额补脸部特写。"""
     from . import art, board
     project, _, chars, loc = _shot_context(shot)
-    chars = [art.dress(shot, c) for c in chars]          # 造型 / 侧面背面 / 表情
+    names = [c["name"] for c in chars]
+    chars = [art.dress(shot, c, [n for n in names if n != c["name"]]) for c in chars]   # 造型 / 侧面背面 / 表情
     loc = art.place(shot, loc)                           # 场景变体（夜 / 雨 / 反打…）
     props = shot_props(shot)
     has_loc = bool(loc and exists(loc.get("ref_image")))

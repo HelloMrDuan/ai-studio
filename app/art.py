@@ -25,17 +25,33 @@ EXPRESSIONS = {"开心": ("笑", "开心", "高兴", "喜", "兴奋", "得意"),
                "恐惧": ("怕", "恐", "惧", "慌", "颤抖"), "冷漠": ("冷", "漠", "面无表情", "不屑", "轻蔑")}
 VARIANT_PRESETS = {"夜晚": ("夜", "晚上", "深夜"), "雨天": ("雨",), "黄昏": ("黄昏", "傍晚", "夕阳"), "雪天": ("雪",),
                    "清晨": ("清晨", "早晨", "黎明"), "反打": ()}
+EXPRESSION_LOOKS = {"开心": "眼睛弯成月牙，嘴角高高上扬露出牙齿，脸颊鼓起，灿烂的笑容",
+                    "愤怒": "眉头紧锁下压，怒目圆睁，咬紧牙关，鼻翼张开，面部肌肉紧绷",
+                    "悲伤": "眉头内侧上扬并皱起，眼眶泛红噙满泪水，脸颊挂着泪痕，嘴角向下撇",
+                    "惊讶": "眉毛高高扬起，眼睛睁得很大，嘴巴张开呈 O 形",
+                    "恐惧": "眼睛瞪大、眉头上扬并拧在一起，嘴唇微张发抖，脸色发白，身体微缩",
+                    "冷漠": "眼皮半垂，眼神冷淡地斜视，嘴角平直略带不屑，面无表情"}
 _BACK = re.compile(r"背影|背对|背身|转身离开|背朝")
 _SIDE = re.compile(r"侧脸|侧身|侧面|侧对|侧影")
 
 
 # ---------------- 按镜头挑参考 ----------------
-def _clauses(text: str, name: str) -> list[str]:
-    return [c for c in re.split(r"[，。；,;！!？?\n]", text or "") if name in c]
+def _clauses(text: str, name: str, others: list[str] | tuple = ()) -> list[str]:
+    """属于该角色的分句：含名字的分句，以及其后省略主语的分句（直到出现别的角色名）。
+    只有一个角色的镜头，开头没写名字的分句也算他的。"""
+    out, cur = [], not others
+    for c in re.split(r"[，。；,;！!？?\n]", text or ""):
+        if name in c:
+            cur = True
+        elif any(o and o in c for o in others):
+            cur = False
+        if cur and c.strip():
+            out.append(c)
+    return out
 
 
-def orientation(shot: dict, name: str) -> str | None:
-    text = " ".join(_clauses(shot.get("description") or "", name))
+def orientation(shot: dict, name: str, others: list[str] | tuple = ()) -> str | None:
+    text = " ".join(_clauses(shot.get("description") or "", name, others))
     if _BACK.search(text):
         return "back"
     if _SIDE.search(text) or shot.get("camera_angle") == "侧面":
@@ -43,11 +59,10 @@ def orientation(shot: dict, name: str) -> str | None:
     return None
 
 
-def emotion(shot: dict, name: str) -> str | None:
+def emotion(shot: dict, name: str, others: list[str] | tuple = ()) -> str | None:
     texts = [d.get("emotion") or "" for d in shot.get("dialogue") or [] if d.get("speaker") == name]
-    texts += _clauses(shot.get("performance") or "", name) or ([shot.get("performance") or ""]
-                                                               if len(shot.get("character_ids") or []) == 1 else [])
-    texts += _clauses(shot.get("description") or "", name)
+    texts += _clauses(shot.get("performance") or "", name, others)
+    texts += _clauses(shot.get("description") or "", name, others)
     joined = " ".join(texts)
     for key, words in EXPRESSIONS.items():
         if any(w in joined for w in words):
@@ -55,7 +70,7 @@ def emotion(shot: dict, name: str) -> str | None:
     return None
 
 
-def dress(shot: dict, char: dict) -> dict:
+def dress(shot: dict, char: dict, others: list[str] | tuple = ()) -> dict:
     """返回按本镜头调整过参考图的角色副本（不改数据库）。"""
     from .pipeline import exists
     c = dict(char)
@@ -67,10 +82,10 @@ def dress(shot: dict, char: dict) -> dict:
         c["_outfit"] = outfit["name"] + (f"——{outfit['appearance']}" if outfit.get("appearance") else "")
         if exists(outfit.get("ref_image")):
             c["ref_image"] = outfit["ref_image"]
-    view = orientation(shot, c["name"])
+    view = orientation(shot, c["name"], others)
     if view and not outfit and exists(sheet.get(view)):
         c["ref_image"], c["_view"] = sheet[view], VIEWS[view]
-    emo = emotion(shot, c["name"])
+    emo = emotion(shot, c["name"], others)
     if emo and exists((sheet.get("expr") or {}).get(emo)):
         c["face_image"], c["_expr"] = sheet["expr"][emo], emo
     return c
@@ -110,8 +125,10 @@ def sheet_prompt(project: dict, char: dict, kind: str, value: str) -> str:
         pose = {"side": "身体和脸转向画面右侧的标准侧面全身站姿（90° 侧面），能看清侧脸轮廓",
                 "back": "背对镜头的背面全身站姿，能看清发型后侧和服装背面"}[value]
         return f"角色设定图：{who}的{VIEWS[value]}视图，{pose}。脸型、发型发色、体型、服装款式和颜色必须与 <image1> 完全一致。{style}"
-    return (f"角色表情特写：{who}的头肩特写，正脸，表情「{value}」，表情鲜明到位但五官不变形。"
-            f"脸型五官、肤色、发型和妆容必须与 <image1> 完全一致。{style}")
+    look = EXPRESSION_LOOKS.get(value, value)
+    return (f"表情编辑：保持 {who}是同一个人，只改变面部表情为「{value}」——{look}。"
+            f"表情要明显、一眼能看出情绪，不要保持原图的平静表情。头肩特写，正脸。"
+            f"脸型五官比例、肤色、发型和服装必须与 <image1> 完全一致。{style}")
 
 
 @handler("char_sheet")

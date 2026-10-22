@@ -41,7 +41,18 @@ if [ "$NO_ASR" = 0 ]; then
   fi
   "$ASR_PY" -c "import faster_whisper" 2>/dev/null || "$ASR_PY" -m pip install -q faster-whisper
   log "预下载 whisper small 模型"
-  HF_ENDPOINT=$HF_ENDPOINT "$ASR_PY" -c "from faster_whisper import download_model; print(download_model('small'))" || log "⚠ 模型预下载失败，首次使用时会再试"
+  WD=$BASE/models/faster-whisper-small
+  if [ -s "$WD/model.bin" ]; then setenv ASR_MODEL "$WD"
+  elif HF_ENDPOINT=$HF_ENDPOINT "$ASR_PY" -c "from faster_whisper import download_model; print(download_model('small'))"; then :
+  else
+    log "HF 镜像下载失败，改从魔搭社区下载 Systran/faster-whisper-small"
+    mkdir -p "$WD"; ok=1
+    for f in config.json model.bin tokenizer.json vocabulary.txt preprocessor_config.json; do
+      aria2c -c -x 8 -s 8 --file-allocation=none --console-log-level=warn -d "$WD" -o "$f" \
+        "https://www.modelscope.cn/models/Systran/faster-whisper-small/resolve/master/$f" || { [ "$f" = preprocessor_config.json ] || ok=0; }
+    done
+    if [ $ok = 1 ]; then setenv ASR_MODEL "$WD"; else log "⚠ 模型预下载失败，首次使用时会再试"; fi
+  fi
   setenv ASR_PYTHON "$ASR_PY"
   log "✓ 语音识别：$ASR_PY"
 fi

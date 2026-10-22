@@ -31,6 +31,37 @@ async def object_info() -> dict:
         return r.json()
 
 
+# 可选加速节点（旧版 ComfyUI 没有时自动去掉，不影响出片）
+OPTIONAL_PASSTHROUGH = {"EasyCache": "model", "LazyCache": "model"}
+_has_node: dict[str, bool] = {}
+
+
+async def node_available(name: str) -> bool:
+    if name not in _has_node:
+        try:
+            async with httpx.AsyncClient(timeout=30, trust_env=False) as c:
+                r = await c.get(f"{_base()}/object_info/{name}")
+            _has_node[name] = r.status_code == 200 and name in (r.json() or {})
+        except Exception:  # noqa: BLE001 —— 查不到就当可用，交给 ComfyUI 报错
+            return True
+    return _has_node[name]
+
+
+async def strip_missing_optional(workflow: dict) -> dict:
+    """去掉 ComfyUI 不认识的可选节点，把引用它的输入直接接到它的上游。"""
+    for nid, node in list(workflow.items()):
+        port = OPTIONAL_PASSTHROUGH.get(node.get("class_type"))
+        if not port or await node_available(node["class_type"]):
+            continue
+        upstream = node["inputs"][port]
+        workflow.pop(nid)
+        for other in workflow.values():
+            for k, v in other.get("inputs", {}).items():
+                if isinstance(v, list) and len(v) == 2 and str(v[0]) == str(nid):
+                    other["inputs"][k] = upstream
+    return workflow
+
+
 async def upload_image(path: Path) -> str:
     async with httpx.AsyncClient(timeout=120, trust_env=False) as c:
         with open(path, "rb") as fh:
@@ -80,6 +111,7 @@ async def run(workflow: dict, out_dir: Path, progress: Progress | None = None) -
     """提交工作流并等待完成，返回下载到 out_dir 的结果文件。"""
     s = get_settings()
     client_id = uuid.uuid4().hex
+    workflow = await strip_missing_optional(workflow)
     async with httpx.AsyncClient(timeout=60, trust_env=False) as c:
         r = await c.post(_base() + "/prompt", json={"prompt": workflow, "client_id": client_id})
         if r.status_code >= 400:

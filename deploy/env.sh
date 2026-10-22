@@ -79,6 +79,14 @@ env_get() { grep -E "^$1=" "$APP_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- 
 studio_port() { local p; p=$(env_get PORT); echo "${p:-6006}"; }
 llm_port() { local u; u=$(env_get LLM_BASE_URL); u=${u:-http://127.0.0.1:8080/v1}; u=${u#*://}; u=${u%%/*}; echo "${u##*:}"; }
 
+# ComfyUI 额外启动参数：.env 的 COMFY_ARGS；装了 SageAttention 自动加 --use-sage-attention（COMFY_SAGE=0 关闭）
+comfy_args() {
+  local a sage; a=$(env_get COMFY_ARGS); sage=$(env_get COMFY_SAGE)
+  if [ "${sage:-auto}" != "0" ] && [[ "$a" != *--use-sage-attention* ]] && "$COMFY_PY" -c "import sageattention" 2>/dev/null; then
+    a="$a --use-sage-attention"
+  fi
+  echo "$a"
+}
 log() { echo -e "\033[1;36m[$(date +%H:%M:%S)] $*\033[0m"; }
 die() { echo -e "\033[1;31m[错误] $*\033[0m" >&2; exit 1; }
 

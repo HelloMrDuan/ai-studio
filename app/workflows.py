@@ -104,7 +104,14 @@ def image_workflow(prompt: str, aspect: str, refs: list[str] | None = None, seed
     return nodes
 
 
-def _h3_common(nodes: dict, unet: str, lora: str | None, steps: int, seed: int) -> list:
+def video_cache_threshold(quality: str, steps: int, cache: float | None = None) -> float:
+    """视频推理缓存阈值：草稿默认开、成品默认关；步数太少（4 步 Turbo）时缓存没有意义。"""
+    s = get_settings()
+    th = cache if cache is not None else (s.video_cache if quality == "draft" else s.video_cache_final)
+    return th if th and th > 0 and steps >= 6 else 0.0
+
+
+def _h3_common(nodes: dict, unet: str, lora: str | None, steps: int, seed: int, cache: float = 0.0) -> list:
     s = get_settings()
     nodes.update({
         "1": {"class_type": "UNETLoader", "inputs": {"unet_name": unet, "weight_dtype": "default"}},
@@ -119,6 +126,10 @@ def _h3_common(nodes: dict, unet: str, lora: str | None, steps: int, seed: int) 
         nodes["7"] = {"class_type": "LoraLoaderModelOnly",
                       "inputs": {"model": ["1", 0], "lora_name": lora, "strength_model": 1.0}}
         model = ["7", 0]
+    if cache > 0:
+        nodes["9"] = {"class_type": "EasyCache", "inputs": {"model": model, "reuse_threshold": round(cache, 3),
+                                                            "start_percent": 0.15, "end_percent": 0.95, "verbose": False}}
+        model = ["9", 0]
     nodes["20"] = {"class_type": "BasicGuider", "inputs": {"model": model, "conditioning": ["10", 0]}}
     nodes["23"] = {"class_type": "BasicScheduler", "inputs": {"model": model, "scheduler": "simple",
                                                               "steps": steps, "denoise": 1.0}}
@@ -134,12 +145,13 @@ def _h3_common(nodes: dict, unet: str, lora: str | None, steps: int, seed: int) 
 
 def video_i2v_workflow(prompt: str, first_frame: str | None, aspect: str, seconds: float,
                        quality: str = "draft", turbo: bool = True, last_frame: str | None = None,
-                       seed: int | None = None) -> dict:
+                       seed: int | None = None, cache: float | None = None) -> dict:
     s = get_settings()
     width, height = VIDEO_SIZES[quality].get(aspect, VIDEO_SIZES[quality]["16:9"])
     nodes: dict = {}
+    steps = 8 if turbo else 20
     _h3_common(nodes, s.video_i2v_unet, s.video_i2v_turbo_lora if turbo else None,
-               8 if turbo else 20, seed_or_random(seed))
+               steps, seed_or_random(seed), video_cache_threshold(quality, steps, cache))
     inputs = {"clip": ["2", 0], "vae": ["3", 0], "prompt": prompt, "width": width, "height": height,
               "length": h3_length(seconds)}
     if first_frame:
@@ -153,12 +165,14 @@ def video_i2v_workflow(prompt: str, first_frame: str | None, aspect: str, second
 
 
 def video_r2v_workflow(prompt: str, refs: list[str], aspect: str, seconds: float,
-                       quality: str = "draft", turbo: bool = False, seed: int | None = None) -> dict:
+                       quality: str = "draft", turbo: bool = False, seed: int | None = None,
+                       cache: float | None = None) -> dict:
     s = get_settings()
     width, height = VIDEO_SIZES[quality].get(aspect, VIDEO_SIZES[quality]["16:9"])
     nodes: dict = {}
+    steps = 4 if turbo else 20
     _h3_common(nodes, s.video_r2v_unet, s.video_r2v_turbo_lora if turbo else None,
-               4 if turbo else 20, seed_or_random(seed))
+               steps, seed_or_random(seed), video_cache_threshold(quality, steps, cache))
     inputs = {"clip": ["2", 0], "vae": ["3", 0], "audio_vae": ["4", 0], "prompt": prompt,
               "width": width, "height": height, "length": h3_length(seconds), "ref_image_size": "match"}
     for i, name in enumerate(refs[:MAX_VIDEO_REFS]):

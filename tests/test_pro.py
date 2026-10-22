@@ -240,7 +240,8 @@ def test_video_tools(client, project, monkeypatch, tmp_path):
     CALLS.clear()
     wait(client, client.post(f"/api/shots/{shot['id']}/video", json={}).json()["id"])
     wf = next(w for w in CALLS if any(n["class_type"] == "SaveVideo" for n in w.values()))
-    assert wf["8"]["inputs"]["lora_name"] == "pan.safetensors" and wf["20"]["inputs"]["model"] == ["8", 0]
+    assert wf["8"]["inputs"]["lora_name"] == "pan.safetensors"
+    assert wf["20"]["inputs"]["model"] == (["9", 0] if "9" in wf else ["8", 0])   # 草稿有推理缓存时缓存在最外层
     # 视频延长：尾帧续写 + 拼接，时长变长
     cur = client.get(f"/api/projects/{pid}").json()["shots"][0]
     before = asyncio_run(pipeline.media.probe(pipeline.absolute(cur["video"])))["duration"]
@@ -1059,3 +1060,29 @@ def test_snapshots_and_branches(client, project):
     b2 = client.post(f"/api/shots/{s1['id']}/branch", json={}).json()
     assert b2["keyframe"] == s1["keyframe"]
     client.post(f"/api/snapshots/{sp['id']}/restore")
+
+
+def test_video_cache_and_optional_nodes(client, monkeypatch):
+    import asyncio
+    from app import comfy, videox, workflows
+    from app.config import get_settings
+    s = get_settings()
+    monkeypatch.setattr(s, "video_cache", 0.2); monkeypatch.setattr(s, "video_cache_final", 0.0)
+    # 草稿 8 步：插入 EasyCache，采样器接到缓存节点
+    wf = workflows.video_i2v_workflow("p", "a.png", "16:9", 5, quality="draft", turbo=True, seed=1)
+    assert wf["9"]["class_type"] == "EasyCache" and wf["9"]["inputs"]["reuse_threshold"] == 0.2
+    assert wf["20"]["inputs"]["model"] == ["9", 0] and wf["9"]["inputs"]["model"] == ["7", 0]
+    # 成品默认关；显式传入可开；4 步 Turbo 参考生视频不加
+    assert "9" not in workflows.video_i2v_workflow("p", "a.png", "16:9", 5, quality="final", turbo=False, seed=1)
+    assert "9" in workflows.video_i2v_workflow("p", "a.png", "16:9", 5, quality="final", turbo=False, seed=1, cache=0.1)
+    assert "9" not in workflows.video_r2v_workflow("p", ["a.png"], "16:9", 5, quality="draft", turbo=True, seed=1)
+    # 运镜 LoRA 插在缓存之前，缓存保持在最外层
+    videox.chain_lora(wf, "push.safetensors")
+    assert wf["8"]["inputs"]["model"] == ["7", 0] and wf["9"]["inputs"]["model"] == ["8", 0]
+    assert wf["20"]["inputs"]["model"] == ["9", 0] and wf["23"]["inputs"]["model"] == ["8", 0]
+    # 旧版 ComfyUI 没有 EasyCache：自动去掉并把引用接回上游
+    monkeypatch.setattr(comfy, "_has_node", {"EasyCache": False})
+    out = asyncio.run(comfy.strip_missing_optional(json.loads(json.dumps(wf))))
+    assert "9" not in out and out["20"]["inputs"]["model"] == ["8", 0]
+    monkeypatch.setattr(comfy, "_has_node", {"EasyCache": True})
+    assert "9" in asyncio.run(comfy.strip_missing_optional(json.loads(json.dumps(wf))))

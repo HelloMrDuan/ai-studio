@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     qa_python: Path | None = None          # 默认复用 FaceFusion 的环境（有 onnxruntime + opencv）
     camera_loras: str = ""                 # 运镜 LoRA，JSON：{"推镜": "push_in.safetensors", ...}（放 ComfyUI/models/loras）
     motion_workflow: str = ""              # 动作参考工作流（ComfyUI API JSON，含 {{PROMPT}} {{IMAGE}} {{VIDEO}} 等占位符）
+    # 推理加速（P1-1）：视频 DiT 推理缓存（ComfyUI 内置 EasyCache，相邻步变化小时复用上一步结果）
+    video_cache: float = 0.2               # 草稿视频的缓存阈值，越大越快、细节损失越多；0 = 关闭
+    video_cache_final: float = 0.0         # 成品画质的缓存阈值，默认关闭（追求画质）
     qa_video_retry: int = 1                # 视频不合格时额外重抽次数（每次约 2~3 分钟）
     qa_keyframe_retry: int = 1
     qa_face_threshold: float = 0.25        # ArcFace 余弦相似度，低于它判为「不像」

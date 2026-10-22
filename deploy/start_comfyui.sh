@@ -16,9 +16,9 @@ if [ "${1:-}" = "--restart" ]; then
 fi
 
 if running; then log "ComfyUI 已在运行"; else
-  log "启动 ComfyUI → 127.0.0.1:8188（日志 $LOG_DIR/comfyui.log）"
+  log "启动 ComfyUI → 127.0.0.1:8188 $(comfy_args)（日志 $LOG_DIR/comfyui.log）"
   cd "$COMFY_DIR"
-  nohup "$COMFY_PY" main.py --listen 127.0.0.1 --port 8188 --disable-auto-launch \
+  nohup "$COMFY_PY" main.py --listen 127.0.0.1 --port 8188 --disable-auto-launch $(comfy_args) \
     --output-directory "$BASE/data/comfy-output" >> "$LOG_DIR/comfyui.log" 2>&1 < /dev/null &
   echo $! > "$RUN_DIR/comfyui.pid"
 fi

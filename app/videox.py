@@ -61,8 +61,17 @@ def chain_lora(wf: dict, lora: str, strength: float = 1.0, node_id: str = "8") -
     guider = wf.get("20")
     if not guider or not lora:
         return wf
+    src = guider["inputs"]["model"]
+    cache = wf.get(str(src[0])) if isinstance(src, list) else None
+    if cache and cache.get("class_type") == "EasyCache":     # 推理缓存要包在最外层：LoRA 插到缓存之前
+        wf[node_id] = {"class_type": "LoraLoaderModelOnly",
+                       "inputs": {"model": cache["inputs"]["model"], "lora_name": lora, "strength_model": strength}}
+        cache["inputs"]["model"] = [node_id, 0]
+        if "23" in wf:
+            wf["23"]["inputs"]["model"] = [node_id, 0]
+        return wf
     wf[node_id] = {"class_type": "LoraLoaderModelOnly",
-                   "inputs": {"model": guider["inputs"]["model"], "lora_name": lora, "strength_model": strength}}
+                   "inputs": {"model": src, "lora_name": lora, "strength_model": strength}}
     for nid in ("20", "23"):
         if nid in wf:
             wf[nid]["inputs"]["model"] = [node_id, 0]

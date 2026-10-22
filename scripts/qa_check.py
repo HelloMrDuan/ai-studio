@@ -187,6 +187,55 @@ def check_faces(frames: list[np.ndarray], refs: list[dict], models_dir: Path, th
     return {"scores": scores, "low": low, "frames_with_faces": frames_with_faces, "refs": list(ref_emb)}
 
 
+# ---------------- 运镜（光流） ----------------
+def camera_motion(path: Path) -> dict:
+    """逐帧 LK 光流 + 相似变换，累计整段的缩放和平移（相对画面尺寸）。实测比视觉大模型看抽帧网格可靠得多。"""
+    cap = cv2.VideoCapture(str(path))
+    ok, prev = cap.read()
+    if not ok:
+        return {}
+    h, w = prev.shape[:2]
+    pg = cv2.cvtColor(prev, cv2.COLOR_BGR2GRAY)
+    scale, tx, ty, i = 1.0, 0.0, 0.0, 0
+    while True:
+        ok, fr = cap.read()
+        if not ok:
+            break
+        i += 1
+        if i % 2:
+            continue
+        g = cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY)
+        p0 = cv2.goodFeaturesToTrack(pg, 400, 0.01, 8)
+        if p0 is not None and len(p0) > 20:
+            p1, st, _ = cv2.calcOpticalFlowPyrLK(pg, g, p0, None)
+            m, _ = cv2.estimateAffinePartial2D(p0[st == 1], p1[st == 1], method=cv2.RANSAC)
+            if m is not None:
+                scale *= float(np.hypot(m[0, 0], m[1, 0]))
+                tx += float(m[0, 2] + (m[0, 0] - 1) * w / 2 + m[0, 1] * h / 2) / w
+                ty += float(m[1, 2] + m[1, 0] * w / 2 + (m[1, 1] - 1) * h / 2) / h
+        pg = g
+    return {"zoom": round(scale - 1, 3), "tx": round(tx, 3), "ty": round(ty, 3)}
+
+
+def camera_mismatch(move: str, direction: str, m: dict) -> str:
+    """只核对能可靠判断的运镜；返回问题描述，没问题返回空串。"""
+    if not m:
+        return ""
+    z, tx, ty = m["zoom"], m["tx"], m["ty"]
+    got = f"检测到缩放 {z:+.0%}、水平 {tx:+.0%}、垂直 {ty:+.0%}"
+    if move == "固定" and max(abs(z), abs(tx), abs(ty)) > 0.12:
+        return f"要求固定机位，但镜头有明显运动（{got}）"
+    if move == "推镜" and z < 0.05:
+        return f"要求推镜，但画面没有变近（{got}）"
+    if move == "拉镜" and z > -0.05:
+        return f"要求拉镜，但画面没有变远（{got}）"
+    if move in ("摇镜", "移镜") and direction in ("", "左", "右"):
+        sign = 1 if direction == "左" else -1          # 镜头向右 → 画面内容向左（tx<0）
+        if tx * sign < 0.03 and abs(ty) < 0.08:
+            return f"要求{'向' + direction if direction else '向右'}{move[0]}，但画面没有相应的横向运动（{got}）"
+    return ""
+
+
 def main() -> None:
     job = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     target = Path(job["target"])
@@ -217,6 +266,15 @@ def main() -> None:
                 result["issues"].append({"type": "face", "detail": f"「{name}」的脸不像（相似度 {s:.2f}）"})
         except Exception as exc:  # noqa: BLE001
             result["warnings"].append(f"人脸检测不可用：{exc}")
+    if job.get("camera") and target.suffix.lower() in (".mp4", ".mov", ".webm", ".mkv"):
+        try:
+            m = camera_motion(target)
+            result["camera"] = m
+            why = camera_mismatch(job["camera"], job.get("camera_dir") or "", m)
+            if why:
+                result["warnings"].append("运镜可能不符：" + why)
+        except Exception as exc:  # noqa: BLE001
+            result["warnings"].append(f"运镜检测不可用：{exc}")
     result["ok"] = not result["issues"]
     print(json.dumps(result, ensure_ascii=False))
 

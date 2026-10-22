@@ -341,6 +341,23 @@ def keyframe_prompt(project: dict, shot: dict, chars: list[dict], loc: dict | No
 
 
 # ---------------- ⑤ 视频 ----------------
+LIGHT_WORDS = ("黄昏", "夕阳", "傍晚", "日落", "晚霞", "清晨", "黎明", "早晨", "日出", "正午", "白天", "午后", "阳光",
+               "夜", "月光", "雨", "雪", "雾", "阴天", "逆光", "霓虹", "烛光", "路灯", "灯光", "昏暗")
+
+
+def light_text(shot: dict, loc: dict | None) -> str:
+    """时段/天气/光线：先看镜头自己的描述，再看场景变体和场景设定。实测：视频提示词里不写时段，
+    首帧是黄昏的镜头第二帧就变成了白天。"""
+    sources = [(shot.get("scene") or "") + "，" + (shot.get("description") or "")]
+    if loc:
+        sources.append((loc.get("_variant") or "") + "，" + (loc.get("description") or ""))
+    for text in sources:
+        hits = [c.strip() for c in re.split(r"[，。；,;！!\n]", text) if c.strip() and any(w in c for w in LIGHT_WORDS)]
+        if hits:
+            return "，".join(hits[:3])[:80]
+    return ""
+
+
 def video_prompt(project: dict, shot: dict, chars_by_name: dict[str, dict], loc: dict | None,
                  ref_descs: list[str] | None = None) -> str:
     """ref_descs：参考生视频时 <Picture 2..> 的说明（<Picture 1> 固定是分镜图）。"""
@@ -350,6 +367,9 @@ def video_prompt(project: dict, shot: dict, chars_by_name: dict[str, dict], loc:
         parts = [f"{style_text(project)}。"]
         if loc:
             parts.append(f"场景：{loc['name']}。")
+        light = light_text(shot, loc)
+        if light:
+            parts.append(f"光线与时段：{light}。")
         from .videox import camera_text
         parts.append(f"镜头：{shot.get('shot_size')}，{shot.get('camera_angle')}。运镜：{camera_text(shot)}。")
         parts.append("画面：" + (shot.get("description") or ""))
@@ -377,6 +397,7 @@ def video_prompt(project: dict, shot: dict, chars_by_name: dict[str, dict], loc:
         if not dub and any((d.get("line") or "").strip() for d in shot.get("dialogue") or []):
             parts.insert(0, "画面中不出现任何字幕或台词文字，台词只出现在声音里。")
         parts.append("单一连续镜头，一镜到底，中间不切换画面、不转场。人物外貌、服装和场景与首帧保持一致，动作自然连贯。"
+                     "整段视频保持首帧的光线、时段、天气和色调不变（不要变成白天或夜晚）。"
                      "画面干净，没有字幕、文字和水印。")
         body = "\n".join(parts)
     if ref_descs:

@@ -701,7 +701,8 @@ async def task_video(ctx: TaskContext) -> dict:
             raise RuntimeError("ComfyUI 没有产出视频文件")
         await ctx.log("自动质检中…")
         result = await qa.check(videos[0], reference=reference, faces=_qa_faces(chars), check_text=True,
-                                style=project.get("style") or "", lines=lines)
+                                style=project.get("style") or "", lines=lines,
+                                camera=shot.get("camera_move") or "", camera_dir=shot.get("camera_dir") or "")
         result = vlm.merge_qa(result, await vlm.quick_check(shot, videos[0]))
         asset = add_asset(project["id"], "video", videos[0], "shot", shot["id"],
                           {"prompt": prompt, "mode": plan["mode"], "quality": quality, "seconds": seconds,

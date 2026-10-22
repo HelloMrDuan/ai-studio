@@ -95,9 +95,18 @@ def feather_paste(base_path: Path, patch_path: Path, inner: tuple, outer: tuple,
     return out
 
 
-def region_prompt(instruction: str, char_lines: list[str]) -> str:
-    lines = [f"在 <image1> 上直接编辑：<image1> 是一张电影画面的局部。输出必须与 <image1> 取景、构图、人物位置和大小、透视、光线、色调和画风完全一致，"
-             f"只做以下修改：{instruction}。其余所有内容保持原样。",
+def region_words(box: list[float]) -> str:
+    x, y, bw, bh = [min(1.0, max(0.0, float(v))) for v in box]
+    cx, cy = x + bw / 2, y + bh / 2
+    h = "左侧" if cx < 0.36 else "右侧" if cx > 0.64 else "中间"
+    v = "上部" if cy < 0.36 else "下部" if cy > 0.64 else "中部"
+    return (f"画面{v}{h}（横向 {x * 100:.0f}%–{min(1, x + bw) * 100:.0f}%，"
+            f"纵向 {y * 100:.0f}%–{min(1, y + bh) * 100:.0f}%）")
+
+
+def region_prompt(instruction: str, char_lines: list[str], where: str = "") -> str:
+    lines = [f"在 <image1> 上直接编辑：输出必须与 <image1> 取景、构图、人物数量位置和大小、透视、光线、色调和画风完全一致，"
+             f"只修改{where or '指定区域'}：{instruction}。其余所有内容保持原样，不要新增人物或人脸。",
              "修改后的内容要与周围画面自然衔接，边缘没有接缝。不要换背景，不要生成新的构图。"]
     return "\n".join(lines + char_lines + ["不要出现任何文字、字幕或水印。"])
 
@@ -120,7 +129,10 @@ async def task_keyframe_region(ctx: TaskContext) -> dict:
     src = absolute(shot["keyframe"])
     with Image.open(src) as im:
         w, h = im.size
-        inner, outer = crop_box(w, h, ctx.params.get("box") or [0.25, 0.25, 0.5, 0.5])
+        box = ctx.params.get("box") or [0.25, 0.25, 0.5, 0.5]
+        # 实测：只给局部裁切时模型看不出这是画面的一部分，会重画出白底人像、多出一张脸 → 整张画面作为上下文，只把框内贴回
+        inner, _ = crop_box(w, h, box)
+        outer = (0, 0, w, h)
         out_dir = project_dir(shot["project_id"], "keyframes")
         crop = out_dir / f"_crop_{ctx.task['id']}.png"
         im.convert("RGB").crop(outer).save(crop)
@@ -129,7 +141,7 @@ async def task_keyframe_region(ctx: TaskContext) -> dict:
     who = [c for c in plan["chars"] if c["id"] in (ctx.params.get("character_ids") or [])]
     who = [c for c in who if exists(c.get("face_image")) or exists(c.get("ref_image"))][:MAX_IMAGE_REFS - 1]
     char_paths = [absolute(c["face_image"] if exists(c.get("face_image")) else c["ref_image"]) for c in who]
-    prompt = region_prompt(instruction, face_ref_lines(who))
+    prompt = region_prompt(instruction, face_ref_lines(who), region_words(box))
     size = gen_size(outer[2] - outer[0], outer[3] - outer[1])
     await ctx.log(f"局部重绘：区域 {inner}，裁切 {outer}，按 {size[0]}×{size[1]} 生成")
     aspect = pipeline.shot_aspect(shot, plan["project"])

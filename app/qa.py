@@ -36,7 +36,8 @@ def clean_env() -> dict:
 
 
 async def check(target: Path, *, reference: Path | None = None, faces: list[tuple[str, Path]] = (),
-                check_text: bool = True, style: str = "cinematic", lines: list[str] = ()) -> dict | None:
+                check_text: bool = True, style: str = "cinematic", lines: list[str] = (),
+                camera: str = "", camera_dir: str = "") -> dict | None:
     """返回 {"ok": bool, "issues": [{"type","detail"}], ...}；质检不可用时返回 None。"""
     if not available():
         return None
@@ -44,7 +45,8 @@ async def check(target: Path, *, reference: Path | None = None, faces: list[tupl
     job = {"target": str(target), "reference": str(reference) if reference else "",
            "faces": [{"name": n, "path": str(p)} for n, p in faces], "check_text": check_text, "lines": [x for x in lines if x],
            "check_faces": style in REAL_STYLES and (models_dir() / "arcface_w600k_r50.onnx").is_file(),
-           "models_dir": str(models_dir()), "face_threshold": s.qa_face_threshold, "frames": 5}
+           "models_dir": str(models_dir()), "face_threshold": s.qa_face_threshold, "frames": 5,
+           "camera": camera, "camera_dir": camera_dir}
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as fh:
         json.dump(job, fh, ensure_ascii=False)
         job_path = fh.name

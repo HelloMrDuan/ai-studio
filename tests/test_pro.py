@@ -1172,3 +1172,39 @@ def test_region_context_and_margin(tmp_path):
     box_in, box_out = (100, 100, 200, 200), (0, 0, 300, 300)
     assert board.margin_diff(crop, same, box_in, box_out) < 5
     assert board.margin_diff(crop, other, box_in, box_out) > board.REGION_MAX_DIFF
+
+
+def test_region_words():
+    from app import board
+    assert board.region_words([0.1, 0.1, 0.2, 0.2]).startswith("画面上部左侧")
+    assert board.region_words([0.4, 0.7, 0.2, 0.2]).startswith("画面下部中间")
+    assert "不要新增人物" in board.region_prompt("加一只纸鹤", [], board.region_words([0.6, 0.4, 0.3, 0.2]))
+
+
+def test_camera_mismatch_rules():
+    import importlib.util
+    import pytest
+    pytest.importorskip("cv2")
+    spec = importlib.util.spec_from_file_location("qa_check", Path(__file__).resolve().parents[1] / "scripts" / "qa_check.py")
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    # 实测数值（RTX 4090D，8 种运镜）：推镜 zoom +0.52，拉镜 -0.39，右摇 tx -0.18，左移 tx +0.18，固定 ≈0
+    assert m.camera_mismatch("推镜", "", {"zoom": 0.517, "tx": -0.16, "ty": 0.01}) == ""
+    assert "没有变近" in m.camera_mismatch("推镜", "", {"zoom": -0.2, "tx": 0, "ty": 0})
+    assert m.camera_mismatch("拉镜", "", {"zoom": -0.386, "tx": 0, "ty": 0}) == ""
+    assert m.camera_mismatch("摇镜", "右", {"zoom": 0.056, "tx": -0.179, "ty": 0}) == ""
+    assert m.camera_mismatch("移镜", "左", {"zoom": -0.186, "tx": 0.18, "ty": 0.04}) == ""
+    assert "横向" in m.camera_mismatch("移镜", "左", {"zoom": 0, "tx": -0.2, "ty": 0})
+    assert m.camera_mismatch("固定", "", {"zoom": 0.001, "tx": -0.004, "ty": 0.001}) == ""
+    assert "明显运动" in m.camera_mismatch("固定", "", {"zoom": 0.3, "tx": 0, "ty": 0})
+    assert m.camera_mismatch("升降", "上", {"zoom": 0.3, "tx": 0, "ty": -0.2}) == ""     # 不可靠的不判
+
+
+def test_video_prompt_keeps_light():
+    """实测：首帧黄昏的镜头，提示词没写时段 → 第二帧变成白天。"""
+    from app import prompts
+    loc = {"name": "学校天台", "description": "老旧的教学楼顶层，地面为粗糙的水泥地。背景是黄昏时分的城市天际线，光线为强烈的逆光"}
+    shot = {"description": "苏晴站在天台上", "shot_size": "中景", "camera_angle": "平视", "camera_move": "固定"}
+    p = prompts.video_prompt({"style": "cinematic"}, shot, {}, loc)
+    assert "光线与时段：背景是黄昏时分的城市天际线，光线为强烈的逆光" in p and "保持首帧的光线、时段" in p
+    assert prompts.light_text({"description": "深夜，雨中的站台"}, loc).startswith("深夜")
+    assert prompts.light_text({"description": "两人对视"}, {"name": "教室", "description": "宽敞的教室"}) == ""

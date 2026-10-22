@@ -511,13 +511,33 @@ def chain_blocked(prev: dict) -> str:
     return ""
 
 
-async def chain_first_frame(ctx: TaskContext, shot: dict, src: dict) -> tuple[Path, list[str]]:
-    """准备连续镜头的首帧；抽出的尾帧人脸不像时自动用 FaceFusion 修脸（需要已安装，且只修一次）。"""
+async def chain_layout_check(ctx: TaskContext, shot: dict, frame: Path, prev: dict) -> str:
+    """上一镜尾帧和本镜分镜图的人物布局（人数、大小、位置、是谁）差太多 → 不接（实测硬接会沿用上一镜构图，
+    本该拍两人/手部的镜头变成上一镜的脸部特写，或中途突变）。返回原因；能接或无法判断返回 ""。"""
+    if not ctx.params.get("chain_check", True) or not exists(shot.get("keyframe")):
+        return ""
+    style = need("projects", shot["project_id"], "项目").get("style") or ""
+    why = qa.layout_mismatch(await qa.face_layout(frame, absolute(shot["keyframe"]), style))
+    if not why:
+        return ""
+    return (f"上一镜（#{prev['sort'] + 1}）结尾画面和本镜分镜图{why}，接尾帧会沿用上一镜构图，"
+            "本镜改用自己的分镜图做首帧（如确需接续，可调整分镜图后重生成）")
+
+
+async def chain_first_frame(ctx: TaskContext, shot: dict, src: dict) -> tuple[Path | None, list[str]]:
+    """准备连续镜头的首帧；抽出的尾帧人脸不像时自动用 FaceFusion 修脸（需要已安装，且只修一次）。
+    与本镜分镜图构图对不上时返回 (None, [原因])，调用方改用本镜分镜图。"""
     notes: list[str] = []
     if src["kind"] == "end_frame":
-        return absolute(src["path"]), [f"首帧取自上一镜（#{src['prev']['sort'] + 1}）的尾帧图"]
+        frame = absolute(src["path"])
+        why = await chain_layout_check(ctx, shot, frame, src["prev"])
+        return (None, [why]) if why else (frame, [f"首帧取自上一镜（#{src['prev']['sort'] + 1}）的尾帧图"])
     out_dir = project_dir(shot["project_id"], "keyframes")
     frame = await media.last_frame(absolute(src["path"]), out_dir / f"chain_{shot['id']}_{time.strftime('%Y%m%d_%H%M%S')}.png")
+    why = await chain_layout_check(ctx, shot, frame, src["prev"])
+    if why:
+        await ctx.log(why)
+        return None, [why]
     notes.append(f"首帧取自上一镜（#{src['prev']['sort'] + 1}）视频的最后一帧")
     _, _, chars, _ = _shot_context(shot)
     faces = _qa_faces(chars)
@@ -661,11 +681,14 @@ async def task_video(ctx: TaskContext) -> dict:
     src = chain_source(shot) if ctx.params.get("chain", True) else None
     if src:                                   # 连续镜头：首帧 = 上一镜最后一帧（强制图生视频）
         frame, chain_notes = await chain_first_frame(ctx, shot, src)
+        if frame is None:                     # 构图对不上：退回本镜分镜图
+            src = None
+    if src:
         plan = {**plan, "mode": "i2v", "refs": [frame]}
         reference = frame
         if not (ctx.params.get("prompt") or "").strip():
             prompt = video_plan({**shot, "_chain": True, "_end_frame": exists(shot.get("end_frame"))}, "i2v")["prompt"]
-    elif shot.get("continuous"):
+    elif shot.get("continuous") and not chain_notes:
         prev = prev_shot(shot) or {}
         blocked = (chain_mismatch(prev, shot) if prev else "") or chain_blocked(prev)
         chain_notes.append(blocked or "上一镜还没有视频，暂用本镜分镜图做首帧（上一镜出视频后建议重生成本镜）")

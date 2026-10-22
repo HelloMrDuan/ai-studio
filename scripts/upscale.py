@@ -83,8 +83,12 @@ def main():
             x = torch.from_numpy(np.stack(frames)).to(dev).permute(0, 3, 1, 2)
             x = (x.half() if half else x.float()) / 255.0
             y = run(x)
-            if y.shape[2:] != (a.height, a.width):
-                y = F.interpolate(y.float(), size=(a.height, a.width), mode="bicubic", antialias=True, align_corners=False)
+            if y.shape[2:] != (a.height, a.width):      # 等比缩放到能盖满目标尺寸，再居中裁掉多出的边（不拉伸）
+                k = max(a.height / y.shape[2], a.width / y.shape[3])
+                sh, sw = max(a.height, round(y.shape[2] * k)), max(a.width, round(y.shape[3] * k))
+                y = F.interpolate(y.float(), size=(sh, sw), mode="bicubic", antialias=True, align_corners=False)
+                oy, ox = (sh - a.height) // 2, (sw - a.width) // 2
+                y = y[:, :, oy:oy + a.height, ox:ox + a.width]
             y = (y.clamp(0, 1) * 255).round().to(torch.uint8).permute(0, 2, 3, 1).cpu().numpy()
             enc.stdin.write(y.tobytes())
             done += len(frames)

@@ -69,8 +69,19 @@ async def video_info(path: Path) -> dict:
             "fps": round(float(num) / float(den or 1), 3), "duration": float((d.get("format") or {}).get("duration") or 0)}
 
 
+STANDARD_RATIOS = {"16:9": 16 / 9, "9:16": 9 / 16, "1:1": 1.0, "4:3": 4 / 3, "3:4": 3 / 4, "2:3": 2 / 3, "3:2": 3 / 2, "21:9": 21 / 9}
+
+
 def target_size(w: int, h: int, short: int) -> tuple[int, int]:
-    """按源画幅把短边放大到 short，宽高取偶数。"""
+    """按源画幅把短边放大到 short，宽高取偶数。源画幅接近标准画幅（草稿 480×864 ≈ 9:16）时对齐到标准尺寸
+    （实测不对齐会得到 1080×1944，合成时还要再缩放一次）；放大后多出的边居中裁掉，不拉伸。"""
+    r = w / max(1, h)
+    name, ratio = min(STANDARD_RATIOS.items(), key=lambda kv: abs(kv[1] - r) / kv[1])
+    if abs(ratio - r) / ratio < 0.04:
+        fixed = (EXPORT_SIZES.get(f"{short}p") or {}).get(name)
+        if fixed:
+            return fixed
+        return (int(round(short * ratio / 2)) * 2, short) if ratio >= 1 else (short, int(round(short / ratio / 2)) * 2)
     k = short / max(1, min(w, h))
     return int(round(w * k / 2)) * 2, int(round(h * k / 2)) * 2
 
@@ -154,7 +165,7 @@ async def task_upscale(ctx: TaskContext) -> dict:
             if not v:
                 raise RuntimeError("SeedVR2 工作流没有产出视频")
             await media._run("ffmpeg", "-y", "-i", str(v), "-i", str(src), "-map", "0:v", "-map", "1:a?",
-                             "-vf", f"scale={w}:{h}:flags=lanczos", "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p",
+                             "-vf", f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos,crop={w}:{h}", "-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p",
                              "-c:a", "copy", str(out))
             shutil.rmtree(v.parent, ignore_errors=True)
         else:

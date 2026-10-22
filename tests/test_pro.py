@@ -488,7 +488,10 @@ def test_enhance(client, project, monkeypatch):
     shot = client.get(f"/api/projects/{pid}").json()["shots"][0]
     if not shot["video"]:
         wait(client, client.post(f"/api/shots/{shot['id']}/video", json={}).json()["id"])
-    assert enhance.target_size(768, 1344, 1080) == (1080, 1890) and enhance.target_size(320, 180, 1080) == (1920, 1080)
+    assert enhance.target_size(768, 1344, 1080) == (1080, 1920) and enhance.target_size(320, 180, 1080) == (1920, 1080)
+    # 实测：草稿 480×864 超分成 1080×1944（非标准 9:16）→ 对齐标准尺寸；明显不标准的画幅保持比例
+    assert enhance.target_size(480, 864, 1080) == (1080, 1920) and enhance.target_size(480, 864, 2160) == (2160, 3840)
+    assert enhance.target_size(1000, 500, 1080) == (2160, 1080)
     # 补帧：没装 RIFE 时用 ffmpeg 运动补偿插帧
     monkeypatch.setattr(enhance, "rife_available", lambda: False)
     r = wait(client, client.post(f"/api/shots/{shot['id']}/interpolate", json={"fps": 30}).json()["id"])
@@ -1143,6 +1146,49 @@ def test_chain_mismatch():
     assert pipeline.chain_mismatch(p, {"shot_size": "中景", "character_ids": ["a", "b"]})     # 换人又换景别
     assert not pipeline.chain_mismatch(p, {"shot_size": "中景", "character_ids": ["a"]})
     assert not pipeline.chain_mismatch(p, {"shot_size": "近景", "character_ids": ["b"]})
+
+
+def test_chain_layout(client, project, monkeypatch):
+    """实测：#3「两人交握的手部」接了上一镜的脸部特写尾帧 → 整段沿用上一镜构图。人物布局对不上时改用本镜分镜图。"""
+    from app import pipeline, qa
+    from test_flow import wait as wait_task
+    lm = qa.layout_mismatch
+    # 4 个实测接续失败的镜头（上一镜尾帧 a vs 本镜分镜图 b）
+    assert "人数" in lm({"a": [{"cx": .66, "s": .464}], "b": [{"cx": .37, "s": .224}, {"cx": .75, "s": .202}]})
+    assert "人数" in lm({"a": [{"cx": .5, "s": .373}], "b": [{"cx": .4, "s": .062}, {"cx": .55, "s": .06}]})
+    assert "不是同一个人" in lm({"a": [{"cx": .48, "s": .196}], "b": [{"cx": .48, "s": .158}], "sims": [[0.05]]})
+    assert "景别" in lm({"a": [{"cx": .42, "s": .366}], "b": [{"cx": .45, "s": .157}]})
+    assert "位置" in lm({"a": [{"cx": .2, "s": .3}], "b": [{"cx": .7, "s": .3}]})
+    # 同一构图（首尾帧基本不变）、无脸空镜、质检不可用 → 照常接
+    assert not lm({"a": [{"cx": .54, "s": .119}, {"cx": .42, "s": .114}], "b": [{"cx": .54, "s": .123}, {"cx": .43, "s": .118}],
+                   "sims": [[0.7, 0.1], [0.1, 0.6]]})
+    assert not lm({"a": [], "b": []}) and not lm(None)
+
+    layout = {"a": [{"cx": .5, "s": .46}], "b": [{"cx": .3, "s": .22}, {"cx": .7, "s": .2}]}
+
+    async def face_layout(a, b, style="cinematic"):
+        return layout
+
+    async def check(target, **kw):
+        return {"ok": True, "issues": []}
+    monkeypatch.setattr(qa, "available", lambda: True)
+    monkeypatch.setattr(qa, "check", check)
+    monkeypatch.setattr(qa, "face_layout", face_layout)
+    a, b = client.get(f"/api/projects/{project}").json()["shots"][:2]
+    client.patch(f"/api/shots/{b['id']}", json={"continuous": 1, "shot_size": a["shot_size"], "character_ids": a["character_ids"]})
+    for s in (a, b):
+        wait_task(client, client.post(f"/api/shots/{s['id']}/keyframe", json={"count": 1}).json()["id"])
+    wait_task(client, client.post(f"/api/shots/{a['id']}/video", json={"quality": "draft"}).json()["id"])
+
+    def b_video():
+        wait_task(client, client.post(f"/api/shots/{b['id']}/video", json={"quality": "draft"}).json()["id"])
+        snap = client.get(f"/api/projects/{project}").json()
+        return [x for x in snap["assets"][b["id"]] if x["kind"] == "video"][0]["meta"]
+    m = b_video()
+    assert not m["chain_from"] and any("人数/构图不同" in n for n in m["notes"])
+    layout = {"a": [{"cx": .5, "s": .3}], "b": [{"cx": .52, "s": .28}]}
+    m = b_video()
+    assert m["chain_from"] and any("最后一帧" in n for n in m["notes"])
 
 
 def test_art_clause_subject():

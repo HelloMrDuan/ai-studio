@@ -543,6 +543,7 @@ def test_continuity(client, monkeypatch):
     from app import pipeline, tasks
     board = json.loads(json.dumps(BOARD))
     board["shots"][1]["continuous"] = True
+    board["shots"][1]["shot_size"] = "近景"                        # 景别跨度大的不接尾帧（chain_mismatch），这里保持同景别
     board["shots"][0]["continuous"] = True                       # 第一镜即使写 true 也不算连续
     monkeypatch.setitem(BOARD, "shots", board["shots"])
     pid = client.post("/api/projects", json={"title": "衔接", "source_text": "雨夜车站重逢"}).json()["id"]

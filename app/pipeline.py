@@ -467,6 +467,8 @@ def chain_source(shot: dict) -> dict | None:
     prev = prev_shot(shot)
     if not prev:
         return None
+    if chain_mismatch(prev, shot):
+        return None
     if exists(prev.get("video")):
         if chain_blocked(prev):
             return None
@@ -482,6 +484,19 @@ def shot_lines(shot: dict) -> list[str]:
     if (shot.get("narration") or "").strip():
         out.append(shot["narration"].strip())
     return [x for x in out if x.strip()]
+
+
+def chain_mismatch(prev: dict, shot: dict) -> str:
+    """实测：景别跳两级以上、或换了人物又换了景别时硬接上一镜尾帧，视频模型会在镜头中途「变」成新构图（像切镜、人物走样）。
+    这类镜头即使标了连续，也改用本镜分镜图做首帧。"""
+    order = prompts.SHOT_SIZES
+    a, b = prev.get("shot_size"), shot.get("shot_size")
+    gap = abs(order.index(a) - order.index(b)) if a in order and b in order else 0
+    ca, cb = set(prev.get("character_ids") or []), set(shot.get("character_ids") or [])
+    if gap >= 2 or (gap >= 1 and ca != cb):
+        return (f"与上一镜（#{prev['sort'] + 1}）景别{'跨度大' if gap >= 2 else '和人物都变了'}（{a} → {b}），"
+                "接尾帧会让画面中途变构图，本镜改用自己的分镜图做首帧")
+    return ""
 
 
 def chain_blocked(prev: dict) -> str:
@@ -650,7 +665,8 @@ async def task_video(ctx: TaskContext) -> dict:
         if not (ctx.params.get("prompt") or "").strip():
             prompt = video_plan({**shot, "_chain": True, "_end_frame": exists(shot.get("end_frame"))}, "i2v")["prompt"]
     elif shot.get("continuous"):
-        blocked = chain_blocked(prev_shot(shot) or {})
+        prev = prev_shot(shot) or {}
+        blocked = (chain_mismatch(prev, shot) if prev else "") or chain_blocked(prev)
         chain_notes.append(blocked or "上一镜还没有视频，暂用本镜分镜图做首帧（上一镜出视频后建议重生成本镜）")
     end_frame = absolute(shot["end_frame"]) if exists(shot.get("end_frame")) and plan["mode"] == "i2v" else None
     if end_frame and not src and not (ctx.params.get("prompt") or "").strip():

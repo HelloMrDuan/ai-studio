@@ -1134,3 +1134,12 @@ def test_qa_text_rules(monkeypatch):
     assert r["flagged"] and r["subtitle"] == ["快走"]
     seq = iter([[("POLICE", 0.9, 0.5, 0.5)]] * 3)
     assert not m.check_text([0, 0, 0], None, ["快走"])["flagged"]
+
+
+def test_chain_mismatch():
+    from app import pipeline
+    p = {"sort": 0, "shot_size": "近景", "character_ids": ["a"]}
+    assert pipeline.chain_mismatch(p, {"shot_size": "全景", "character_ids": ["a"]})          # 跳两级
+    assert pipeline.chain_mismatch(p, {"shot_size": "中景", "character_ids": ["a", "b"]})     # 换人又换景别
+    assert not pipeline.chain_mismatch(p, {"shot_size": "中景", "character_ids": ["a"]})
+    assert not pipeline.chain_mismatch(p, {"shot_size": "近景", "character_ids": ["b"]})

@@ -355,6 +355,20 @@ def light_changes(shot: dict) -> bool:
     return any(w in text for w in LIGHT_CHANGE_WORDS)
 
 
+BIG_MOTION_WORDS = ("走", "跑", "离开", "转身", "坐下", "站起", "起身", "跳", "进门", "出门", "冲", "追", "倒下", "摔",
+                    "推开", "拿起", "放下", "递", "扔", "挥", "回头", "转头", "抬头", "低头", "躺", "蹲", "爬", "开车",
+                    "驶", "飞", "穿过", "靠近", "远去", "拥抱", "打", "踢")
+
+
+def light_anchor(shot: dict) -> bool:
+    """固定机位 + 小动作（对话、神情、发丝微动）：首帧同时作尾帧，从源头锁住光线。
+    实测：黄昏首帧的固定镜头亮度漂移 96 → 0.8，人物仍有自然的细微动作；有运镜/大动作时不能这么做（动作会被拉回原位）。"""
+    if (shot.get("camera_move") or "固定") != "固定" or light_changes(shot):
+        return False
+    text = "，".join(str(shot.get(k) or "") for k in ("description", "action", "video_prompt", "performance"))
+    return not any(w in text for w in BIG_MOTION_WORDS)
+
+
 def light_text(shot: dict, loc: dict | None) -> str:
     """时段/天气/光线：先看镜头自己的描述，再看场景变体和场景设定。实测：视频提示词里不写时段，
     首帧是黄昏的镜头第二帧就变成了白天。"""
@@ -402,7 +416,9 @@ def video_prompt(project: dict, shot: dict, chars_by_name: dict[str, dict], loc:
             parts.append("音频只有环境音和音效，没有任何人声、对白、旁白和背景音乐。")
         if shot.get("_chain"):
             parts.append("本镜头紧接上一个镜头：开头画面就是上一镜头的最后一帧，人物位置、姿态和动作从那里自然延续，不要跳变。")
-        if shot.get("_end_frame"):
+        if shot.get("_anchor"):
+            parts.append("人物基本保持首帧的位置和姿态，只有自然的细微动作，结尾回到与首帧相近的画面。")
+        elif shot.get("_end_frame"):
             parts.append("镜头结束时画面到达指定的尾帧状态。")
         if not dub and any((d.get("line") or "").strip() for d in shot.get("dialogue") or []):
             parts.insert(0, "画面中不出现任何字幕或台词文字，台词只出现在声音里。")

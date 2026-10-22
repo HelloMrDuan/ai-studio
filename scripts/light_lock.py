@@ -62,7 +62,7 @@ def main():
                            "-shortest", job["out"]], stdin=subprocess.PIPE)
     after = []
     luts = None
-    if job.get("mode", "hist") == "hist":           # 逐通道直方图匹配：能把变蓝的天空拉回暖色，比只拉均值更像首帧
+    if job.get("mode", "stats") == "hist":          # 逐通道直方图匹配：能找回暖色，但实测天空出现色带/光晕 → 默认不用
         r = small_lab(frames[0])
         raw = np.stack([np.stack([cdf_lut(small_lab(f)[..., c], r[..., c]) for c in range(3)]) for f in frames])
         win = 9

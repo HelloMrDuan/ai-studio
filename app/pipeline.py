@@ -672,6 +672,13 @@ async def task_video(ctx: TaskContext) -> dict:
     end_frame = absolute(shot["end_frame"]) if exists(shot.get("end_frame")) and plan["mode"] == "i2v" else None
     if end_frame and not src and not (ctx.params.get("prompt") or "").strip():
         prompt = video_plan({**shot, "_end_frame": True}, "i2v")["prompt"]
+    anchored = False
+    if (not end_frame and not src and reference and plan["mode"] == "i2v" and get_settings().video_light_lock
+            and ctx.params.get("anchor", True) and prompts.light_anchor(shot)):
+        end_frame, anchored = reference, True      # 实测：固定机位黄昏镜头 5 秒变白天 → 首帧兼作尾帧锁住光线
+        if not (ctx.params.get("prompt") or "").strip():
+            prompt = video_plan({**shot, "_anchor": True}, "i2v")["prompt"]
+        chain_notes.append("固定机位：首帧同时作为尾帧，锁定光线和时段")
     attempts = 1 + (max(0, get_settings().qa_video_retry) if qa.available() or vlm.auto_enabled() else 0)
     extra_for_subtitle = 1 if attempts > 1 else 0       # 只是台词被烧成字幕时，多给一次机会（换种子通常就没了）
     lines = shot_lines(shot)
@@ -700,7 +707,7 @@ async def task_video(ctx: TaskContext) -> dict:
         if not videos:
             raise RuntimeError("ComfyUI 没有产出视频文件")
         light: dict = {}
-        if not prompts.light_changes(shot):          # 实测：首帧黄昏，5 秒内逐渐变成白天 → 拉回首帧光线
+        if not anchored and not prompts.light_changes(shot):          # 实测：首帧黄昏，5 秒内逐渐变成白天 → 拉回首帧光线
             fixed_strength = 1.0 if (shot.get("camera_move") or "固定") == "固定" else 0.8
             videos[0], light = await qa.light_lock(videos[0], fixed_strength)
             if light.get("applied"):
@@ -713,7 +720,7 @@ async def task_video(ctx: TaskContext) -> dict:
         asset = add_asset(project["id"], "video", videos[0], "shot", shot["id"],
                           {"prompt": prompt, "mode": plan["mode"], "quality": quality, "seconds": seconds,
                            "turbo": turbo, "qa": result, "attempt": attempt + 1,
-                           "chain_from": src["path"] if src else "", "light_lock": light, "end_frame": rel(end_frame) if end_frame else "",
+                           "chain_from": src["path"] if src else "", "light_lock": light, "end_frame": rel(end_frame) if end_frame and not anchored else "", "anchored": anchored,
                            "notes": chain_notes})
         results.append((asset, result))
         if not result or result.get("ok"):

@@ -1243,3 +1243,15 @@ def test_light_changes_and_lock_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(qa.get_settings(), "qa_python", tmp_path / "missing-python")
     out, info = asyncio.run(qa.light_lock(v))          # 环境不可用 → 原样返回
     assert out == v and info == {} and v.exists()
+
+
+def test_light_anchor_rules():
+    """固定机位小动作 → 首帧兼作尾帧锁光线；有运镜、大动作、要求光线变化时不锚定。"""
+    from app import prompts
+    assert prompts.light_anchor({"camera_move": "固定", "description": "黄昏天台，苏晴望着远方轻声说话"})
+    assert prompts.light_anchor({"description": "两人对坐聊天"})
+    assert not prompts.light_anchor({"camera_move": "推镜", "description": "苏晴站着"})
+    assert not prompts.light_anchor({"camera_move": "固定", "description": "苏晴转身离开天台"})
+    assert not prompts.light_anchor({"camera_move": "固定", "description": "房间的灯突然亮起"})
+    p = prompts.video_prompt({"style": "cinematic"}, {"description": "苏晴站着", "_anchor": True}, {}, None)
+    assert "回到与首帧相近" in p and "指定的尾帧" not in p

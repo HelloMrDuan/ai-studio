@@ -75,7 +75,7 @@ def validate_script(data: Any) -> dict:
 
 # ---------------- ② 角色与场景 ----------------
 EXTRACT_SYSTEM = """你是影视美术指导。从剧本中提取所有出镜角色和场景，写成可以直接用于 AI 绘图的设定。
-角色 appearance 必须具体可画：性别年龄感、脸型五官、发型发色、体型、服装（款式+颜色+材质）、标志性配饰。不同角色之间外貌差异要明显。
+角色 appearance 必须具体可画：开头先写人种/国籍（中文故事没有特别说明时写「中国人」），再写性别年龄感、脸型五官、发型发色、体型、服装（款式+颜色+材质）、标志性配饰。不同角色之间外貌差异要明显。
 voice 写声音特征（如：清亮的少女声 / 低沉沙哑的中年男声），用于视频配音。
 人设卡：personality 性格（3~5 个关键词+一句说明），motivation 核心动机/想要什么，relations 与其他角色的关系，
 speech 说话方式（语速、用词习惯、语气），catchphrase 口头禅（没有就留空）。
@@ -121,16 +121,36 @@ def validate_extract(data: Any) -> dict:
     return {"characters": chars, "locations": locs, "props": props[:6]}
 
 
+FOREIGN_WORDS = ("外国", "欧美", "西方", "白人", "黑人", "混血", "金发", "碧眼", "蓝眼", "外籍", "洋人", "高加索", "拉丁", "非洲", "印度",
+                 "英国", "美国", "法国", "德国", "俄罗斯", "意大利", "西班牙", "日本", "韩国", "泰国", "越南", "阿拉伯", "欧洲", "中东")
+
+
+def ethnicity(char: dict) -> str:
+    """出图模型对没写人种的「写实电影」人物，常画成欧美面孔（实测：「陈默，28-32 岁，肩宽，工装马甲」出来是外国人）。
+    中文名字、外貌里没提别的人种/国籍时，明确写「中国人，东亚面孔」。"""
+    text = "，".join(str(char.get(k) or "") for k in ("name", "appearance", "role", "personality"))
+    if any(w in text for w in FOREIGN_WORDS) or any(w in text for w in ("中国人", "东亚", "亚洲")):
+        return ""
+    name = str(char.get("name") or "")
+    if "·" in name or "•" in name or not re.search(r"[\u4e00-\u9fff]", name):   # 约翰·史密斯 / 英文名：不强加
+        return ""
+    return "中国人，东亚面孔"
+
+
+def _who(char: dict) -> str:
+    return "，".join(x for x in (str(char.get("name") or ""), ethnicity(char), str(char.get("gender") or ""), str(char.get("age") or "")) if x)
+
+
 def portrait_prompt(project: dict, char: dict) -> str:
     return (f"角色设定参考图，单人，正面全身站立，表情自然，双手自然下垂，纯浅灰色干净背景，柔和均匀的影棚光。"
-            f"角色：{char.get('name')}，{char.get('gender')}，{char.get('age')}。外貌与服装：{char.get('appearance')}。"
+            f"角色：{_who(char)}。外貌与服装：{char.get('appearance')}。"
             f"画风：{style_text(project)}。画面中只有这一个人，不要文字和水印。")
 
 
 def face_prompt(project: dict, char: dict, has_ref: bool) -> str:
     """脸部特写：以定妆照为 <image1> 派生，保证与全身图是同一个人；近景/特写镜头靠它锁五官。"""
     who = (f"以 <image1> 中的角色为准，生成同一个人的脸部特写。脸型五官、肤色、发型发色、妆容和配饰必须与 <image1> 完全一致。"
-           if has_ref else f"角色：{char.get('name')}，{char.get('gender')}，{char.get('age')}。外貌：{char.get('appearance')}。")
+           if has_ref else f"角色：{_who(char)}。外貌：{char.get('appearance')}。")
     return (f"角色脸部特写参考图，头肩构图，正脸平视镜头，双眼看向镜头，表情自然放松，五官清晰锐利，不遮挡面部。{who}"
             f"纯浅灰色干净背景，柔和均匀的影棚光。画风：{style_text(project)}。画面中只有这一个人，不要文字和水印。")
 

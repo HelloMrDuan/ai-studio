@@ -168,7 +168,7 @@ async def task_outfit_image(ctx: TaskContext) -> dict:
     project = need("projects", char["project_id"], "项目")
     src = char.get("face_image") if exists(char.get("face_image")) else char.get("ref_image")
     refs = [absolute(src)] if exists(src) else []
-    who = f"<image1> 中的同一个人（脸型五官、发型发色保持一致）" if refs else f"角色{char['name']}，{char.get('gender')}，{char.get('age')}"
+    who = f"<image1> 中的同一个人（脸型五官、发型发色保持一致）" if refs else f"角色{prompts._who(char)}"
     prompt = (f"角色造型定妆照，单人，正面全身站立，{who}，换上新的造型：{outfit.get('appearance') or outfit['name']}。"
               f"纯浅灰色干净背景，柔和均匀的影棚光。画风：{prompts.style_text(project)}。画面中只有这一个人，不要文字和水印。")
     files = await _generate_images(ctx, prompt, "3:4", refs, ctx.params.get("count", 1), project_dir(project["id"], "characters"))

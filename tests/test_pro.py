@@ -1397,3 +1397,13 @@ def test_gpu_handoff_overlaps_cpu_tail(client, monkeypatch):
     td = tasks.queue.submit("t_b", owner_id="od")
     wait(client, td["id"]); t = wait(client, tc["id"])
     assert t["params"].get("_requeued") == 1 and log.count("a-gpu") == 2
+
+
+def test_ethnicity_for_chinese_names():
+    # 实测：中文角色没写人种，写实画风出成了欧美面孔
+    c = {"name": "陈默", "gender": "男", "age": "28-32岁", "appearance": "肩宽，工装马甲"}
+    assert "中国人" in prompts.portrait_prompt({"style": "cinematic"}, c)
+    assert "中国人" in prompts.face_prompt({"style": "cinematic"}, c, False)
+    assert prompts.ethnicity({"name": "约翰·史密斯"}) == ""
+    assert prompts.ethnicity({"name": "林夏", "appearance": "金发碧眼的混血女孩"}) == ""
+    assert prompts.ethnicity({"name": "Alice"}) == ""

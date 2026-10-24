@@ -16,8 +16,10 @@ log = logging.getLogger("studio.autopilot")
 
 STAGES = [
     ("beats", "节拍表"), ("script", "剧本"), ("review", "剧本审稿"),
-    ("extract", "角色与场景"), ("refs", "定妆照/场景/道具图"), ("voices", "角色音色"),
-    ("storyboard", "分镜表"), ("keyframes", "分镜图"), ("animatic", "动态分镜预览"), ("videos", "镜头视频"),
+    # 顺序按显存里的模型排：文字模型（提取 → 分镜表）→ 出图模型（定妆照 → 分镜图）→ 视频模型（音色样本 → 镜头视频）。
+    # 实测旧顺序（定妆照 → 音色 → 分镜表 → 分镜图）要多换 2 次大模型，每次重载出图模型约 50 秒、视频模型约 70 秒。
+    ("extract", "角色与场景"), ("storyboard", "分镜表"), ("refs", "定妆照/场景/道具图"),
+    ("keyframes", "分镜图"), ("voices", "角色音色"), ("animatic", "动态分镜预览"), ("videos", "镜头视频"),
     ("dub", "配音"), ("assemble", "合成成片"),
 ]
 LABEL = dict(STAGES)

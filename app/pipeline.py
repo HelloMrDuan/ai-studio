@@ -407,6 +407,7 @@ async def task_keyframe(ctx: TaskContext) -> dict:
     out_dir = project_dir(shot["project_id"], "keyframes")
     aspect = shot_aspect(shot, plan["project"])
     files = await _generate_images(ctx, prompt, aspect, plan["refs"], ctx.params.get("count", 1), out_dir)
+    ctx.gpu_done()                     # 质检在 CPU 上做，显卡先给下一个任务
 
     async def check(f: Path) -> dict | None:
         r = await qa.check(f, faces=_qa_faces(plan["chars"]), check_text=not _expects_text(shot),
@@ -726,6 +727,7 @@ async def task_video(ctx: TaskContext) -> dict:
             span = 94 // attempts
             files = await comfy.run(wf, out_dir, progress_slice(ctx, 3 + attempt * span, 3 + (attempt + 1) * span,
                                                                  "生成视频" + tag))
+        ctx.gpu_done()                     # 光线锁定 + 质检在 CPU 上做（约 20 秒），显卡先给下一个任务
         videos = [f for f in files if f.suffix.lower() in VIDEO_SUFFIX]
         if not videos:
             raise RuntimeError("ComfyUI 没有产出视频文件")

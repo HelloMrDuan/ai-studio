@@ -1335,3 +1335,39 @@ def test_empty_shot_has_no_people():
     girl = {"description": "樱花树下的少女全身像", "shot_size": "全景"}
     assert prompts.has_people(girl)
     assert "不出现任何人物" not in prompts.video_prompt({"style": "cinematic"}, girl, {}, None)
+
+
+def test_gpu_handoff_overlaps_cpu_tail(client, monkeypatch):
+    """提速：任务调用 ctx.gpu_done() 后，下一个任务不必等它的 CPU 收尾（质检）做完；收尾出错重新排队。"""
+    import asyncio
+    from app import tasks
+    log, gate = [], {"b_started": None}
+
+    async def a(ctx):
+        log.append("a-gpu")
+        ctx.gpu_done()
+        for _ in range(100):                      # 收尾：等 B 开始（最多 5 秒）
+            if "b" in log:
+                break
+            await asyncio.sleep(0.05)
+        log.append("a-tail-done")
+        if ctx.params.get("fail") and not ctx.params.get("_requeued"):
+            raise RuntimeError("CUDA out of memory")   # 可自动恢复的错误 → 后台收尾里只重新排队
+        return {}
+
+    async def b(ctx):
+        log.append("b")
+        return {}
+    monkeypatch.setitem(tasks.HANDLERS, "t_a", a)
+    monkeypatch.setitem(tasks.HANDLERS, "t_b", b)
+    monkeypatch.setitem(tasks.GROUP, "t_a", "image")
+    monkeypatch.setitem(tasks.GROUP, "t_b", "image")
+    ta = tasks.queue.submit("t_a", owner_id="oa")
+    tb = tasks.queue.submit("t_b", owner_id="ob")
+    wait(client, ta["id"]); wait(client, tb["id"])
+    assert log.index("b") < log.index("a-tail-done")          # B 在 A 收尾期间就开始了
+    log.clear()
+    tc = tasks.queue.submit("t_a", owner_id="oc", params={"fail": True})
+    td = tasks.queue.submit("t_b", owner_id="od")
+    wait(client, td["id"]); t = wait(client, tc["id"])
+    assert t["params"].get("_requeued") == 1 and log.count("a-gpu") == 2

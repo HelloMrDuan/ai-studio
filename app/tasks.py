@@ -30,6 +30,15 @@ class TaskContext:
         self.params: dict[str, Any] = task.get("params") or {}
         self.project_id = task.get("project_id") or ""
         self._last = 0.0
+        self._handoff: Callable[[], None] | None = None
+        self.detached = False
+
+    def gpu_done(self) -> None:
+        """显卡部分做完了（后面只剩 CPU 上的质检 / 光线锁定等收尾）：让调度器先开始下一个任务，收尾在后台继续。
+        收尾里如果还要用显卡（质检不过重抽），会照常排队等显卡锁，不会和别的任务同时占用。"""
+        if self._handoff and not self.detached:
+            self.detached = True
+            self._handoff()
 
     async def progress(self, value: int, message: str = "") -> None:
         now = time.monotonic()
@@ -142,12 +151,15 @@ class TaskQueue:
         self.worker: asyncio.Task | None = None
         self.parallel_worker: asyncio.Task | None = None
         self.current: str | None = None
+        self.current_job: asyncio.Task | None = None
         self.running: dict[str, tuple[str, asyncio.Task]] = {}     # 并行通道：task_id → (lane, asyncio 任务)
+        self.tails: dict[str, asyncio.Task] = {}                   # 显卡已让出、在后台收尾的任务（最多 1 个）
 
     def start(self) -> None:
         self.wake = asyncio.Event()      # 绑定当前事件循环（测试里会多次启动）
         self.wake_p = asyncio.Event()
         self.running = {}
+        self.tails = {}
         self.recover_interrupted()
         self.wake.set()
         self.wake_p.set()
@@ -155,7 +167,8 @@ class TaskQueue:
         self.parallel_worker = asyncio.create_task(self._parallel_loop())
 
     def stop(self) -> None:
-        for w in (self.worker, self.parallel_worker, *[t for _, t in self.running.values()]):
+        for w in (self.worker, self.parallel_worker, self.current_job, *self.tails.values(),
+                  *[t for _, t in self.running.values()]):
             if w:
                 w.cancel()
 
@@ -266,6 +279,19 @@ class TaskQueue:
         db.update("tasks", ctx.id, {"message": f"{msg}（第 {attempt} 次）", "progress": 1})
         return True
 
+    def _requeue(self, ctx: TaskContext, task: dict, exc: Exception, attempt: int) -> bool:
+        from .recovery import MAX_AUTO_RETRY, diagnose
+        if not get_settings().auto_recover or attempt > MAX_AUTO_RETRY or not diagnose(task["type"], str(exc)).retry:
+            return False
+        n = int((ctx.params or {}).get("_requeued") or 0)
+        if n >= MAX_AUTO_RETRY:
+            return False
+        log.warning("任务 %s 后台收尾出错，重新排队：%s", task["title"], str(exc)[:300])
+        db.update("tasks", ctx.id, {"status": "queued", "progress": 0, "message": f"出错了，已重新排队：{str(exc)[:120]}",
+                                    "params": {**(ctx.params or {}), "_requeued": n + 1}})
+        self._notify()
+        return True
+
     async def _loop(self) -> None:
         while True:
             task = self.next_task()
@@ -275,11 +301,23 @@ class TaskQueue:
                     await asyncio.wait_for(self.wake.wait(), timeout=5)
                 continue
             self.current = task["id"]
+            released = asyncio.Event()
+            # 实测：每个视频生成完还要 ~20 秒 CPU 质检/光线锁定，分镜图 ~9 秒质检；这段时间显卡空着。
+            # 任务调用 ctx.gpu_done() 后，调度器就先开始下一个任务（同时最多 1 个后台收尾）。
+            job = asyncio.create_task(self._execute(task, None if self.tails else released.set))
+            self.current_job = job
+            waiter = asyncio.create_task(released.wait())
             try:
-                await self._execute(task)
+                await asyncio.wait({job, waiter}, return_when=asyncio.FIRST_COMPLETED)
             finally:
+                waiter.cancel()
                 self.current = None
-                self._notify()
+                self.current_job = None
+            if not job.done():
+                tid = task["id"]
+                self.tails[tid] = job
+                job.add_done_callback(lambda _j, tid=tid: (self.tails.pop(tid, None), self._notify()))
+            self._notify()
 
     async def _parallel_loop(self) -> None:
         while True:
@@ -304,10 +342,11 @@ class TaskQueue:
             self.running.pop(task["id"], None)
             self._notify()
 
-    async def _execute(self, task: dict) -> None:
+    async def _execute(self, task: dict, handoff: Callable[[], None] | None = None) -> None:
         task_id = task["id"]
         db.update("tasks", task_id, {"status": "running", "progress": 1, "message": "开始执行"})
         ctx = TaskContext(db.get("tasks", task_id))
+        ctx._handoff = handoff
         t0 = time.monotonic()
         notes: list[str] = []
         try:
@@ -320,6 +359,11 @@ class TaskQueue:
                     raise
                 except Exception as exc:  # noqa: BLE001
                     attempt += 1
+                    if ctx.detached:
+                        # 后台收尾时别的任务可能正在用显卡，不能在这里重启 ComfyUI 等 → 重新排队，由调度器按顺序重做
+                        if self._requeue(ctx, task, exc, attempt):
+                            return
+                        raise
                     if not await self._recover(ctx, task, exc, attempt, notes):
                         raise
             cost = round(time.monotonic() - t0, 1)

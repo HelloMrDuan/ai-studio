@@ -589,7 +589,7 @@ def video_after(shot: dict) -> dict:
     """连续镜头的视频任务要等上一镜视频先做完（调度器据此排序）。"""
     if shot.get("continuous"):
         prev = prev_shot(shot)
-        if prev:
+        if prev and not chain_mismatch(prev, shot):     # 景别/人物跨度大的反正不接尾帧，不用干等上一镜
             return {"_after": prev["id"]}
     return {}
 

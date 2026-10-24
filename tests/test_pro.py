@@ -1189,6 +1189,14 @@ def test_chain_layout(client, project, monkeypatch):
     layout = {"a": [{"cx": .5, "s": .3}], "b": [{"cx": .52, "s": .28}]}
     m = b_video()
     assert m["chain_from"] and any("最后一帧" in n for n in m["notes"])
+    # 提速：景别跨度大、反正不接尾帧的连续镜头不用等上一镜视频做完
+    b = next(s for s in client.get(f"/api/projects/{project}").json()["shots"] if s["id"] == b["id"])
+    assert pipeline.video_after(b) == {"_after": a["id"]}
+    sizes = prompts.SHOT_SIZES
+    far = sizes[-1] if sizes.index(a["shot_size"]) < len(sizes) / 2 else sizes[0]
+    client.patch(f"/api/shots/{b['id']}", json={"shot_size": far})
+    b = next(s for s in client.get(f"/api/projects/{project}").json()["shots"] if s["id"] == b["id"])
+    assert pipeline.video_after(b) == {}
 
 
 def test_art_clause_subject():
@@ -1366,6 +1374,19 @@ def test_gpu_handoff_overlaps_cpu_tail(client, monkeypatch):
     tb = tasks.queue.submit("t_b", owner_id="ob")
     wait(client, ta["id"]); wait(client, tb["id"])
     assert log.index("b") < log.index("a-tail-done")          # B 在 A 收尾期间就开始了
+    # 连续几个都要让出：显卡段比收尾长时，每个都能和下一个重叠（让出时才检查后台收尾，不会隔一个才重叠）
+    flags = []
+
+    async def g(ctx):
+        await asyncio.sleep(0.4)                  # 显卡段
+        ctx.gpu_done(); flags.append(ctx.detached)
+        await asyncio.sleep(0.2)                  # CPU 收尾
+        return {}
+    monkeypatch.setitem(tasks.HANDLERS, "t_g", g)
+    monkeypatch.setitem(tasks.GROUP, "t_g", "image")
+    for i in [tasks.queue.submit("t_g", owner_id=f"g{k}")["id"] for k in range(3)]:
+        wait(client, i)
+    assert flags == [True, True, True]
     log.clear()
     tc = tasks.queue.submit("t_a", owner_id="oc", params={"fail": True})
     td = tasks.queue.submit("t_b", owner_id="od")

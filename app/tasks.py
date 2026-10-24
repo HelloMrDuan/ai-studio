@@ -30,15 +30,14 @@ class TaskContext:
         self.params: dict[str, Any] = task.get("params") or {}
         self.project_id = task.get("project_id") or ""
         self._last = 0.0
-        self._handoff: Callable[[], None] | None = None
+        self._handoff: Callable[[], bool] | None = None
         self.detached = False
 
     def gpu_done(self) -> None:
         """显卡部分做完了（后面只剩 CPU 上的质检 / 光线锁定等收尾）：让调度器先开始下一个任务，收尾在后台继续。
         收尾里如果还要用显卡（质检不过重抽），会照常排队等显卡锁，不会和别的任务同时占用。"""
         if self._handoff and not self.detached:
-            self.detached = True
-            self._handoff()
+            self.detached = self._handoff()
 
     async def progress(self, value: int, message: str = "") -> None:
         now = time.monotonic()
@@ -304,7 +303,12 @@ class TaskQueue:
             released = asyncio.Event()
             # 实测：每个视频生成完还要 ~20 秒 CPU 质检/光线锁定，分镜图 ~9 秒质检；这段时间显卡空着。
             # 任务调用 ctx.gpu_done() 后，调度器就先开始下一个任务（同时最多 1 个后台收尾）。
-            job = asyncio.create_task(self._execute(task, None if self.tails else released.set))
+            def handoff() -> bool:             # 让出时（而不是开始时）才看有没有别的后台收尾，避免隔一个才能重叠
+                if self.tails or released.is_set():
+                    return False
+                released.set()
+                return True
+            job = asyncio.create_task(self._execute(task, handoff))
             self.current_job = job
             waiter = asyncio.create_task(released.wait())
             try:
@@ -342,7 +346,7 @@ class TaskQueue:
             self.running.pop(task["id"], None)
             self._notify()
 
-    async def _execute(self, task: dict, handoff: Callable[[], None] | None = None) -> None:
+    async def _execute(self, task: dict, handoff: Callable[[], bool] | None = None) -> None:
         task_id = task["id"]
         db.update("tasks", task_id, {"status": "running", "progress": 1, "message": "开始执行"})
         ctx = TaskContext(db.get("tasks", task_id))

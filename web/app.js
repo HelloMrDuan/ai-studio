@@ -343,7 +343,11 @@ function chainInfo(x, i) {
   if (!x.continuous || !prev) return '';
   const cur = assetsOf(x.id, 'video').find((a) => a.path === x.video); const m = (cur && cur.meta) || {};
   if (!x.video) return `<div class="small muted" style="margin-top:4px">🔗 连续镜头：${prev.video ? '首帧将取自上一镜最后一帧' : (prev.end_frame ? '上一镜出视频后取其最后一帧做首帧（批量时自动排在后面）' : '等上一镜出视频后再生成（批量时自动排在后面）')}</div>`;
-  if (!m.chain_from) return '<div class="small bad" style="margin-top:4px">🔗 连续镜头，但当前视频没用上一镜尾帧做首帧，建议重新生成</div>';
+  if (!m.chain_from) {
+    const why = (m.notes || []).find((n) => n.includes('改用自己的分镜图'));   // 有意不接（景别跨度大、人物布局对不上、上一镜走样）
+    return why ? `<div class="small muted" style="margin-top:4px">🔗 连续镜头：${esc(why)}</div>`
+      : '<div class="small bad" style="margin-top:4px">🔗 连续镜头，但当前视频没用上一镜尾帧做首帧，建议重新生成</div>';
+  }
   if (m.chain_from !== prev.video) return '<div class="small bad" style="margin-top:4px">🔗 上一镜视频已更换，衔接可能对不上，建议重新生成本镜</div>';
   return `<div class="small ok" style="margin-top:4px">🔗 首帧取自上一镜最后一帧${(m.notes || []).some((n) => n.includes('修正')) ? ' · 人脸已自动修正' : ''}</div>`;
 }

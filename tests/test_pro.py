@@ -1307,6 +1307,9 @@ def test_light_anchor_rules():
     assert not prompts.light_anchor({"camera_move": "推镜", "description": "苏晴站着"})
     assert not prompts.light_anchor({"camera_move": "固定", "description": "苏晴转身离开天台"})
     assert not prompts.light_anchor({"camera_move": "固定", "description": "房间的灯突然亮起"})
+    # 实测：大动作被当成小动作锁首尾帧 → 动作没发生、人脸糊
+    assert not prompts.light_anchor({"camera_move": "固定", "description": "苏晴猛地甩开周屿的手，向后退了一步"})
+    assert not prompts.light_anchor({"camera_move": "固定", "action": "他伸手抓住她的手腕"})
     p = prompts.video_prompt({"style": "cinematic"}, {"description": "苏晴站着", "_anchor": True}, {}, None)
     assert "回到与首帧相近" in p and "指定的尾帧" not in p
 

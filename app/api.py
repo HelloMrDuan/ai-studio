@@ -618,6 +618,8 @@ class VideoIn(BaseModel):
     prompt: str = ""
     seconds: float | None = None
     seed: int | None = None
+    anchor: bool = True            # 固定机位小动作镜头：首帧兼作尾帧锁光线（False 关闭）
+    cache: float | None = Field(None, ge=0, le=0.5)   # 推理缓存阈值；留空按画质默认，0 = 关闭
     engine: str = ""               # P4-4：留空按镜头/项目设置；local / hailuo / kling
 
 

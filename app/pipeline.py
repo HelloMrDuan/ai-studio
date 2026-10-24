@@ -14,7 +14,7 @@ from . import comfy, db, facefusion, llm, media, prompts, qa, videox, vlm, voice
 from .config import get_settings
 from .gpu import gpu
 from .tasks import TaskContext, handler, queue
-from .workflows import (IMAGE_SIZES, MAX_IMAGE_REFS, MAX_VIDEO_REFS, VIDEO_SIZES, image_workflow, video_i2v_workflow,
+from .workflows import (seed_or_random, IMAGE_SIZES, MAX_IMAGE_REFS, MAX_VIDEO_REFS, VIDEO_SIZES, image_workflow, video_i2v_workflow,
                         video_r2v_workflow)
 
 IMAGE_SUFFIX = {".png", ".jpg", ".jpeg", ".webp"}
@@ -715,12 +715,13 @@ async def task_video(ctx: TaskContext) -> dict:
             await gpu.comfy_switch("video")
             uploaded = [await comfy.upload_image(p) for p in plan["refs"]]
             up_end = await comfy.upload_image(end_frame) if end_frame else None
-            s_ = seed if attempt == 0 else None
+            s_ = seed_or_random(seed if attempt == 0 else None)
+            cache = ctx.params.get("cache") if isinstance(ctx.params.get("cache"), (int, float)) else None
             if plan["mode"] == "r2v":
-                wf = video_r2v_workflow(prompt, uploaded, shot_aspect(shot, project), seconds, quality, turbo, s_)
+                wf = video_r2v_workflow(prompt, uploaded, shot_aspect(shot, project), seconds, quality, turbo, s_, cache)
             else:
                 wf = video_i2v_workflow(prompt, uploaded[0] if uploaded else None, shot_aspect(shot, project), seconds,
-                                        quality, turbo, last_frame=up_end, seed=s_)
+                                        quality, turbo, last_frame=up_end, seed=s_, cache=cache)
             cam_lora = videox.camera_loras().get(shot.get("camera_move") or "")
             if cam_lora:
                 videox.chain_lora(wf, cam_lora)
@@ -744,7 +745,7 @@ async def task_video(ctx: TaskContext) -> dict:
         result = vlm.merge_qa(result, await vlm.quick_check(shot, videos[0]))
         asset = add_asset(project["id"], "video", videos[0], "shot", shot["id"],
                           {"prompt": prompt, "mode": plan["mode"], "quality": quality, "seconds": seconds,
-                           "turbo": turbo, "qa": result, "attempt": attempt + 1,
+                           "turbo": turbo, "qa": result, "attempt": attempt + 1, "seed": s_,
                            "chain_from": src["path"] if src else "", "light_lock": light, "end_frame": rel(end_frame) if end_frame and not anchored else "", "anchored": anchored,
                            "notes": chain_notes})
         results.append((asset, result))

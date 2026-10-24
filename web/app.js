@@ -13,13 +13,21 @@ async function api(method, url, body) {
   const opt = { method, headers: {} };
   if (body instanceof FormData) opt.body = body;
   else if (body !== undefined) { opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
-  const r = await fetch(url, opt);
+  // 算家云/AutoDL 的端口转发网关偶尔会丢一个请求（后端日志里根本没有这次请求）→ 浏览器收到 502/503/504。
+  // 只读请求自动重试 2 次；会改数据的请求不自动重发（避免重复提交），只提示刷新确认。
+  const GATEWAY = [502, 503, 504];
+  let r;
+  for (let i = 0; ; i++) {
+    try { r = await fetch(url, opt); } catch (e) { if (method === 'GET' && i < 2) { await new Promise((ok) => setTimeout(ok, 1500)); continue; } toast('连不上服务器，请检查网络或服务器是否开机', true); throw e; }
+    if (method === 'GET' && GATEWAY.includes(r.status) && i < 2) { await new Promise((ok) => setTimeout(ok, 1500)); continue; }
+    break;
+  }
   const text = await r.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
   if (r.status === 401 && !url.startsWith('/api/login')) { location.href = '/login'; throw new Error('需要登录'); }
   if (!r.ok) {
-    const msg = (data && data.detail) ? (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) : `请求失败 ${r.status}`;
+    const msg = (data && data.detail) ? (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) : (GATEWAY.includes(r.status) ? `服务器网关暂时没响应（${r.status}）${method === 'GET' ? '，稍后会自动刷新' : '，这次操作可能没提交上，请刷新页面确认后再试'}` : `请求失败 ${r.status}`);
     toast(msg, true);
     throw new Error(msg);
   }

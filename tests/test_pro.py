@@ -1407,3 +1407,23 @@ def test_ethnicity_for_chinese_names():
     assert prompts.ethnicity({"name": "约翰·史密斯"}) == ""
     assert prompts.ethnicity({"name": "林夏", "appearance": "金发碧眼的混血女孩"}) == ""
     assert prompts.ethnicity({"name": "Alice"}) == ""
+
+
+def test_wait_vram_until_comfy_releases(monkeypatch):
+    # 实测：/free 返回后显存要几秒才释放，立刻启动文字模型 → cudaMalloc out of memory
+    import asyncio
+    from app import gpu as g
+    seq = iter([22000, 18000, 4000])
+    calls = []
+
+    async def mem():
+        calls.append(1)
+        return {"name": "x", "used": next(seq), "total": 24564}
+
+    async def fast(_):
+        return None
+
+    monkeypatch.setattr(g.gpu, "memory", mem)
+    monkeypatch.setattr(g.asyncio, "sleep", fast)
+    asyncio.run(g.gpu.wait_vram(19000))
+    assert len(calls) == 3

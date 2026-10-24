@@ -155,7 +155,29 @@ class GPUManager:
         if await self.llm_alive():
             return
         await self.free_comfy()
-        await self._start_llm()
+        await self.wait_vram(int(s.llm_gguf.stat().st_size / 2**20 * 1.1) + 3000 if s.llm_gguf.is_file() else 0)
+        try:
+            await self._start_llm()
+        except RuntimeError as exc:
+            if "启动失败" not in str(exc):
+                raise
+            log.warning("llama-server 第一次没起来（多半是显存还没腾出来），等几秒重试")
+            await self.free_comfy()
+            await asyncio.sleep(5)
+            await self._start_llm()
+
+    async def wait_vram(self, need_mb: int, timeout: float = 30) -> None:
+        """ComfyUI 的 /free 是异步执行的，返回后显存要再过几秒才真正释放。
+        实测：刚跑完视频（H3 占满显存）就启动文字模型，1 秒后启动 → cudaMalloc out of memory，任务失败。"""
+        if need_mb <= 0:
+            return
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            m = await self.memory()
+            if not m or m["total"] - m["used"] >= need_mb:
+                return
+            await asyncio.sleep(1)
+        log.warning("等待显存释放超时（需要 %s MB），仍尝试启动", need_mb)
 
     async def _start_llm(self) -> None:
         s = get_settings()

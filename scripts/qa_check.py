@@ -170,10 +170,14 @@ def check_faces(frames: list[np.ndarray], refs: list[dict], models_dir: Path, th
     per_char: dict[str, list[float]] = {n: [] for n in ref_emb}
     best_any: list[float] = []
     frames_with_faces = 0
+    small = 0
     for img in frames:
-        # 太小的脸（远景、480p 中景）ArcFace 不可靠，不参与判断
+        # 太小的脸（远景、480p 中景）ArcFace 不可靠，不参与判断（实测 90 像素的清晰正脸和分镜图相似度也只有 0.3~0.4）
         min_side = max(64, 0.12 * img.shape[0])
-        embs = [fx.embed(img, lm) for box, lm in fx.detect(img) if min(box[2] - box[0], box[3] - box[1]) >= min_side]
+        found = fx.detect(img)
+        sides = [float(min(box[2] - box[0], box[3] - box[1])) for box, lm in found]
+        small = max([small] + [s for s in sides if s < min_side])
+        embs = [fx.embed(img, lm) for (box, lm), s in zip(found, sides) if s >= min_side]
         if not embs or not ref_emb or len(embs) > len(ref_emb):   # 脸比角色多（照片/海报/路人）时无法对应，跳过
             continue
         frames_with_faces += 1
@@ -185,7 +189,7 @@ def check_faces(frames: list[np.ndarray], refs: list[dict], models_dir: Path, th
     scores = {n: round(float(np.percentile(v, 75)), 3) for n, v in per_char.items() if v}
     low = {n: s for n, s in scores.items() if s < threshold}
     # 多人镜头里只露出部分人脸（过肩、背影、虚化背景）时无法对应到具体角色，不判（虚化的脸相似度天然偏低，误报多）
-    return {"scores": scores, "low": low, "frames_with_faces": frames_with_faces, "refs": list(ref_emb)}
+    return {"scores": scores, "low": low, "frames_with_faces": frames_with_faces, "refs": list(ref_emb), "small_face": int(small)}
 
 
 def face_layout(a: Path, b: Path, models_dir: Path, identity: bool) -> dict:
@@ -323,6 +327,9 @@ def main() -> None:
             result["faces"] = f
             for name, s in f["low"].items():
                 result["issues"].append({"type": "face", "detail": f"「{name}」的脸不像（相似度 {s:.2f}）"})
+            if not f["frames_with_faces"] and f.get("small_face"):
+                result["warnings"].append(f"人脸太小（约 {f['small_face']} 像素），没法自动判断像不像、有没有变形，请放大看一下；"
+                                          "脸部要求高的镜头建议用「成品」画质")
         except Exception as exc:  # noqa: BLE001
             result["warnings"].append(f"人脸检测不可用：{exc}")
     if target.suffix.lower() in (".mp4", ".mov", ".webm", ".mkv"):

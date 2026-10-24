@@ -385,6 +385,9 @@ def light_anchor(shot: dict) -> bool:
     实测：黄昏首帧的固定镜头亮度漂移 96 → 0.8，人物仍有自然的细微动作；有运镜/大动作时不能这么做（动作会被拉回原位）。"""
     if (shot.get("camera_move") or "固定") != "固定" or light_changes(shot):
         return False
+    if shot.get("shot_size") in ("远景", "全景", "中景"):
+        return False   # 实测：人脸小的镜头锁首尾帧，脸会糊成一团/五官错位（同种子不锁就正常）；光线交给后期光线锁定
+
     text = "，".join(str(shot.get(k) or "") for k in ("description", "action", "video_prompt", "performance"))
     return not any(w in text for w in BIG_MOTION_WORDS)
 

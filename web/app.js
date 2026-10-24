@@ -234,7 +234,9 @@ const assetByPath = (owner, path) => assetsOf(owner).find((a) => a.path === path
 function qaLine(owner, path) {
   const a = assetByPath(owner, path); const q = qaOf(a); const m = (a && a.meta) || {};
   const tags = [];
-  if (q) tags.push(q.ok ? '<span class="ok">✓ 质检通过</span>' : `<span class="warn">⚠ ${esc(qaText(q))}</span>`);
+  const small = q && (q.warnings || []).find((w) => w.startsWith('人脸太小'));   // 小脸没法自动判断，不能说「通过」
+  if (q) tags.push(q.ok ? (small ? '<span class="warn">✓ 质检通过（人脸太小未检查）</span>' : '<span class="ok">✓ 质检通过</span>') : `<span class="warn">⚠ ${esc(qaText(q))}</span>`);
+  if (small) tags.push(`<span class="muted">${esc(small)}</span>`);
   if (m.attempt > 1) tags.push(`<span class="muted">第 ${m.attempt} 次生成</span>`);
   if (m.dub) tags.push(`<span class="ok">🎙 已配音${m.lipsync ? '+对口型' : ''}</span>`);
   if (m.notes && m.notes.length) tags.push(`<span class="muted">${esc(m.notes.join('；'))}</span>`);
